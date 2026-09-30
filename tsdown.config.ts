@@ -19,7 +19,9 @@ const CLIENT_EXTERNALS = [
 // package's own code is inlined). clean stays OFF because tsc's declaration
 // emit (lib/types/) shares the outDir root.
 const lib = defineConfig({
-  entry: ['src/index.ts'],
+  // #10: two entries — the executor and the permission-presets fork (the
+  // loader composes the fork under dsh-bash-msys/permission-presets).
+  entry: ['src/index.ts', 'src/permission-presets.ts'],
   outDir: 'lib',
   format: 'esm',
   platform: 'node',

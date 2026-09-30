@@ -10,6 +10,14 @@ overrides:
   '@deepseek-ai/dsh-shell': link:../deepseek-harness/packages/shell/shell
   '@deepseek-ai/dsh-subprocess': link:../deepseek-harness/packages/subprocess/subprocess
   '@deepseek-ai/dsh-timeout': link:../deepseek-harness/packages/util/timeout
+  '@deepseek-ai/dsh-sandbox': link:../deepseek-harness/packages/sandbox/sandbox
+  '@deepseek-ai/dsh-sandbox-policy': link:../deepseek-harness/packages/sandbox/sandbox-policy
+  '@deepseek-ai/dsh-user-approval': link:../deepseek-harness/packages/interaction/user-approval
+  '@deepseek-ai/dsh-typert-protocol': link:../deepseek-harness/packages/typert/protocol
+  '@deepseek-ai/dsh-session': link:../deepseek-harness/packages/core/session
+  '@deepseek-ai/dsh-session-projection': link:../deepseek-harness/packages/session/session-projection
+  '@deepseek-ai/dsh-commands': link:../deepseek-harness/packages/interaction/commands
+  '@deepseek-ai/dsh-settings': link:../deepseek-harness/packages/settings/settings
 
 importers:
 
@@ -18,6 +26,24 @@ importers:
       '@deepseek-ai/cordis':
         specifier: link:../deepseek-harness/vendor/cordis
         version: link:../deepseek-harness/vendor/cordis
+      '@deepseek-ai/dsh-commands':
+        specifier: link:../deepseek-harness/packages/interaction/commands
+        version: link:../deepseek-harness/packages/interaction/commands
+      '@deepseek-ai/dsh-sandbox':
+        specifier: link:../deepseek-harness/packages/sandbox/sandbox
+        version: link:../deepseek-harness/packages/sandbox/sandbox
+      '@deepseek-ai/dsh-sandbox-policy':
+        specifier: link:../deepseek-harness/packages/sandbox/sandbox-policy
+        version: link:../deepseek-harness/packages/sandbox/sandbox-policy
+      '@deepseek-ai/dsh-session':
+        specifier: link:../deepseek-harness/packages/core/session
+        version: link:../deepseek-harness/packages/core/session
+      '@deepseek-ai/dsh-session-projection':
+        specifier: link:../deepseek-harness/packages/session/session-projection
+        version: link:../deepseek-harness/packages/session/session-projection
+      '@deepseek-ai/dsh-settings':
+        specifier: link:../deepseek-harness/packages/settings/settings
+        version: link:../deepseek-harness/packages/settings/settings
       '@deepseek-ai/dsh-shell':
         specifier: link:../deepseek-harness/packages/shell/shell
         version: link:../deepseek-harness/packages/shell/shell
@@ -27,9 +53,18 @@ importers:
       '@deepseek-ai/dsh-timeout':
         specifier: link:../deepseek-harness/packages/util/timeout
         version: link:../deepseek-harness/packages/util/timeout
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: link:../deepseek-harness/packages/typert/protocol
+        version: link:../deepseek-harness/packages/typert/protocol
+      '@deepseek-ai/dsh-user-approval':
+        specifier: link:../deepseek-harness/packages/interaction/user-approval
+        version: link:../deepseek-harness/packages/interaction/user-approval
       '@deepseek-ai/schemastery':
         specifier: link:../deepseek-harness/vendor/schemastery
         version: link:../deepseek-harness/vendor/schemastery
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/node':
         specifier: ^24
@@ -723,6 +758,9 @@ packages:
   yuku-parser@0.8.7:
     resolution: {integrity: sha512-vRD9nwt4L3aYpxNqeSC4WqLv58xrXef0Ong1Mc45CTXTIpvLafx7JO05sczmQZwdLEZvywrLOGdNC5+Rp5N1BQ==}
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
 snapshots:
 
   '@jridgewell/sourcemap-codec@1.6.0': {}
@@ -1211,3 +1249,5 @@ snapshots:
       '@yuku-parser/binding-linux-x64-musl': 0.8.7
       '@yuku-parser/binding-win32-arm64': 0.8.7
       '@yuku-parser/binding-win32-x64': 0.8.7
+
+  zod@4.4.3: {}

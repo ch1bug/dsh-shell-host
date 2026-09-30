@@ -35,6 +35,35 @@ DSH bundle:**Windows 平台的 MSYS2 环境层** —— 在宿主平面完全替
   - 前端设置页 = 包内 client half(lib/client.js closure factory,只外部依赖平台模块表的 primitives + react/jsx-runtime),绑定 configForms namespace **`bash-msys`(= Loader 行 id,settings-controller 自动按行派生表单)**;volatile 字段经 settings user-section 运行时改预算,免重启
   - 顺带覆盖 `terminal-controller`(宿主级侧边栏用户终端):默认 shell 显式指 MSYS2 bash `--login -i`,摘掉裸 `bash` 候选(宿主 PATH 无 MSYS2,裸 bash 只会命中 WSL stub);!!js existsSync 探测,未安装则回退上游发现
 
+## D8 follow-up (#10, 2026-09-30)
+
+- **permission-presets host-only fork(human 拍板:只 fork 不提上游)**:D8 副作用
+  #10 修复 = 包内 `src/permission-presets.ts`(入口 `dsh-bash-msys/permission-presets`)
+  ——同名服务 `permissionPresets` + 同 Typert 命名空间 + 同命令 definitionId
+  `@deepseek-ai/dsh-permission-presets` + 同 `permission/preset` 事件/`permissions`
+  投影,原版 client UI 零改动复活(不 fork 任何 client 代码)
+- **fork 语义**:sandbox 旋钮回退 = `ctx.sandboxPolicy.defaultMode`(文件沙箱
+  政策),不读 `ctx.shell` —— 非 confinement 执行器不是 misconfiguration,
+  无任何代码路径声称进程 confinement;切换预设仍写穿双旋钮
+  (`sandbox/mode` + `approval/policy`)
+- **挂载**:win32 禁用基座 `permission` 行(name 守卫)+ insert `permission-msys`
+  行(带基座同款 3-preset 表);POSIX 双行休眠,上游行照常组装
+- **决策记录**:`docs/adr/0002-permission-presets-fork.md`(含 zod@4.4.3 钉版、
+  dsh-settings 走 built 声明两条实现期事实)
+
+新事实(已验证):
+- vite 的 RegExp alias 不匹配含 `/` 的子路径 specifier(如
+  `@deepseek-ai/dsh-commands/brand`)——子路径 alias 必须用 string find
+- 装饰器源码(`@Remote(...)`)在本仓 vitest 下必须先过 TypeScript 预变换
+  (vitest.config.ts `standardDecoratorPlugin`,移植自上游 vitest.shared.ts)
+- zod 4.6.x 会让 projection `register` 的泛型推断 TS2589;fork 钉 `zod@4.4.3`
+  (与上游一致)
+- **依赖策略例外(仅类型)**:fork 的 `dsh-settings` 类型导入走兄弟仓 BUILT
+  声明(`../../deepseek-harness/.../lib/types/index.d.ts`)——settings→config-editor→hmr
+  源链在本仓单程序松弛 flags 下不可编译;运行时导入被剥离,不违反
+  「不走 npm」铁律。此例外记录于 ADR-0002,复制该模式前先读它
+
+
 ## 术语表(惰性)
 
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。

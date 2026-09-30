@@ -245,9 +245,12 @@ describe('T4: the bundle patch (cordis.patch.yml) — host shell replacement + l
     const bashSandbox = doc.find((op) => op.id === 'bash-sandbox')
     expect(bashSandbox?.name).toBe('@deepseek-ai/dsh-bash-sandbox')
     expect(String(bashSandbox?.disabled)).toContain("process.platform === 'win32'")
-    // one insert: this bundle's executor, msys2 + UCRT64, dormant off-Windows.
+    // executor inserts: this bundle's executor, msys2 + UCRT64, dormant
+    // off-Windows. (#10 adds a second insert op for the permission fork —
+    // pinned in tests/permission-presets.spec.ts; this block stays scoped to
+    // the shell-replacement rows.)
     const inserts = doc.filter((op) => Array.isArray(op.insert))
-    expect(inserts).toHaveLength(1)
+    expect(inserts.length).toBeGreaterThanOrEqual(1)
     const executor = (inserts[0].insert as Array<Record<string, unknown>>)[0]
     expect(executor.id).toBe('bash-msys')
     expect(executor.name).toBe('dsh-bash-msys')

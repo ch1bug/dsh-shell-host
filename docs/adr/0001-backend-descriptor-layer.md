@@ -322,7 +322,7 @@ single-preset pins in T4 §3/§4 above.
    `permission-presets` refuses to compose over a non-confining executor
    (`sandboxMode === undefined` is a hard misconfiguration there), so D8
    removes the `/permission` switcher on win32 — regression, NOT accepted:
-   tracked as #10 (fix path decided there). (c) The engine-side E2E
+   tracked as #10 (fixed by the ADR-0002 permission-presets fork). (c) The engine-side E2E
    checklist lives in an EXPLICIT lane (`pnpm test:e2e`,
    `vitest.e2e.config.ts`), honoring spec #1's testing decision that
    end-to-end acceptance stays out of the unit loop; the suite skips when

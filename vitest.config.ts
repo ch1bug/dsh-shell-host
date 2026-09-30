@@ -1,5 +1,31 @@
 import { defineConfig } from 'vitest/config'
 import { resolve } from 'node:path'
+import ts from 'typescript'
+
+// Standard-decorator sources (the #10 permission-presets fork's @Remote
+// methods) trip Vite's default parser; upstream runs the same TypeScript
+// pre-transform (vitest.shared.ts standardDecoratorPlugin) for every suite.
+const decoratorSyntax = /^\s*@[A-Za-z_$][\w$]*/m
+function standardDecoratorPlugin() {
+  return {
+    name: 'dsh-standard-decorators',
+    enforce: 'pre' as const,
+    transform(code: string, id: string) {
+      const file = id.split('?', 1)[0]!
+      if (!/\.[cm]?tsx?$/.test(file) || !decoratorSyntax.test(code)) return
+      const result = ts.transpileModule(code, {
+        fileName: file,
+        compilerOptions: { target: ts.ScriptTarget.ES2024, module: ts.ModuleKind.ESNext, sourceMap: true },
+      })
+      return {
+        code: result.outputText
+          .replace(/^(\s*)(__esDecorate\()/gmu, '$1/* v8 ignore next -- compiler-synthetic decorator accessors have no source behavior */ $2')
+          .replace(/\n?\/\/# sourceMappingURL=.*$/u, '\n'),
+        map: result.sourceMapText,
+      }
+    },
+  }
+}
 
 // Upstream resolves @deepseek-ai/* to SOURCE through tsconfig.base.json's
 // paths facade + vite-tsconfig-paths, whose match-all scope only covers
@@ -25,7 +51,7 @@ const alias = (name: string, p: string) => ({ find: new RegExp(`^${name}$`), rep
 // decision: end-to-end acceptance stays out of the unit loop) — see
 // vitest.e2e.config.ts / `pnpm test:e2e`.
 const specInclude = process.platform === 'win32'
-  ? ['tests/descriptor.spec.ts', 'tests/detect.spec.ts']
+  ? ['tests/descriptor.spec.ts', 'tests/detect.spec.ts', 'tests/permission-presets.spec.ts']
   : ['tests/**/*.spec.ts']
 
 export const testAliases = [
@@ -39,9 +65,19 @@ export const testAliases = [
   alias('@deepseek-ai/dsh-timeout', 'packages/util/timeout'),
   alias('@deepseek-ai/dsh-http-proxy', 'packages/util/http-proxy'),
   alias('@deepseek-ai/dsh-lazy-require', 'packages/util/lazy-require'),
+  // #10: the permission-presets fork's host-side value closure.
+  alias('@deepseek-ai/dsh-sandbox', 'packages/sandbox/sandbox'),
+  alias('@deepseek-ai/dsh-sandbox-policy', 'packages/sandbox/sandbox-policy'),
+  alias('@deepseek-ai/dsh-user-approval', 'packages/interaction/user-approval'),
+  alias('@deepseek-ai/dsh-typert-protocol', 'packages/typert/protocol'),
+  alias('@deepseek-ai/dsh-session', 'packages/core/session'),
+  alias('@deepseek-ai/dsh-session-projection', 'packages/session/session-projection'),
+  { find: '@deepseek-ai/dsh-commands/brand', replacement: resolve(H, 'packages/interaction/commands/src/brand.ts') },
+  alias('@deepseek-ai/dsh-commands', 'packages/interaction/commands'),
 ]
 
 export default defineConfig({
+  plugins: [standardDecoratorPlugin()],
   resolve: {
     alias: testAliases,
   },

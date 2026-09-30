@@ -13,3 +13,11 @@ overrides:
   '@deepseek-ai/dsh-shell': link:../deepseek-harness/packages/shell/shell
   '@deepseek-ai/dsh-subprocess': link:../deepseek-harness/packages/subprocess/subprocess
   '@deepseek-ai/dsh-timeout': link:../deepseek-harness/packages/util/timeout
+  '@deepseek-ai/dsh-sandbox': link:../deepseek-harness/packages/sandbox/sandbox
+  '@deepseek-ai/dsh-sandbox-policy': link:../deepseek-harness/packages/sandbox/sandbox-policy
+  '@deepseek-ai/dsh-user-approval': link:../deepseek-harness/packages/interaction/user-approval
+  '@deepseek-ai/dsh-typert-protocol': link:../deepseek-harness/packages/typert/protocol
+  '@deepseek-ai/dsh-session': link:../deepseek-harness/packages/core/session
+  '@deepseek-ai/dsh-session-projection': link:../deepseek-harness/packages/session/session-projection
+  '@deepseek-ai/dsh-commands': link:../deepseek-harness/packages/interaction/commands
+  '@deepseek-ai/dsh-settings': link:../deepseek-harness/packages/settings/settings
