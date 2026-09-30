@@ -34,6 +34,8 @@ pnpm typecheck   # two facades: tsconfig.json (host, source paths) + tsconfig.cl
 pnpm build       # tsc -b (upstream deps) → tsc -p tsconfig.build.json (host declarations) → tsdown (lib/index.js + lib/client.js)
 pnpm test        # vitest unit loop; MSYS-dependent cases skip when C:\msys64 is absent
 pnpm test:e2e    # the T5 engine-side E2E checklist; needs a real MSYS2 (C:\msys64), DSH_MSYS_ROOT overrides
+
+No CI (maintainer decision 2026-09-30): verification is local (typecheck/test/test:e2e + issue evidence). Do not propose adding ci.yml.
 ```
 
 Gotchas (learned the hard way):
