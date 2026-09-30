@@ -184,3 +184,30 @@ interface BackendDescriptor {
 - Descriptors make the terminal side (T4, `dsh-terminal-bash` shellPath/
   shellArgs Config) able to reuse the same declaration instead of
   duplicating path knowledge.
+
+## T2 amendment (2026-09-30, human decision on #5)
+
+T2's implementation supersedes part of the Decision/§5 blocks above; recorded
+here rather than left as silent drift:
+
+1. **Env layering (supersedes §5's literal spread order).** The human
+   harmonized the #5-AC order ("caller wins over injected") with §5's intent
+   (issue #5 comment 5902433252): plain variables layer
+   `ENV_OVERRIDES → backend env → caller env → dshEnv` (caller beats the
+   backend's plain keys); PATH is a **prefix-merge** — the backend's
+   `pathPrefix` is prepended to the innermost layer's PATH
+   (`dshEnv.PATH ?? env.PATH ?? inherited`), never a whole-key override (VS
+   Code `addEnvMixinPathPrefix` pattern). `dshEnv` keeps its innermost win,
+   including for PATH.
+2. **Descriptor shape, phase-1 narrowing.** `executable` ships as
+   `readonly string[]` (the `isUnsafe` variant returns when a backend needs
+   it); `argv.interactive` is deferred to the PTY ticket (D3/T4) — only
+   `oneShot` exists in T2; env `null`-deletes are deferred until a backend
+   actually needs deletion (no msys2 key is deleted). A `pathPrefix` field
+   (not in the original Decision block) carries the PATH prefix-merge per
+   (1). `pathMapping` ships as declared but is not yet consumed by the
+   executor; its consumer arrives with T3/T4 (cwd/paths across the shell
+   boundary).
+3. **uname AC fact.** Issue #5's "uname reports MSYS_NT" holds only under
+   `MSYSTEM=MSYS`; under D1's UCRT64 injection a real MSYS2 reports the
+   `MINGW64_NT` family (host-probed). Tests pin `_NT`-family + not-Linux.

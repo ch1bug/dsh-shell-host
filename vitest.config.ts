@@ -14,12 +14,16 @@ const toSrc = (p: string) => resolve(H, p, 'src/index.ts')
 const alias = (name: string, p: string) => ({ find: new RegExp(`^${name}$`), replacement: toSrc(p) })
 
 // Mirrors upstream vitest.config.ts `windowsUnsupportedPackages` policy for
-// this package: on win32 the bash-local suites are excluded because "a real
-// POSIX shell is unavailable on Windows" (upstream's own words — upstream's
-// Windows lanes run green with these suites skipped). The zero-deviation
-// fork baseline keeps that policy verbatim; T2's descriptor layer is what
-// will revisit it.
-const specInclude = process.platform === 'win32' ? [] : ['tests/**/*.spec.ts']
+// this package: on win32 the ported bash-local suites stay excluded ("a real
+// POSIX shell is unavailable on Windows" — upstream's own words). T2's
+// descriptor layer reopens the lane for what a Windows shell CAN serve: the
+// msys2 backend suite runs through the explicit-config public boundary
+// (ADR-0001 Consequences), so the executor's msys2 behavior is regression-
+// guarded on Windows; the ported POSIX suites stay excluded until a later
+// ticket serves them a POSIX lane.
+const specInclude = process.platform === 'win32'
+  ? ['tests/descriptor.spec.ts']
+  : ['tests/**/*.spec.ts']
 
 export default defineConfig({
   resolve: {

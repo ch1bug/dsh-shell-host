@@ -12,10 +12,13 @@
 import type { Volatile } from '@deepseek-ai/cordis'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { delimiter } from 'node:path'
 import { ShellExecutor } from '@deepseek-ai/dsh-shell'
 import type { ShellExecRequest, ShellExecSpec, ShellExecution, ShellProcess, ShellProcessRead, ShellRunResult, CollectedOutput } from '@deepseek-ai/dsh-shell'
 import type { SubprocessCollect, SubprocessHandle, SubprocessOutputReader, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { clampTimeout, deadline, MAX_TIMER_DELAY_MS, timeoutOf } from '@deepseek-ai/dsh-timeout'
+import { assertServiceableBackend, expandOneShotArgv, resolveBackend, resolveExecutable } from './backends.ts'
+import type { BackendDescriptor } from './backends.ts'
 
 /**
  * Model-friendly environment overrides: disable colors, pagers, and
@@ -51,6 +54,14 @@ export interface Config {
   maxSpillBytes: Volatile<number>
   /** Grace period for kill escalation and inherited pipes; at most `MAX_TIMER_DELAY_MS`. */
   graceMs: Volatile<number>
+  /** Backend descriptor selection: `'plain'` (upstream bare-`bash` behavior, default), `'msys2'` (explicit config), or a reserved id that fails loudly (`'pwsh'`/`'wsl'`). */
+  backend: Volatile<string | undefined>
+  /** MSYS2 install root (e.g. `C:\msys64`) for the `msys2` backend; alternatively point `bashPath` at its bash directly. */
+  msysRoot: Volatile<string | undefined>
+  /** Explicit bash executable; for `msys2` the install root is derived from it, for `plain` it replaces the PATH-resolved bare `bash`. */
+  bashPath: Volatile<string | undefined>
+  /** MSYS2 subsystem selector injected as `MSYSTEM` (default `UCRT64`). */
+  msystem: Volatile<string | undefined>
 }
 
 /** Project a settled collect-mode reader into the final CollectedOutput shape. */
@@ -104,6 +115,10 @@ export class LocalBashExecutor extends ShellExecutor {
     maxOutputBytes: z.number().default(64_000).volatile(),
     maxSpillBytes: z.number().default(DEFAULT_MAX_SPILL_BYTES).volatile(),
     graceMs: z.number().default(DEFAULT_GRACE_MS).volatile(),
+    backend: z.string().default('plain').volatile(),
+    msysRoot: z.string().volatile(),
+    bashPath: z.string().volatile(),
+    msystem: z.string().default('UCRT64').volatile(),
   })
 
   constructor(ctx: Context, readonly config: Config) {
@@ -119,6 +134,9 @@ export class LocalBashExecutor extends ShellExecutor {
    */
   resolve(request: ShellExecRequest): ShellExecSpec {
     assertServiceableBashConfig(this.config)
+    // Fail loudly at the tool layer's first stop for an unusable backend
+    // (reserved id, missing msysRoot) — the same check execute() re-runs.
+    resolveBackend(this.config)
     const timeoutMs = clampTimeout(
       request.timeoutMs,
       this.config.timeoutMs.get(),
@@ -166,11 +184,31 @@ export class LocalBashExecutor extends ShellExecutor {
       },
       graceMs: this.config.graceMs.get(),
       signal,
-      // One explicit env map for the seam, layered so the trusted dshEnv
-      // snapshot beats both the caller's env and the terminal overrides; the
-      // subprocess service merges the whole map after its ambient scrub.
-      env: { ...ENV_OVERRIDES, ...spec.env, ...spec.dshEnv },
+      env: this.buildEnv(resolveBackend(this.config), spec),
     }
+  }
+
+  /**
+   * Layer the spawn env per the human-harmonized order (issue #5 comment):
+   * ENV_OVERRIDES → backend plain env → caller env → dshEnv (plain keys; the
+   * caller wins over the backend's), then the backend's PATH PREFIX merged
+   * ahead of the PATH the innermost layer supplies — a prefix-merge, not a
+   * whole-key override, so the inherited Windows/POSIX PATH survives and the
+   * backend's tool directories take the head (VS Code
+   * `addEnvMixinPathPrefix` pattern). `dshEnv` keeps its upstream-contracted
+   * innermost win, including for PATH.
+   */
+  private buildEnv(backend: BackendDescriptor, spec: ShellExecSpec): Record<string, string> {
+    const env: Record<string, string> = { ...ENV_OVERRIDES, ...backend.env, ...spec.env, ...spec.dshEnv }
+    if (backend.pathPrefix.length > 0) {
+      // The prefix merges onto whatever PATH the innermost layer produced —
+      // the upstream-contracted innermost win holds for PATH too. (The seam
+      // types dshEnv as DSH_-namespaced, so in practice the base is the
+      // caller's or the inherited PATH.)
+      const base = env.PATH ?? process.env.PATH ?? ''
+      env.PATH = [...backend.pathPrefix, base].join(delimiter)
+    }
+    return env
   }
 
   /** The collect-mode readers the executor itself requested (present by construction). */
@@ -185,7 +223,12 @@ export class LocalBashExecutor extends ShellExecutor {
   }
 
   async execute(spec: ShellExecSpec): Promise<ShellExecution> {
-    return this.executeArgv(spec, ['bash', '-c', spec.command])
+    // The descriptor is the backend seam (ADR-0001): selection and validation
+    // fail loudly here — before a handle can exist — so a misconfigured or
+    // reserved backend can never silently spawn the wrong shell.
+    const backend = resolveBackend(this.config)
+    assertServiceableBackend(backend)
+    return this.executeArgv(spec, [resolveExecutable(backend), ...expandOneShotArgv(backend, spec.command)])
   }
 
   /**
