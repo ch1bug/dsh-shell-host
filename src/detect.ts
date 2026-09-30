@@ -6,7 +6,7 @@
  * @module dsh-bash-msys/detect
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 
 /**
@@ -72,4 +72,74 @@ export function detectPlainBash(
     if (exists(candidate)) return candidate
   }
   return undefined
+}
+
+/**
+ * Whether a candidate path can be spawned. lstat opens the entry itself
+ * instead of following reparse points, so it sees the Microsoft Store app
+ * execution alias where stat-based `existsSync` hits the target's ACL
+ * (EACCES); Node reports that alias as a symlink on current releases and as
+ * a plain file on older ones, and CreateProcess resolves either shape
+ * (surveyed from the upstream `pwsh-local` resolve.ts, dsh-v0.2.0-rc.2 —
+ * the same predicate backs `resolveExecutable`'s ordered-candidate check).
+ */
+export function spawnableExists(candidate: string): boolean {
+  try {
+    const stat = lstatSync(candidate)
+    return stat.isFile() || stat.isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Every PowerShell location the pwsh backend probes, in order (win32, #3):
+ * PowerShell 7's install-root `pwsh.exe` first, then every PATH entry's
+ * `pwsh.exe` (e.g. the Microsoft Store install, user-added locations),
+ * then Windows PowerShell 5.1's `powershell.exe` — the same shape as the
+ * upstream `pwsh-local` candidate list, with the trailing bare-`pwsh` PATH
+ * fallback REMOVED: this executor's contract is a loud failure naming every
+ * probed location, never a silent bare-name spawn (ADR-0001 #3 amendment).
+ */
+export function pwshProbedLocations(
+  path: string | undefined = process.env.PATH,
+  env: NodeJS.ProcessEnv = process.env,
+): readonly string[] {
+  const programFiles = env.ProgramFiles ?? 'C:\\Program Files'
+  const systemRoot = env.SystemRoot ?? 'C:\\Windows'
+  return [
+    join(programFiles, 'PowerShell', '7', 'pwsh.exe'),
+    ...pathEntries(path),
+    join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+  ]
+}
+
+/**
+ * Resolve a PowerShell executable on win32 (issue #3): PowerShell 7's
+ * `pwsh.exe` (install root, then every PATH entry), then Windows PowerShell
+ * 5.1's `powershell.exe`. PowerShell 7 always wins over 5.1 when both exist.
+ * @param exists - injectable existence predicate (tests use fake paths).
+ * @param path - the PATH to probe for `pwsh.exe`; defaults to the process PATH.
+ * @param env - environment for the well-known roots; defaults to the process env.
+ * @returns the resolved absolute path, or undefined (the caller must then
+ *   fail loudly naming the probed locations).
+ */
+export function detectPwsh(
+  exists: (path: string) => boolean = spawnableExists,
+  path: string | undefined = process.env.PATH,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (process.platform !== 'win32') return undefined
+  for (const candidate of pwshProbedLocations(path, env)) {
+    if (exists(candidate)) return candidate
+  }
+  return undefined
+}
+
+/** PATH entries carrying a `pwsh.exe`, quotes stripped (`setx`-style definitions). */
+function pathEntries(path: string | undefined): string[] {
+  return (path ?? '').split(delimiter)
+    .map(entry => entry.trim().replace(/^"|"$/g, ''))
+    .filter(entry => entry.length > 0)
+    .map(entry => join(entry, 'pwsh.exe'))
 }

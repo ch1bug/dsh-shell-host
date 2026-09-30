@@ -6,7 +6,7 @@ import YAML from 'yaml'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { LocalBashExecutor } from '../src/index.ts'
 import { resolveBackend } from '../src/backends.ts'
-import { PLAIN_BASH_CANDIDATES } from '../src/detect.ts'
+import { detectPwsh, PLAIN_BASH_CANDIDATES } from '../src/detect.ts'
 import type { ShellExecSpec, ShellExecution, ShellRunResult } from '@deepseek-ai/dsh-shell'
 
 /**
@@ -276,10 +276,92 @@ describe('T4: the bundle patch (cordis.patch.yml) — host shell replacement + l
 })
 
 describe('backend selection validation (fails loudly at the public boundary)', () => {
-  it('selecting a reserved backend (pwsh/wsl) fails with a config-pointing error', async () => {
-    for (const backend of ['pwsh', 'wsl']) {
-      const bash = await setup({ backend })
-      expect(() => bash.resolve({ command: 'true' })).toThrow(new RegExp(backend))
+  it("selecting the reserved backend 'wsl' fails with a config-pointing error that no longer lists 'pwsh' as reserved", async () => {
+    const wsl = await setup({ backend: 'wsl' })
+    expect(() => wsl.resolve({ command: 'true' })).toThrow(/wsl/)
+    // #3 regression pin: 'pwsh' graduated from reserved to implemented — the
+    // reserved/unknown enumerations must not name it as unimplemented.
+    expect(() => wsl.resolve({ command: 'true' })).toThrow(/reserved/)
+    const bogus = await setup({ backend: 'not-a-backend' })
+    expect(() => bogus.resolve({ command: 'true' })).toThrow(/not-a-backend/)
+  })
+})
+
+/**
+ * #3 pwsh backend matrix, exercised through the executor's public boundary
+ * (`resolve` → `execute` → `result`). Skips gracefully (skipIf) when no
+ * PowerShell is installed — the same pattern as the MSYS2-absent skips; the
+ * no-PowerShell loud-failure path is covered by the injected detect.spec
+ * suite plus the host-branch test below.
+ */
+const pwshExe = detectPwsh()
+const hasPwsh = pwshExe !== undefined
+
+describe('pwsh backend (#3, D7 phase 1.5)', () => {
+  it.skipIf(!hasPwsh)('runs one-shot commands through PowerShell and returns output and exit codes', async () => {
+    const shell = await setup({ backend: 'pwsh' })
+    const result = await run(shell, shell.resolve({ command: "Write-Output 'ps-hello'" }))
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.text.trim()).toBe('ps-hello')
+
+    const failing = await run(shell, shell.resolve({ command: 'exit 3' }))
+    expect(failing.exitCode).toBe(3)
+  })
+
+  it.skipIf(!hasPwsh)('one-shot argv carries the upstream conventions (-NoLogo -NoProfile -NonInteractive -Command + UTF-8 preamble)', async () => {
+    const shell = await setup({ backend: 'pwsh' })
+    const backend = resolveBackend(shell.config)
+    expect(backend.argv.oneShot.slice(0, 4)).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command'])
+    // The preamble rides line 1 of the command payload (Windows PowerShell
+    // 5.1 would garble non-ASCII otherwise).
+    expect(backend.argv.oneShot[4]).toMatch(/^\[Console\]::OutputEncoding/)
+    expect(backend.argv.oneShot[4]).toContain('{command}')
+    // Pinned live: the decoded stdout is valid UTF-8 end to end.
+    const utf8 = await run(shell, shell.resolve({ command: "Write-Output 'héllo-wörld'" }))
+    expect(utf8.exitCode).toBe(0)
+    expect(utf8.stdout.text.trim()).toBe('héllo-wörld')
+  })
+
+  it.skipIf(!hasPwsh)('descriptor injects no env and no PATH prefix; path mapping is identity both directions', async () => {
+    const shell = await setup({ backend: 'pwsh' })
+    const backend = resolveBackend(shell.config)
+    expect(backend.env).toEqual({})
+    expect(backend.pathPrefix).toEqual([])
+    await expect(backend.pathMapping.toShell('C:\\Windows')).resolves.toBe('C:\\Windows')
+    await expect(backend.pathMapping.fromShell('C:\\Windows')).resolves.toBe('C:\\Windows')
+    // Live proof of the native env surface: the caller's variables pass
+    // through untouched (the backend injects nothing that competes with
+    // them), and the PATH arrives unprefixed — the inherited Windows PATH
+    // survives. (Asserting MSYSTEM *absence* live is impossible on this
+    // host: the harness itself runs under MSYS2, so the caller env
+    // legitimately carries MSYSTEM — inheritance, not injection. The
+    // no-injection contract itself is pinned at the descriptor seam above.)
+    const result = await run(shell, shell.resolve({
+      command: "'MSYSTEM=[' + $env:MSYSTEM + ']'; $env:PATH",
+      env: { MSYSTEM: 'caller-pwsh-env' },
+    }))
+    expect(result.exitCode).toBe(0)
+    const [msystem, path] = result.stdout.text.trim().split('\r\n')
+    expect(msystem).toBe('MSYSTEM=[caller-pwsh-env]')
+    expect(path.toLowerCase()).toContain('windows')
+    expect(path.toLowerCase()).toContain('windows')
+  })
+
+  it.skipIf(!hasPwsh)('projects enginePath/engineArgs for the PTY terminal row (interactive -l -noexit)', async () => {
+    const shell = await setup({ backend: 'pwsh' })
+    expect(shell.enginePath).toBe(pwshExe)
+    expect(shell.engineArgs).toEqual(['-l', '-noexit'])
+  })
+
+  it('absence of PowerShell fails loudly naming every probed location (host branch)', async () => {
+    if (hasPwsh) {
+      // Host has PowerShell; the loud path is covered by the injected
+      // detect.spec suite plus this assertion that a detected host succeeds.
+      const shell = await setup({ backend: 'pwsh' })
+      expect(shell.resolve({ command: 'exit 0' })).toBeTruthy()
+      return
     }
+    const shell = await setup({ backend: 'pwsh' })
+    expect(() => shell.resolve({ command: 'exit 0' })).toThrow(/backend 'pwsh' found no PowerShell.*Probed:/s)
   })
 })

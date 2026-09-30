@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectMsysRoot, detectPlainBash, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES } from '../src/detect.ts'
+import { detectMsysRoot, detectPlainBash, detectPwsh, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, pwshProbedLocations } from '../src/detect.ts'
 
 /**
  * T3 detection tests, fully injected (fake `exists` predicates and PATH
@@ -70,5 +70,41 @@ describe('detectPlainBash (win32 PATH probe + ordered fallbacks)', () => {
     const path = 'D:\\ghost;C:\\Program Files\\Git\\bin'
     const exists = existsFor(['C:\\Program Files\\Git\\bin\\bash.exe'])
     expect(detectPlainBash(exists, path)).toBe('C:\\Program Files\\Git\\bin\\bash.exe')
+  })
+})
+
+describe('detectPwsh (#3: PowerShell 7 preferred over Windows PowerShell 5.1)', () => {
+  const ps7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+  const winPs = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+
+  it('prefers the PowerShell 7 install root over PATH entries and Windows PowerShell', () => {
+    const path = 'D:\\store-install'
+    const exists = existsFor([ps7, 'D:\\store-install\\pwsh.exe', winPs])
+    expect(detectPwsh(exists, path)).toBe(ps7)
+  })
+
+  it('probes PATH entries (Store install, quoted setx entries) before Windows PowerShell 5.1', () => {
+    const path = '"D:\\quoted";E:\\empty'
+    const exists = existsFor(['D:\\quoted\\pwsh.exe', winPs])
+    expect(detectPwsh(exists, path)).toBe('D:\\quoted\\pwsh.exe')
+  })
+
+  it('falls back to Windows PowerShell 5.1 when no pwsh.exe exists', () => {
+    const env = { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows' }
+    expect(detectPwsh(existsFor([winPs]), '', env)).toBe(winPs)
+  })
+
+  it('returns undefined when no PowerShell is installed — never a bare-name fallback', () => {
+    // Deliberate deviation from the upstream pwsh-local resolver (which
+    // falls back to a bare `pwsh`): this executor fails loudly naming every
+    // probed location instead (ADR-0001 #3 amendment).
+    expect(detectPwsh(() => false, '')).toBeUndefined()
+  })
+
+  it('pwshProbedLocations names every probed path in probe order', () => {
+    const locations = pwshProbedLocations('D:\\a;D:\\b', { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows' })
+    expect(locations[0]).toBe(ps7)
+    expect(locations.slice(1, -1)).toEqual(['D:\\a\\pwsh.exe', 'D:\\b\\pwsh.exe'])
+    expect(locations.at(-1)).toBe(winPs)
   })
 })

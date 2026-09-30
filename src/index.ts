@@ -54,7 +54,7 @@ export interface Config {
   maxSpillBytes: Volatile<number>
   /** Grace period for kill escalation and inherited pipes; at most `MAX_TIMER_DELAY_MS`. */
   graceMs: Volatile<number>
-  /** Backend descriptor selection: `'plain'` (detected bash, no injection, default) or `'msys2'` (MSYS2 env + path surface); a reserved id (`'pwsh'`/`'wsl'`) fails loudly. */
+  /** Backend descriptor selection: `'plain'` (detected bash, no injection, default), `'msys2'` (MSYS2 env + path surface), or `'pwsh'` (Windows PowerShell, native PATH, identity path mapping); a reserved id (`'wsl'`) fails loudly. */
   backend: Volatile<string | undefined>
   /** MSYS2 install root (e.g. `C:\msys64`) for the `msys2` backend; auto-detected from common install locations when unset (explicit config always wins; detection failure is loud). */
   msysRoot: Volatile<string | undefined>

@@ -5,14 +5,14 @@
  * merged ahead of the caller PATH. Modeled on VS Code's terminal-profile
  * declaration (`ITerminalExecutable` ordered candidates, `IShellLaunchConfig`
  * argv templates, profile `env`). `msys2` supports explicit configuration and
- * VS Code-style auto-detection (T3); `pwsh`/`wsl` are
- * reserved registry entries that fail loudly when selected.
+ * VS Code-style auto-detection (T3); `pwsh` is the Windows-native PowerShell
+ * backend (#3, D7 phase 1.5); `wsl` remains a reserved registry entry that
+ * fails loudly when selected.
  * @module dsh-bash-msys/backends
  */
 
-import { existsSync } from 'node:fs'
 import { delimiter, dirname, join } from 'node:path'
-import { detectMsysRoot, detectPlainBash, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES } from './detect.ts'
+import { detectMsysRoot, detectPlainBash, detectPwsh, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, pwshProbedLocations, spawnableExists } from './detect.ts'
 import type { Config } from './index.ts'
 
 /** Command-payload token inside an argv template (VS Code `{0}` analog). */
@@ -25,7 +25,7 @@ export const COMMAND_TOKEN = '{command}'
  * `ITerminalProfile.env`; PATH prefixing ← VS Code `addEnvMixinPathPrefix`.
  */
 export interface BackendDescriptor {
-  /** Registry id: `'plain' | 'msys2'` implemented; `'pwsh' | 'wsl'` reserved. */
+  /** Registry id: `'plain' | 'msys2' | 'pwsh'` implemented; `'wsl'` reserved. */
   id: string
   /** Ordered executable candidates. A bare name spawns through PATH lookup (upstream `plain` behavior); absolute paths must exist. */
   executable: readonly string[]
@@ -132,6 +132,57 @@ function msys2Backend(config: Config): BackendDescriptor {
   }
 }
 
+/**
+ * pwsh backend (issue #3, D7 phase 1.5): Windows-native PowerShell, a peer
+ * of `msys2` — no MSYS-style injection, native Windows PATH surface,
+ * identity path mapping both directions. Argv conventions surveyed from the
+ * upstream `pwsh-local` executor (harness checkout dsh-v0.2.0-rc.2, recorded
+ * in the ADR-0001 #3 amendment): one-shot `-NoLogo -NoProfile
+ * -NonInteractive -Command` with the UTF-8 output preamble riding line 1 of
+ * the command text; interactive `-l -noexit` (login + keep-open, the PTY
+ * projection's `--login -i` analog — `-Login` requires pwsh ≥7.4, so an
+ * interactive terminal over the Windows PowerShell 5.1 fallback fails at
+ * spawn rather than silently dropping the flag). Detection follows the VS
+ * Code probe pattern: PowerShell 7 (install root, then PATH) ahead of
+ * Windows PowerShell 5.1; absence fails loudly naming every probed location
+ * — the upstream bare-`pwsh` PATH fallback is deliberately absent (no silent
+ * fallback). This executor NEVER confines: a pwsh backend here is unconfined
+ * pwsh, unlike the upstream confining `pwsh-sandbox` executor it displaced
+ * (#10 posture, recorded in ADR-0001).
+ */
+function pwshBackend(): BackendDescriptor {
+  const detected = detectPwsh()
+  if (detected === undefined) {
+    throw new Error(
+      `bash-local: backend 'pwsh' found no PowerShell; install PowerShell 7 or set backend: 'plain'/'msys2'. `
+      + `Probed: ${pwshProbedLocations().join(', ')}`,
+    )
+  }
+  return {
+    id: 'pwsh',
+    executable: [detected],
+    argv: {
+      oneShot: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', ENCODING_PREAMBLE + COMMAND_TOKEN],
+      interactive: ['-l', '-noexit'],
+    },
+    env: {},
+    pathPrefix: [],
+    pathMapping: identityMapping,
+  }
+}
+
+/**
+ * UTF-8 output pinning prepended to every one-shot command (surveyed from
+ * the upstream `pwsh-local`): the subprocess collector decodes output bytes
+ * as UTF-8, but Windows PowerShell 5.1 (the last-resort executable
+ * fallback) writes the console/OEM code page by default, which garbles
+ * non-ASCII output; pwsh 7 defaults to UTF-8 and is unaffected. The
+ * statements ride on line 1 after `; ` separators so PowerShell error line
+ * numbers stay accurate.
+ */
+const ENCODING_PREAMBLE =
+  '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); '
+
 async function cygpath(msysRoot: string, flag: string, path: string): Promise<string> {
   const { execFile } = await import('node:child_process')
   const { promisify } = await import('node:util')
@@ -141,8 +192,8 @@ async function cygpath(msysRoot: string, flag: string, path: string): Promise<st
 
 /**
  * Resolve the configured backend descriptor. Unknown or reserved ids
- * (`pwsh`/`wsl` — issues #2/#3) fail loudly naming the id and the config
- * knob, so a misconfiguration can never silently spawn the wrong shell.
+ * (`wsl` — issue #2) fail loudly naming the id and the config knob, so a
+ * misconfiguration can never silently spawn the wrong shell.
  * @throws Error naming the backend and the config field to change.
  */
 export function resolveBackend(config: Config): BackendDescriptor {
@@ -155,11 +206,11 @@ export function resolveBackend(config: Config): BackendDescriptor {
       // PATH prefix.
       if (config.subsystem.get() === 'none') return plainBackend(config)
       return msys2Backend(config)
-    case 'pwsh':
+    case 'pwsh': return pwshBackend()
     case 'wsl':
-      throw new Error(`bash-local: backend '${id}' is reserved and not implemented yet (see the project issues); set backend: 'plain' or 'msys2'`)
+      throw new Error(`bash-local: backend '${id}' is reserved and not implemented yet (see the project issues); set backend: 'plain', 'msys2', or 'pwsh'`)
     default:
-      throw new Error(`bash-local: unknown backend '${id}'; expected one of: plain, msys2 (pwsh/wsl are reserved)`)
+      throw new Error(`bash-local: unknown backend '${id}'; expected one of: plain, msys2, pwsh (wsl is reserved)`)
   }
 }
 
@@ -187,7 +238,9 @@ export function assertServiceableBackend(backend: BackendDescriptor): void {
 export function resolveExecutable(backend: BackendDescriptor): string {
   for (const candidate of backend.executable) {
     if (!candidate.includes('\\') && !candidate.includes('/')) return candidate
-    if (existsSync(candidate)) return candidate
+    // spawnableExists (lstat-based) also sees the Microsoft Store execution
+    // alias where existsSync's stat hits the target's ACL (#3).
+    if (spawnableExists(candidate)) return candidate
   }
   throw new Error(`bash-local: backend '${backend.id}' executable not found (tried: ${backend.executable.join(', ')})`)
 }

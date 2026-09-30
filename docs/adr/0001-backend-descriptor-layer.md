@@ -327,3 +327,57 @@ single-preset pins in T4 §3/§4 above.
    `vitest.e2e.config.ts`), honoring spec #1's testing decision that
    end-to-end acceptance stays out of the unit loop; the suite skips when
    no MSYS2 install is found.
+
+## #3 amendment (2026-09-30, issue #3 — D7 phase 1.5: pwsh descriptor landed)
+
+`pwsh` graduates from a reserved registry id to a first-class backend
+descriptor (peer of `msys2`), filling the D7-reserved placeholder with no
+destructive refactor. `'wsl'` stays reserved (issue #2, deferred).
+
+1. **Argv conventions, surveyed from the upstream `pwsh-local` executor**
+   (local harness checkout, tag `dsh-v0.2.0-rc.2` — `packages/shell/pwsh-local/src/index.ts`
+   and `resolve.ts`; the primary source the Brief names). One-shot mirrors it
+   verbatim: `-NoLogo -NoProfile -NonInteractive -Command` with the
+   `ENCODING_PREAMBLE` (UTF-8 output pinning) riding line 1 of the command
+   payload — Windows PowerShell 5.1 writes the OEM code page by default and
+   would garble non-ASCII; pwsh 7 is unaffected. The command text stays ONE
+   argv element (PowerShell parses it; no quoting layer). Interactive (PTY
+   projection): `['-l', '-noexit']` — the `--login -i` analog. **Recorded
+   caveat:** `-Login` requires pwsh ≥7.4, so an interactive terminal over
+   the Windows PowerShell 5.1 fallback fails at spawn rather than silently
+   dropping the flag (loud, not silent — consistent with this executor's
+   contract).
+2. **Deviations from upstream, each with a reason.** (a) Upstream
+   `resolvePwshPath` falls back to a bare `pwsh` resolved through PATH; this
+   executor REMOVES that fallback — absence fails loudly naming every probed
+   location (`Probed: …`), the same no-silent-fallback contract as `msys2`.
+   (b) The shared executor `ENV_OVERRIDES` keeps `TERM=dumb` (a POSIX
+   concept upstream pwsh drops); it is inert in PowerShell and keeping the
+   override set shared preserves the one-layering-order property (issue #5).
+   (c) Upstream `pwsh-local` has no interactive template at all; ours is
+   required by the PTY projection (`enginePath`/`engineArgs`).
+3. **Discovery.** VS Code terminal-profile probe pattern, PS7 preferred:
+   `%ProgramFiles%\PowerShell\7\pwsh.exe`, then every PATH entry's
+   `pwsh.exe` (covers the Microsoft Store install; `setx` quotes stripped),
+   then `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`. The
+   lstat-based `spawnableExists` predicate (surveyed from upstream
+   `resolve.ts`) also backs `resolveExecutable`, so the Store app execution
+   alias — where stat-based `existsSync` hits the target's ACL — resolves
+   (observed live on the dev host).
+4. **Environment & paths.** `env: {}`, `pathPrefix: []` (native Windows
+   PATH surface), identity path mapping both directions — the shell is
+   Windows-native; no `MSYSTEM`-like variables exist for this backend.
+5. **Unconfined posture (semantic, not inherited).** This executor NEVER
+   confines processes; a pwsh backend here is unconfined pwsh, unlike the
+   upstream confining `pwsh-sandbox` executor D8 displaced. The maintainer
+   ratified the non-confining posture in #10 (fix permission-presets over
+   the non-confining executor rather than restore the confining one).
+6. **Tests.** `tests/detect.spec.ts`: injected detection order matrix
+   (PS7 root > PATH > WinPS 5.1; no-PowerShell → undefined, never bare
+   name; probed-locations list pinned). `tests/descriptor.spec.ts`: public-
+   boundary pwsh matrix (one-shot output/exit codes, argv conventions +
+   live UTF-8 pin, env/pathPrefix/pathMapping assertions, enginePath/
+   engineArgs, loud absence), skipping gracefully when no PowerShell is
+   installed (same pattern as the MSYS-absent skips); `'wsl'` reserved-id
+   regression re-pinned, with `'pwsh'` asserted absent from the reserved/
+   unknown enumerations.
