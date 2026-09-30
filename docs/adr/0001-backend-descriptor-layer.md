@@ -211,3 +211,31 @@ here rather than left as silent drift:
 3. **uname AC fact.** Issue #5's "uname reports MSYS_NT" holds only under
    `MSYSTEM=MSYS`; under D1's UCRT64 injection a real MSYS2 reports the
    `MINGW64_NT` family (host-probed). Tests pin `_NT`-family + not-Linux.
+
+## T3 amendment (2026-09-30, issue #6)
+
+Recorded here rather than left as silent drift (same rule as the T2 amendment):
+
+1. **`msystem` config renamed to `subsystem`.** The issue's domain word wins
+   (`subsystem: 'none'` needed a home); values are injected `MSYSTEM` strings
+   (default `UCRT64`, D1) plus the special `'none'`.
+2. **`subsystem: 'none'` = the plain surface.** `resolveBackend` maps any
+   `msys2` selection with `subsystem: 'none'` to the plain descriptor
+   (`env {}`, no PATH prefix, identity mapping): Git Bash and Cygwin work
+   through the same surface with zero MSYS injection. Fact established by
+   host probing: Git for Windows bakes `MSYSTEM=MINGW64` into its own
+   runtime (unsettable), so "no injection" is pinned at the descriptor seam,
+   not by observing `$MSYSTEM` in-session.
+3. **Auto-detection (`src/detect.ts`), VS Code `detectAvailableWindowsProfiles`
+   pattern.** `msys2` without explicit `msysRoot`/`bashPath` probes
+   `C:\msys64` then `${HOMEDRIVE}\msys64` (the VS Code `bash (MSYS2)`
+   candidate, verbatim); a root qualifies only with `usr\bin\bash.exe`.
+   Explicit configuration ALWAYS wins, even when wrong (compilerPath
+   semantics) — a bogus explicit root fails its spawn rather than silently
+   falling back to a detected root. The win32 plain surface resolves bare
+   `bash` by PATH probe excluding the WSL `C:\Windows\System32\bash.exe`
+   stub (CONTEXT.md fact 6), then ordered candidates: Git Bash
+   (`Program Files\Git\bin|usr\bin`), Cygwin (`C:\cygwin64`, `C:\cygwin`),
+   MSYS2 (`usr\bin\bash.exe`). Detection failure is loud, naming the config
+   knob (`msysRoot`/`bashPath`) and every probed location; POSIX plain stays
+   byte-equivalent bare `bash`.

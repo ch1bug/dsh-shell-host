@@ -54,14 +54,14 @@ export interface Config {
   maxSpillBytes: Volatile<number>
   /** Grace period for kill escalation and inherited pipes; at most `MAX_TIMER_DELAY_MS`. */
   graceMs: Volatile<number>
-  /** Backend descriptor selection: `'plain'` (upstream bare-`bash` behavior, default), `'msys2'` (explicit config), or a reserved id that fails loudly (`'pwsh'`/`'wsl'`). */
+  /** Backend descriptor selection: `'plain'` (detected bash, no injection, default) or `'msys2'` (MSYS2 env + path surface); a reserved id (`'pwsh'`/`'wsl'`) fails loudly. */
   backend: Volatile<string | undefined>
-  /** MSYS2 install root (e.g. `C:\msys64`) for the `msys2` backend; alternatively point `bashPath` at its bash directly. */
+  /** MSYS2 install root (e.g. `C:\msys64`) for the `msys2` backend; auto-detected from common install locations when unset (explicit config always wins; detection failure is loud). */
   msysRoot: Volatile<string | undefined>
-  /** Explicit bash executable; for `msys2` the install root is derived from it, for `plain` it replaces the PATH-resolved bare `bash`. */
+  /** Explicit bash executable; for `msys2` the install root is derived from it, for `plain` it replaces the detected bash. */
   bashPath: Volatile<string | undefined>
-  /** MSYS2 subsystem selector injected as `MSYSTEM` (default `UCRT64`). */
-  msystem: Volatile<string | undefined>
+  /** Subsystem selector injected as `MSYSTEM` for `msys2` (default `UCRT64`); `'none'` = plain bash, no MSYS env injection (Git Bash/Cygwin surface). */
+  subsystem: Volatile<string | undefined>
 }
 
 /** Project a settled collect-mode reader into the final CollectedOutput shape. */
@@ -118,7 +118,7 @@ export class LocalBashExecutor extends ShellExecutor {
     backend: z.string().default('plain').volatile(),
     msysRoot: z.string().volatile(),
     bashPath: z.string().volatile(),
-    msystem: z.string().default('UCRT64').volatile(),
+    subsystem: z.string().default('UCRT64').volatile(),
   })
 
   constructor(ctx: Context, readonly config: Config) {

@@ -22,7 +22,7 @@ const alias = (name: string, p: string) => ({ find: new RegExp(`^${name}$`), rep
 // guarded on Windows; the ported POSIX suites stay excluded until a later
 // ticket serves them a POSIX lane.
 const specInclude = process.platform === 'win32'
-  ? ['tests/descriptor.spec.ts']
+  ? ['tests/descriptor.spec.ts', 'tests/detect.spec.ts']
   : ['tests/**/*.spec.ts']
 
 export default defineConfig({

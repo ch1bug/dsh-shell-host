@@ -4,14 +4,15 @@
  * templates, env injection (plain keys, caller-wins), and a PATH prefix
  * merged ahead of the caller PATH. Modeled on VS Code's terminal-profile
  * declaration (`ITerminalExecutable` ordered candidates, `IShellLaunchConfig`
- * argv templates, profile `env`). Phase 1 implements `msys2` (explicit
- * configuration only — no auto-detection, that is T3); `pwsh`/`wsl` are
+ * argv templates, profile `env`). `msys2` supports explicit configuration and
+ * VS Code-style auto-detection (T3); `pwsh`/`wsl` are
  * reserved registry entries that fail loudly when selected.
  * @module dsh-bash-msys/backends
  */
 
 import { existsSync } from 'node:fs'
 import { delimiter, dirname, join } from 'node:path'
+import { detectMsysRoot, detectPlainBash, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES } from './detect.ts'
 import type { Config } from './index.ts'
 
 /** Command-payload token inside an argv template (VS Code `{0}` analog). */
@@ -48,34 +49,66 @@ const identityMapping = {
   fromShell: async (path: string): Promise<string> => path,
 }
 
-/** The upstream-equivalent backend: bare `bash` + `['-c', '{command}']`, no injection. A configured `bashPath` replaces the PATH-resolved bare name. */
+/**
+ * The upstream-equivalent backend: bare `bash` + `['-c', '{command}']`, no
+ * injection. On POSIX this stays the byte-equivalent bare name (upstream
+ * contract); on win32 the bare name is detected instead — PATH probe with the
+ * WSL System32 stub excluded, then Git Bash/Cygwin/MSYS2 candidates — so the
+ * subsystem-`'none'` surface (Git Bash, Cygwin) works with zero config and a
+ * WSL bash can never be silently picked.
+ */
 function plainBackend(config: Config): BackendDescriptor {
-  return {
+  const base = {
     id: 'plain',
-    executable: [config.bashPath.get() ?? 'bash'],
     argv: { oneShot: ['-c', COMMAND_TOKEN] },
     env: {},
     pathPrefix: [],
     pathMapping: identityMapping,
+  } satisfies Omit<BackendDescriptor, 'executable'>
+  if (process.platform !== 'win32') {
+    // POSIX keeps the byte-equivalent bare name (upstream contract); nothing
+    // to detect there (detectPlainBash is win32-only by design).
+    return { ...base, executable: [config.bashPath.get() ?? 'bash'] }
   }
+  // win32: the bare name is detected instead — PATH probe with the WSL
+  // System32 stub excluded, then Git Bash/Cygwin/MSYS2 candidates — so the
+  // subsystem-`'none'` surface (Git Bash, Cygwin) works with zero config and
+  // a WSL bash can never be silently picked.
+  const detected = detectPlainBash()
+  if (detected === undefined) {
+    throw new Error(
+      `bash-local: no usable bash found for the plain backend; set bashPath explicitly. `
+      + `Probed PATH entries (excluding the WSL C:\\Windows\\System32 stub) and: ${[...PLAIN_BASH_CANDIDATES].join(', ')}`,
+    )
+  }
+  return { ...base, executable: [config.bashPath.get() ?? detected] }
 }
 
 /**
- * MSYS2 backend from explicit configuration. `msysRoot` points at the
- * install root (`C:\\msys64`); alternatively `bashPath` points at the bash
- * executable directly and the root is derived from it. `MSYSTEM` selects the
- * subsystem (default UCRT64, D1). `CHERE_INVOKING=1` keeps the working
- * directory across login shells (VS Code's own MSYS2 profile env).
+ * MSYS2 backend. `msysRoot` points at the install root (`C:\msys64`);
+ * alternatively `bashPath` points at the bash executable directly and the
+ * root is derived from it; with neither, the root is auto-detected (VS Code
+ * probe order) — detection failure is loud and names the `msysRoot` knob plus
+ * every probed location. `subsystem` selects the injected `MSYSTEM` (default
+ * UCRT64, D1); `'none'` never reaches this backend (plain surface, no
+ * injection). `CHERE_INVOKING=1` keeps the working directory across login
+ * shells (VS Code's own MSYS2 profile env).
  */
 function msys2Backend(config: Config): BackendDescriptor {
-  const msysRoot = config.msysRoot.get() ?? (config.bashPath.get() !== undefined
+  const explicitRoot = config.msysRoot.get() ?? (config.bashPath.get() !== undefined
     // `<root>\usr\bin\bash.exe` → strip usr\bin\bash.exe: exactly three levels.
     ? dirname(dirname(dirname(config.bashPath.get()!)))
     : undefined)
+  // Explicit configuration always wins over detection (VS Code compilerPath
+  // semantics); detection failure is loud, never a silent fallback.
+  const msysRoot = explicitRoot ?? detectMsysRoot()
   if (msysRoot === undefined) {
-    throw new Error("bash-local: backend 'msys2' requires an explicit msysRoot (or bashPath); no auto-detection before T3")
+    throw new Error(
+      `bash-local: backend 'msys2' could not resolve msysRoot; set msysRoot (or bashPath) explicitly. `
+      + `Probed: ${MSYS2_ROOT_CANDIDATES.map(root => join(root, 'usr', 'bin', 'bash.exe')).join(', ')}`,
+    )
   }
-  const msystem = config.msystem.get() ?? 'UCRT64'
+  const msystem = config.subsystem.get() ?? 'UCRT64'
   // MSYSTEM login shells prepend their subsystem bin; MSYS itself only adds /usr/bin.
   const subsystemBin = msystem === 'MSYS' ? [] : [join(msysRoot, msystem.toLowerCase(), 'bin')]
   const prefix = [...subsystemBin, join(msysRoot, 'usr', 'local', 'bin'), join(msysRoot, 'usr', 'bin'), join(msysRoot, 'bin')]
@@ -110,7 +143,12 @@ export function resolveBackend(config: Config): BackendDescriptor {
   const id = config.backend.get() ?? 'plain'
   switch (id) {
     case 'plain': return plainBackend(config)
-    case 'msys2': return msys2Backend(config)
+    case 'msys2':
+      // subsystem 'none' = plain bash, no MSYS env injection (issue #6): Git
+      // Bash and Cygwin ride the same descriptor surface with env {} and no
+      // PATH prefix.
+      if (config.subsystem.get() === 'none') return plainBackend(config)
+      return msys2Backend(config)
     case 'pwsh':
     case 'wsl':
       throw new Error(`bash-local: backend '${id}' is reserved and not implemented yet (see the project issues); set backend: 'plain' or 'msys2'`)

@@ -5,6 +5,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { LocalBashExecutor } from '../src/index.ts'
 import { resolveBackend } from '../src/backends.ts'
+import { PLAIN_BASH_CANDIDATES } from '../src/detect.ts'
 import type { ShellExecSpec, ShellExecution, ShellRunResult } from '@deepseek-ai/dsh-shell'
 
 /**
@@ -65,9 +66,42 @@ describe('msys2 backend (explicit msysRoot)', () => {
     const result = await run(bash, bash.resolve({ command: 'echo $MSYSTEM' }))
     expect(result.stdout.text.trim()).toBe('UCRT64')
 
-    const custom = await setup({ backend: 'msys2', msysRoot, msystem: 'CLANG64' })
+    const custom = await setup({ backend: 'msys2', msysRoot, subsystem: 'CLANG64' })
     const overridden = await run(custom, custom.resolve({ command: 'echo $MSYSTEM' }))
     expect(overridden.stdout.text.trim()).toBe('CLANG64')
+  })
+
+  // Per-subsystem family matrix: each installed subsystem dir gets a live
+  // test; missing ones skip with the reason in the test name (issue #6 AC).
+  for (const subsystem of ['UCRT64', 'MINGW64', 'CLANG64', 'MSYS']) {
+    const installed = existsSync(join(msysRoot, subsystem.toLowerCase(), 'bin'))
+    it.skipIf(!hasMsys2 || !installed)(`subsystem ${subsystem} produces its MSYSTEM and PATH prefix${installed ? '' : ' (skipped: not installed on this host)'}`, async () => {
+      const bash = await setup({ backend: 'msys2', msysRoot, subsystem })
+      const result = await run(bash, bash.resolve({ command: 'echo $MSYSTEM; echo $PATH' }))
+      const [msystem, path] = result.stdout.text.trim().split('\n')
+      expect(msystem).toBe(subsystem)
+      if (subsystem !== 'MSYS') {
+        // Compiler subsystems prepend their own bin; MSYS login shells only add /usr/bin.
+        expect(path.toLowerCase()).toMatch(new RegExp(`^/${subsystem.toLowerCase()}/bin:`))
+      }
+    })
+  }
+
+  it.skipIf(!existsSync(PLAIN_BASH_CANDIDATES[0]))('subsystem none + Git Bash bashPath runs plain POSIX bash with no MSYS injection', async () => {
+    const gitBash = PLAIN_BASH_CANDIDATES[0]
+    const bash = await setup({ backend: 'msys2', subsystem: 'none', bashPath: gitBash })
+    // "No MSYS env injection" is pinned at the descriptor seam: subsystem
+    // 'none' resolves to the plain descriptor (env {}, no PATH prefix). A
+    // live $MSYSTEM assertion is impossible — Git for Windows bakes
+    // MSYSTEM=MINGW64 into its own runtime (host-probed, unsettable).
+    const backend = resolveBackend(bash.config)
+    expect(backend.id).toBe('plain')
+    expect(backend.env).toEqual({})
+    expect(backend.pathPrefix).toEqual([])
+    const result = await run(bash, bash.resolve({ command: 'uname -s' }))
+    expect(result.exitCode).toBe(0)
+    // Git Bash's own kernel string — proof we are in its bash, not MSYS2's.
+    expect(result.stdout.text.trim()).toMatch(/_NT/)
   })
 
   it.skipIf(!hasMsys2)('caller env wins over backend env for plain variables', async () => {
@@ -119,12 +153,48 @@ describe('msys2 backend (explicit msysRoot)', () => {
   })
 })
 
-describe('backend selection validation (fails loudly at the public boundary)', () => {
-  it('msys2 without msysRoot or bashPath names the missing config', async () => {
+describe('T3: detection + zero-config (public boundary)', () => {
+  it.skipIf(!hasMsys2)('empty msys2 config auto-detects the install root and works', async () => {
     const bash = await setup({ backend: 'msys2' })
-    expect(() => bash.resolve({ command: 'true' })).toThrow(/msysRoot/)
+    const result = await run(bash, bash.resolve({ command: 'uname -s; echo $MSYSTEM' }))
+    expect(result.exitCode).toBe(0)
+    const [kernel, msystem] = result.stdout.text.trim().split('\n')
+    expect(kernel).toMatch(/_NT/)
+    expect(msystem).toBe('UCRT64')
   })
 
+  it.skipIf(!hasMsys2)('empty config (default plain backend) detects a POSIX bash and runs it', async () => {
+    const bash = await setup()
+    const result = await run(bash, bash.resolve({ command: 'uname -s' }))
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.text.trim()).not.toBe('Linux')
+  })
+
+  it.skipIf(!hasMsys2)('explicit msysRoot always overrides detection (bogus explicit root is honored, not replaced)', async () => {
+    const bash = await setup({ backend: 'msys2', msysRoot: 'D:\\definitely-not-msys2' })
+    // VS Code compilerPath semantics: explicit wins even when wrong — the
+    // spawn fails naming the explicit candidate instead of silently
+    // falling back to the detected C:\msys64 (resolveExecutable throws
+    // synchronously out of execute()).
+    await expect(bash.execute(bash.resolve({ command: 'true' })))
+      .rejects.toThrow(/definitely-not-msys2/)
+  })
+
+  it('unresolvable detection fails loudly naming the config item and probed locations', async () => {
+    const detected = existsSync(join('C:\\msys64', 'usr', 'bin', 'bash.exe'))
+      || existsSync(join(process.env.HOMEDRIVE ?? 'C:', 'msys64', 'usr', 'bin', 'bash.exe'))
+    const bash = await setup({ backend: 'msys2' })
+    if (detected) {
+      // Host has an install; the loud path is covered by detect.spec's
+      // injected tests plus this assertion that a detected host succeeds.
+      expect(bash.resolve({ command: 'true' })).toBeTruthy()
+      return
+    }
+    expect(() => bash.resolve({ command: 'true' })).toThrow(/msysRoot.*Probed:/s)
+  })
+})
+
+describe('backend selection validation (fails loudly at the public boundary)', () => {
   it('selecting a reserved backend (pwsh/wsl) fails with a config-pointing error', async () => {
     for (const backend of ['pwsh', 'wsl']) {
       const bash = await setup({ backend })
