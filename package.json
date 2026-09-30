@@ -7,5 +7,40 @@
   "license": "MIT",
   "engines": {
     "node": ">=24"
+  },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "scripts": {
+    "build": "tsc -b ../deepseek-harness/packages/shell/shell ../deepseek-harness/packages/subprocess/subprocess ../deepseek-harness/packages/util/timeout ../deepseek-harness/vendor/cordis ../deepseek-harness/vendor/schemastery && tsc -p tsconfig.build.json && tsdown",
+    "_build-note": "the @deepseek-ai closure is enumerated in THREE places that must move together: this tsc -b list (declaration emit), pnpm-workspace.yaml overrides (installer), vitest.config.ts resolve.alias (test runtime)",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-shell": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-timeout": "0.2.0-rc.2",
+    "@deepseek-ai/cordis": "~4.0.4"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.18.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
   }
 }

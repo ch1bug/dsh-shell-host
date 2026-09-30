@@ -1,0 +1,15 @@
+# pnpm 11 config home for this repo. @deepseek-ai packages are NEVER fetched
+# from the npm registry (human decision 2026-09-30: resolve them from the
+# local upstream source checkout instead). Every specifier pnpm could resolve
+# in that scope is overridden to a link: into the monorepo checkout pinned at
+# tag dsh-v0.2.0-rc.2. Nothing imports through node_modules — tsconfig paths
+# (typecheck/vitest) resolve @deepseek-ai/* to upstream SOURCE — so the link
+# targets being unbuilt is irrelevant; the overrides exist purely so pnpm
+# never touches the registry for the @deepseek-ai scope.
+autoInstallPeers: false
+overrides:
+  '@deepseek-ai/schemastery': link:../deepseek-harness/vendor/schemastery
+  '@deepseek-ai/cordis': link:../deepseek-harness/vendor/cordis
+  '@deepseek-ai/dsh-shell': link:../deepseek-harness/packages/shell/shell
+  '@deepseek-ai/dsh-subprocess': link:../deepseek-harness/packages/subprocess/subprocess
+  '@deepseek-ai/dsh-timeout': link:../deepseek-harness/packages/util/timeout

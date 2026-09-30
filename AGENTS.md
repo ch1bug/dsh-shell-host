@@ -25,4 +25,4 @@ Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See
 ## Project context
 
 Read `CONTEXT.md` first — it carries the verified upstream facts and the
-grill-locked decisions (D1–D6) this repo is built on.
+grill-locked decisions (D1–D7) this repo is built on.

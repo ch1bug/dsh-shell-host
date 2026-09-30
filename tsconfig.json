@@ -1,0 +1,36 @@
+{
+  // Resolution + typecheck facade for src and tests. Extends the upstream
+  // monorepo's facade (local checkout at ../deepseek-harness, pinned to tag
+  // dsh-v0.2.0-rc.2): every @deepseek-ai/* specifier resolves to upstream
+  // SOURCE via its maintained paths map — the same table upstream's own
+  // vitest runs on (vite-tsconfig-paths treats the no-include facade as
+  // match-all). @deepseek-ai packages are never installed from npm.
+  "extends": "../deepseek-harness/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "incremental": false,
+    // Upstream compiles each package behind its own tsconfig boundary: the
+    // vendor/ packages (cordis, cosmokit, loader, schemastery) relax these
+    // flags in their own tsconfigs, while packages/* keep base strictness.
+    // This repo ingests upstream SOURCE directly (no per-package
+    // boundaries), so the typecheck lane takes the union of the vendor
+    // relaxations — exactly the flags upstream vendors already declare (the
+    // union is cordis's set; the others are subsets). Our own src/tests are
+    // authored to full base strictness regardless.
+    "noImplicitAny": false,
+    "noImplicitThis": false,
+    "strictFunctionTypes": false,
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+    "noImplicitOverride": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": [
+    "src",
+    "tests",
+    "vitest.config.ts",
+    "tsdown.config.ts"
+  ]
+}
