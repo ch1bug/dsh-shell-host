@@ -24,7 +24,7 @@ const BASE_PRESETS = {
   'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' },
 } as const
 
-/** Compose exactly like the win32 host plane: non-confining executor + policy home. */
+/** Compose exactly like the host plane: non-confining executor + policy home. */
 async function mounted(options: {
   policyMode?: SandboxMode
   approvalDefault?: ApprovalPolicy
@@ -76,8 +76,9 @@ describe('#10: fork composes over a non-confining executor', () => {
   it('never references the shell seam: no confinement capability is claimed anywhere', async () => {
     await mounted()
     // AC: "The executor still reports no sandboxMode; no code path claims
-    // process confinement." Pinned at the source seam: the fork does not
-    // import or read the shell capability at all.
+    // process confinement." Pinned at the source seam: the fork neither
+    // imports nor reads the shell capability — executor capabilities are
+    // never part of its semantics.
     const source = readFileSync(new URL('../src/permission-presets.ts', import.meta.url), 'utf8')
     expect(source).not.toMatch(/dsh-shell/)
     expect(source).not.toMatch(/ctx\.shell/)
@@ -159,28 +160,40 @@ describe('#10: preset switching end to end (the base table)', () => {
   })
 })
 
-describe('#10: the bundle patch (cordis.patch.yml) — disable + insert with name guards', () => {
+describe('#10: the bundle patch (cordis.patch.yml) — the fork owns the permission entry id', () => {
   const jsTag = { tag: 'tag:yaml.org,2002:js', resolve: (value: string): string => value }
   const doc = YAML.parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'), { customTags: [jsTag] }) as Array<Record<string, unknown>>
 
-  it('disables the base permission row on win32 behind its name guard', () => {
-    const disable = doc.find(op => op.id === 'permission' && !Array.isArray(op.insert))
-    expect(disable?.name).toBe('@deepseek-ai/dsh-permission-presets')
-    expect(String(disable?.disabled)).toContain("process.platform === 'win32'")
-  })
-
-  it('inserts the fork row from this package, dormant on POSIX', () => {
+  // Human decision 2026-09-30 (option A): the settings PermissionRow binds the
+  // LOADER ENTRY ID 'permission' (settings namespace = entry id; the client row
+  // hard-codes ns 'permission'), so the fork row must OWN that id. Loader
+  // semantics make a same-id later row replace the earlier one (group.update
+  // newMap last-wins + Entry.update create:true), so the appended insert IS the
+  // replacement mechanism: the upstream module never composes in this
+  // deployment, on any platform. Equivalence on a confining executor is exact
+  // (upstream's own sandboxMode getter reads ctx.sandboxPolicy.defaultMode).
+  it('the fork insert owns the permission entry id (settings namespace contract)', () => {
     const inserts = doc.flatMap(op => Array.isArray(op.insert) ? op.insert as Array<Record<string, unknown>> : [])
     const fork = inserts.find(row => row.name === 'dsh-bash-msys/permission-presets')
     expect(fork).toBeDefined()
-    expect(String(fork?.disabled)).toContain("process.platform !== 'win32'")
+    expect(fork?.id).toBe('permission')
+    // No platform guard: the fork composes on both platforms (behaviorally
+    // equivalent over confining executors), so the row carries no disabled
+    // expression at all.
+    expect(fork?.disabled).toBeUndefined()
     // The insert carries the base bundle's table verbatim (same preset surface).
     expect(fork?.config).toMatchObject({ presets: BASE_PRESETS })
   })
 
-  it('keeps the executor insert unchanged (one id bash-msys, one fork row)', () => {
+  it('keeps the executor insert unchanged (one id bash-msys)', () => {
     const inserts = doc.flatMap(op => Array.isArray(op.insert) ? op.insert as Array<Record<string, unknown>> : [])
     expect(inserts.filter(row => row.id === 'bash-msys')).toHaveLength(1)
-    expect(inserts.filter(row => row.id === 'permission-msys')).toHaveLength(1)
+  })
+
+  it('no override op targets the permission id (replacement is same-id insert, not disable)', () => {
+    // The old disable+insert-new-id shape is gone by decision; a stray
+    // override row here would fight the same-id replacement semantics.
+    const overrides = doc.filter(op => !Array.isArray(op.insert) && op.id === 'permission')
+    expect(overrides).toHaveLength(0)
   })
 })

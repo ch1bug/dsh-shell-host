@@ -59,6 +59,26 @@ Ship a **host-side fork** of the plugin inside this package
    Acceptance tests pin the identity, the write-through, and the patch shape
    (`tests/permission-presets.spec.ts`).
 
+## Option-A amendment (2026-09-30, human decision — supersedes the mount shape in Decision §3)
+
+- **Option-A amendment (2026-09-30, human decision on the settings-row
+  blocker):** the stock settings PermissionRow binds the **loader entry id**
+  `'permission'` (settings namespace = `entry.options.id`; the client row
+  hard-codes ns `'permission'`), not the service identity — so the Brief's
+  original "disable base row + insert under a new id" shape cannot revive the
+  settings row, on any mechanism (patch ops cannot rewrite a row's `name`,
+  `!!js` does not evaluate `name`, and a same-id insert replaces the earlier
+  row's options entirely). Decision: the fork insert row **owns the id
+  `permission`** and composes on BOTH platforms; the upstream module never
+  composes in this deployment. This supersedes the Brief's "fork dormant on
+  POSIX" acceptance line — behaviorally lossless because upstream's confining
+  executors derive `sandboxMode` from `ctx.sandboxPolicy.defaultMode`
+  themselves (bash-sandbox/pwsh-sandbox src), making the fork's fallback
+  value-identical over confining executors. The replacement mechanism is
+  loader same-id last-wins (`group.update` newMap + `Entry.update
+  create:true`); the patch-shape tests pin the id, the absent platform guard,
+  and the verbatim base table.
+
 ## Consequences
 
 - The three permission UI surfaces revive on win32 with the stock client —

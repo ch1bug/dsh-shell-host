@@ -38,7 +38,7 @@
         subsystem: UCRT64
 
 # #10: D8 副作用修复 —— 上游 permission-presets 组装硬检查
-# ctx.shell.sandboxMode === undefined 即 throw(非 confinement 执行器 = 
+# ctx.shell.sandboxMode === undefined 即 throw(非 confinement 执行器 =
 # misconfiguration),宿主服务起不来 → client 行 inject remote.permissionPresets
 # 落空 → /permission 命令、设置页 PermissionRow、输入框权限选择器三面全灭。
 # 路径已拍板(human 2026-09-30):包内 host-only fork,不提上游。
@@ -46,15 +46,18 @@
 # 同 Typert 命名空间 + 同命令 definitionId(@deepseek-ai/dsh-permission-presets),
 # 原版 client UI 零改动复活。fork 的 sandbox 旋钮回退读 ctx.sandboxPolicy
 # (文件沙箱政策,与执行器无关)——不读 ctx.shell,不声称进程 confinement。
-# 挂载形状沿用既有纪律:禁用基座行(win32 + name: 守卫)+ insert 本包 fork 行;
-# POSIX 上 fork 行休眠,基座行照常组装(confining base executor)。
-- id: permission
-  name: '@deepseek-ai/dsh-permission-presets'
-  disabled: !!js process.platform === 'win32'
+#
+# 挂载形状(human 2026-09-30 方案 A 拍板):设置页 PermissionRow 绑定的是
+# loader 行 id 'permission'(settings namespace = entry id,客户端硬编码),
+# 因此 fork 行必须接管该 id,不能用新 id + disable+insert。loader 语义:
+# 同 group 内同 id 的行,后行 options 覆盖前行(group.update newMap 后行
+# 胜,Entry.update create:true 整体替换)——本 insert 追加在基座行之后,
+# 即为替换机制:上游模块在本部署永不组装。POSIX 等价性已验证:上游
+# confining 执行器的 sandboxMode 本就读 ctx.sandboxPolicy.defaultMode
+# (bash-sandbox src),fork 回退值与之逐值等价,双平台行为无损。
 - insert:
-    - id: permission-msys
+    - id: permission
       name: dsh-bash-msys/permission-presets
-      disabled: !!js process.platform !== 'win32'
       config:
         presets:
           read-only:

@@ -46,8 +46,10 @@ DSH bundle:**Windows 平台的 MSYS2 环境层** —— 在宿主平面完全替
   政策),不读 `ctx.shell` —— 非 confinement 执行器不是 misconfiguration,
   无任何代码路径声称进程 confinement;切换预设仍写穿双旋钮
   (`sandbox/mode` + `approval/policy`)
-- **挂载**:win32 禁用基座 `permission` 行(name 守卫)+ insert `permission-msys`
-  行(带基座同款 3-preset 表);POSIX 双行休眠,上游行照常组装
+- **挂载(human 2026-09-30 方案 A 修订)**:fork insert 行**接管行 id `permission`**(settings
+  namespace = 行 id,设置页 PermissionRow 硬编码读 ns `permission`)——loader 同 id 后行
+  覆盖前行即替换机制,上游模块在本部署永不组装(双平台);POSIX 等价性 = 上游
+  执行器 sandboxMode 本就读 sandboxPolicy.defaultMode,fork 回退逐值等价
 - **决策记录**:`docs/adr/0002-permission-presets-fork.md`(含 zod@4.4.3 钉版、
   dsh-settings 走 built 声明两条实现期事实)
 
