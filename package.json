@@ -1,8 +1,8 @@
 {
   "name": "dsh-bash-msys",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
-  "description": "dsh-bash-msys: a Windows MSYS2 (UCRT64) bash executor for the DSH shell seam, forked from @deepseek-ai/dsh-bash-local with a configurable bash path and MSYS2 environment injection.",
+  "description": "dsh-bash-msys: the Windows MSYS2 platform layer for the DSH shell seam — a host-plane replacement of the built-in platform shell executors (VS Code terminal-profile modeled), forked from @deepseek-ai/dsh-bash-local with an identical external interface, plus a Plugins-page settings card.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -16,6 +16,15 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ],
+      "platform": "web"
     }
   },
   "engines": {
@@ -28,18 +37,23 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
+    "lib/client.js",
     "lib/types/**/*.d.ts"
   ],
   "scripts": {
     "build": "tsc -b ../deepseek-harness/packages/shell/shell ../deepseek-harness/packages/subprocess/subprocess ../deepseek-harness/packages/util/timeout ../deepseek-harness/vendor/cordis ../deepseek-harness/vendor/schemastery && tsc -p tsconfig.build.json && tsdown",
     "_build-note": "the @deepseek-ai closure is enumerated in THREE places that must move together: this tsc -b list (declaration emit), pnpm-workspace.yaml overrides (installer), vitest.config.ts resolve.alias (test runtime)",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",

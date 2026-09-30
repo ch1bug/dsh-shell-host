@@ -1,202 +1,53 @@
-# dsh-bash-msys bundle patch: one additive agent preset (`Native MSYS2 Bash`).
+# dsh-bash-msys bundle patch: Windows 宿主级 shell 替换(MSYS2 平台层)。
 #
-# Inserted whole over the profile root (the package's `dsh.bundle.patch`
-# field), so it contributes rows and never reconfigures or disables a row
-# another bundle owns — the same discipline as the dsh-bash-native patch:
-# the host plane and every other preset (including the ones using `pwsh`)
-# stay untouched, and `agent-preset-registry` is never written here.
+# 建模立场:MSYS2 是独立于 bash 的环境层——安装根(msysRoot)、子系统(MSYSTEM)、
+# PATH 表面、pacman/cygpath 工具链是一等公民;bash 只是该环境中可配置的 shell
+# 可执行文件。执行器内部按 VS Code 终端 profile 建模(ordered candidates、
+# argv 模板、profile env、CHERE_INVOKING、addEnvMixinPathPrefix)。
 #
-# The row set mirrors the dsh-bash-native full preset demonstration (spec D5):
-# persona + agent-instructions, one `isolate: { shell, terminals }` group
-# carrying this bundle's executor and the terminal pair, the bash tool (with
-# the persistent alternative present but disabled), file/search/job/skill/goal
-# tools, and the plan/compaction/delegation groups.
+# 替换语义:shell seam(`ctx.shell`)每个 composition 只允许恰好一个 provider,
+# 且「装载即生效于所有 preset」——preset 树里的 `tool-bash` 行解析宿主平面的
+# ctx.shell,不复制执行器。因此本 patch 在宿主平面完全取代 base bundle 的平台
+# shell 执行器:每个 preset(Matt 工作流、bash 演示、未来任何 bash-dialect
+# preset)的 bash 工具、enginePath/engineArgs 终端推导、configForms namespace
+# 都自动落到本执行器上;对外接口(bash 工具 schema、jobs、spill、退出标记)
+# 与 @deepseek-ai/dsh-bash-local 逐字段一致 —— 本包就是它的 fork。
+#
+# base 的 win32 挂载:bash-sandbox disabled / pwsh-sandbox enabled。这里:
+#   1) 禁用 pwsh-sandbox —— Windows 平台 shell 角色由 MSYS2 承担;
+#   2) 重申 bash-sandbox 的 win32 禁用(防 base 语义翻转,POSIX 不受影响);
+#   3) 插入本执行器(id: bash-msys)。POSIX 上所有行休眠(平台守卫)。
+#   所有 override 行带 name: 守卫(loader 校验语义:name 不匹配 → 该 op
+#   被跳过):基座若改名,这里是响亮失败,而不是把配置写进顶替该 id 的无关行。
+#
+# 已知取舍(shipped preset 兼容性):web-app 的 standard/minimal preset 在
+# win32 上启用 `pwsh` 工具,本替换后其命令文本会交给 bash(无方言翻译,
+# 上游契约即如此)。本部署请使用 bash-dialect preset(Matt 工作流即默认)。
+- id: pwsh-sandbox
+  name: '@deepseek-ai/dsh-pwsh-sandbox'
+  disabled: !!js process.platform === 'win32'
+- id: bash-sandbox
+  name: '@deepseek-ai/dsh-bash-sandbox'
+  disabled: !!js process.platform === 'win32'
 - insert:
-    - id: preset-bash-msys
-      name: '@deepseek-ai/dsh-agent-preset'
+    - id: bash-msys
+      name: dsh-bash-msys
+      disabled: !!js process.platform !== 'win32'
       config:
-        id: bash-msys
-        name: Native MSYS2 Bash
-        description: A real MSYS2 (UCRT64) bash on Windows — pacman, cygpath, /c/ paths and the full /usr/bin toolchain for both the model's bash tool and the session terminal panel, with background jobs and spill-backed output.
-        order: 7
-        plugins:
-          - id: persona
-            name: '@deepseek-ai/dsh-persona'
-            config:
-              prefix: |-
-                You are a coding agent powered by the {{model}} model.
-              suffix: |-
-                Your working directory is {{cwd}}. The bash tool and the terminal panel run a real MSYS2 bash (UCRT64): POSIX paths (/c/...), pacman and cygpath are available; use bash syntax, not PowerShell.
-          - id: agent-instructions
-            name: '@deepseek-ai/dsh-agent-instructions'
-            config:
-              maxBytes: 65536
-          # The shell group isolates `shell` and `terminals`, so this preset's
-          # executor is the realm's executor: the host plane keeps its own
-          # provider for every other preset.
-          - id: bash-msys-shell
-            name: cordis:group
-            group: true
-            isolate:
-              shell: true
-              terminals: true
-            config:
-              - id: bash-msys
-                name: dsh-bash-msys
-                config:
-                  backend: msys2
-              - id: bash-msys-terminal
-                name: '@deepseek-ai/dsh-terminal'
-              # `inject: [shell]` delays this row until the realm's executor
-              # exists, so the expressions below can read the resolved engine.
-              # `--login -i` (engineArgs) makes /etc/profile build the MSYS
-              # environment interactively; CHERE_INVOKING (executor env seam)
-              # keeps the working directory across it.
-              # Loud, not silent: no `?? ''`/`?? []` fallback — an unresolvable
-              # shell realm fails the row instead of letting dsh-terminal-bash
-              # quietly start its own default shell (ADR-0001 T4 amendment §2).
-              - id: bash-msys-terminal-pty
-                name: '@deepseek-ai/dsh-terminal-bash'
-                inject: [shell]
-                config:
-                  backendType: shell
-                  shellDialect: bash
-                  shellPath: !!js (() => { const p = ctx.get('shell')?.enginePath; if (!p) throw new Error('bash-msys resolved no enginePath; the PTY row cannot start'); return p; })()
-                  shellArgs: !!js (() => { const a = ctx.get('shell')?.engineArgs; if (!a) throw new Error('bash-msys resolved no engineArgs; the PTY row cannot start'); return a; })()
-                  timeoutMs: 300000
-              - id: tool-bash
-                name: '@deepseek-ai/dsh-tool-bash'
-              # Stateful alternative to `tool-bash`: both register the tool
-              # name `bash`, so exactly one of the two may be enabled.
-              - id: bash-msys-persistent
-                name: '@deepseek-ai/dsh-tool-bash-persistent'
-                disabled: true
-                config:
-                  timeoutMs: 300000
-                  description: |-
-                    Run commands in a persistent bash shell
-                    * State is persistent across command calls and discussions with the user.
-                    * This is a bash (POSIX) shell on Windows, not PowerShell; use bash syntax and POSIX paths.
-                    * Please avoid commands that may produce a very large amount of output.
-                    * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
-          - id: tool-fs
-            name: '@deepseek-ai/dsh-tool-fs'
-          - id: tool-fs-search
-            name: '@deepseek-ai/dsh-tool-fs-search'
-            config:
-              sampleOverCapGlobResults: false
-          - id: tool-jobs
-            name: '@deepseek-ai/dsh-tool-jobs'
-          - id: skill-filesystem
-            name: '@deepseek-ai/dsh-skill-filesystem'
-          - id: tool-skill
-            name: '@deepseek-ai/dsh-tool-skill'
-          - id: command-goal
-            name: '@deepseek-ai/dsh-command-goal'
-          - id: tool-goal
-            name: '@deepseek-ai/dsh-tool-goal'
-          - id: planning
-            name: cordis:group
-            group: true
-            isolate:
-              planMode: true
-            config:
-              - id: plan-mode
-                name: '@deepseek-ai/dsh-plan-mode'
-                config:
-                  section: |
-                    You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+        backend: msys2
+        subsystem: UCRT64
 
-                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
-
-                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
-
-                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
-
-                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
-
-                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
-          - id: compaction
-            name: cordis:group
-            group: true
-            isolate:
-              compaction: true
-              toolResultPruner: true
-            config:
-              - id: compaction-basic
-                name: '@deepseek-ai/dsh-compaction-basic'
-              - id: command-compact
-                name: '@deepseek-ai/dsh-command-compact'
-              - id: tool-result-pruner
-                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
-                config:
-                  thresholdChars: 8192
-                  headChars: 4096
-                  tailChars: 1024
-          - id: delegation
-            name: cordis:group
-            group: true
-            isolate:
-              workflowEngine: true
-            config:
-              - id: tool-subagent-control
-                name: '@deepseek-ai/dsh-tool-subagent-control'
-              - id: tool-subagent-list-agents
-                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
-              - id: tool-subagent
-                name: '@deepseek-ai/dsh-tool-subagent'
-                config:
-                  provider: spawn
-                  toolName: subagent
-                  modelSelectionSettings: true
-                  backgroundMode: continuable
-              - id: tool-subagent-fork
-                name: '@deepseek-ai/dsh-tool-subagent'
-                config:
-                  provider: fork
-                  toolName: subagent_fork
-                  backgroundMode: continuable
-              - id: tool-subagent-codex
-                name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
-                config:
-                  provider: codex
-                  toolName: subagent_codex
-                  backgroundMode: one-shot
-                  maxDepth: provider-managed
-              - id: tool-subagent-claude-code
-                name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
-                config:
-                  provider: claude-code
-                  toolName: subagent_claude_code
-                  backgroundMode: one-shot
-                  maxDepth: provider-managed
-              - id: workflow-ptc
-                name: '@deepseek-ai/dsh-workflow-ptc'
-                config:
-                  provider: spawn
-              - id: tool-workflow
-                name: '@deepseek-ai/dsh-tool-workflow'
-              - id: tool-ralph
-                name: '@deepseek-ai/dsh-tool-ralph'
-                disabled: true
-                config:
-                  subagentProvider: spawn
-                  maxRounds: 64
-          - id: tool-ask-user
-            name: '@deepseek-ai/dsh-tool-ask-user'
-          - id: tool-todo
-            name: '@deepseek-ai/dsh-tool-todo'
-            config:
-              allowParallelInProgress: true
-          - id: tool-web
-            name: '@deepseek-ai/dsh-tool-web'
-            config:
-              fetch: true
-              searchTimeoutMs: 60000
-          - id: present
-            name: '@deepseek-ai/dsh-tool-present'
-          - id: tool-plugin-manager
-            name: '@deepseek-ai/dsh-plugin-manager/tools'
-            disabled: true
+# 用户侧边栏终端(api-terminal-controller)是宿主级 user terminal,与 preset
+# 无关:发现走宿主 PATH。本机 Windows PATH 不含 MSYS2,裸 `bash` 只会命中
+# C:\Windows\System32\bash.exe(WSL 启动器 stub)。这里把 MSYS2 bash 显式设为
+# 默认 shell(`--login -i`,VS Code `bash (MSYS2)` profile 同款,登录脚本在
+# 纯 MSYS 子系统下构建环境),并从候选中摘掉裸 `bash` 防误选 stub。
+# 行内 !!js 探测安装位置:未安装时不产出 profile(schema 接受 undefined),
+# 候选表保持上游默认 —— 与执行器 detect.ts 同一候选顺序。
+- id: terminal-controller
+  name: '@deepseek-ai/dsh-api-terminal-controller'
+  config:
+    shell: !!js >-
+      (() => { const fs = process.getBuiltinModule('node:fs'); const path = ['C:/msys64/usr/bin/bash.exe', `${process.env.HOMEDRIVE ?? 'C:'}/msys64/usr/bin/bash.exe`].find(p => fs.existsSync(p)); return path === undefined ? undefined : { path, name: 'MSYS2 Bash', args: ['--login', '-i'] }; })()
+    shellCandidates: !!js >-
+      (() => { const fs = process.getBuiltinModule('node:fs'); const msys = ['C:/msys64/usr/bin/bash.exe', `${process.env.HOMEDRIVE ?? 'C:'}/msys64/usr/bin/bash.exe`].some(p => fs.existsSync(p)); return ['zsh', 'bash', 'fish', 'pwsh', 'powershell', 'cmd'].filter(c => c !== 'bash' || !msys); })()

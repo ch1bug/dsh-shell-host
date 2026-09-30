@@ -10,6 +10,11 @@
     "noEmit": true,
     "composite": false,
     "incremental": false,
+    // The browser half (src/client) is bundled by tsdown, whose oxc transform
+    // reads these two options for the TSX files; they are inert for the host
+    // facade's own sources (no JSX there).
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
     // Upstream compiles each package behind its own tsconfig boundary: the
     // vendor/ packages (cordis, cosmokit, loader, schemastery) relax these
     // flags in their own tsconfigs, while packages/* keep base strictness.
@@ -32,5 +37,10 @@
     "tests",
     "vitest.config.ts",
     "tsdown.config.ts"
+  ],
+  // The browser half has its own facade (tsconfig.client.json) over built
+  // upstream declarations — a source-level program cannot close there.
+  "exclude": [
+    "src/client"
   ]
 }

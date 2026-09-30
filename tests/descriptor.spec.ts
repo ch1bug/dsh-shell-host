@@ -227,44 +227,48 @@ describe('T4: interactive argv + PTY projection (public boundary)', () => {
   })
 })
 
-describe('T4: the bundle patch (cordis.patch.yml) — structure + loud PTY wiring', () => {
+describe('T4: the bundle patch (cordis.patch.yml) — host shell replacement + loud terminal wiring', () => {
   // The patch is data the desktop profile composes; until the #8 live E2E,
-  // this is the only in-repo drift alarm for the preset's wiring (the
-  // dsh-bash-native patch ships the same idea as test-preset-parity.mjs).
-  const doc = YAML.parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
+  // this is the only in-repo drift alarm for the replacement wiring.
+  // The `!!js` guards/config stay expressions: resolve them to their raw
+  // source text so the assertions can pin the platform guards verbatim.
+  const jsTag = { tag: 'tag:yaml.org,2002:js', resolve: (value: string): string => value }
+  const doc = YAML.parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'), { customTags: [jsTag] }) as Array<Record<string, unknown>>
 
-  it('inserts exactly one additive preset row: bash-msys, mirroring the demonstrated row set', () => {
-    // A bundle patch is a sequence of operations; this one is insert-only.
-    expect(doc).toEqual([{ insert: [expect.objectContaining({ name: '@deepseek-ai/dsh-agent-preset' })] }])
-    const preset = doc[0].insert[0].config
-    expect(preset.id).toBe('bash-msys')
-    expect(preset.name).toBe('Native MSYS2 Bash')
-    const ids = preset.plugins.map((row: { id: string }) => row.id)
-    // D5 mirror of the dsh-bash-native demonstration: bash tool, file/search/
-    // job/skill/goal tools, terminal pair inside the isolated shell group.
-    for (const required of ['persona', 'bash-msys-shell', 'tool-fs', 'tool-fs-search', 'tool-jobs', 'skill-filesystem', 'tool-skill', 'command-goal', 'tool-goal']) {
-      expect(ids).toContain(required)
-    }
-    // Never reconfigures the host: no registry row in a bundle patch.
-    expect(ids).not.toContain('agent-preset-registry')
+  it('replaces the platform shell executors on the host plane (win32 guards; exactly one insert)', () => {
+    // platform executors disabled with their guards — pwsh yields the Windows
+    // shell role, bash-sandbox stays off (re-stated so a base flip cannot
+    // sneak the WSL stub back), and neither row is touched on POSIX.
+    const pwsh = doc.find((op) => op.id === 'pwsh-sandbox')
+    expect(pwsh?.name).toBe('@deepseek-ai/dsh-pwsh-sandbox')
+    expect(String(pwsh?.disabled)).toContain("process.platform === 'win32'")
+    const bashSandbox = doc.find((op) => op.id === 'bash-sandbox')
+    expect(bashSandbox?.name).toBe('@deepseek-ai/dsh-bash-sandbox')
+    expect(String(bashSandbox?.disabled)).toContain("process.platform === 'win32'")
+    // one insert: this bundle's executor, msys2 + UCRT64, dormant off-Windows.
+    const inserts = doc.filter((op) => Array.isArray(op.insert))
+    expect(inserts).toHaveLength(1)
+    const executor = (inserts[0].insert as Array<Record<string, unknown>>)[0]
+    expect(executor.id).toBe('bash-msys')
+    expect(executor.name).toBe('dsh-bash-msys')
+    expect(executor.config).toMatchObject({ backend: 'msys2', subsystem: 'UCRT64' })
+    expect(String(executor.disabled)).toContain("process.platform !== 'win32'")
+    // Never reconfigures the host registries from a bundle patch.
+    for (const op of doc) expect(op.id).not.toBe('agent-preset-registry')
   })
 
-  it('the executor row selects the msys2 backend; the PTY row reads the projection and fails loudly when absent', () => {
-    const shell = doc[0].insert[0].config.plugins.find((row: { id: string }) => row.id === 'bash-msys-shell').config
-    const executor = shell.find((row: { id: string }) => row.id === 'bash-msys')
-    expect(executor.name).toBe('dsh-bash-msys')
-    expect(executor.config.backend).toBe('msys2')
-    const pty = shell.find((row: { id: string }) => row.id === 'bash-msys-terminal-pty')
-    expect(pty.name).toBe('@deepseek-ai/dsh-terminal-bash')
-    expect(pty.inject).toEqual(['shell'])
-    // Loud, not silent: an unresolvable shell realm must fail the row, never
-    // fall back to the terminal plugin's own default shell (the one silent
-    // wrong-PTY path the ADR T4 amendment §2 rules out; `?? ''` would do
-    // exactly that — review finding, 2026-09-30).
-    for (const key of ['shellPath', 'shellArgs']) {
-      expect(String(pty.config[key])).toMatch(/ctx\.get\('shell'\)/)
-      expect(String(pty.config[key])).not.toMatch(/\?\? ''|\?\? \[\]/)
-    }
+  it('defaults the user sidebar terminal to MSYS2 bash login and drops the WSL-stub candidate', () => {
+    // api-terminal-controller is host-level PATH discovery; the Windows PATH
+    // has no MSYS2, so the patch pins the default profile and prunes the bare
+    // `bash` candidate (System32 stub) through install probes.
+    const tc = doc.find((op) => op.id === 'terminal-controller') as { config: Record<string, string> }
+    expect((tc as { name?: string }).name).toBe('@deepseek-ai/dsh-api-terminal-controller')
+    expect(tc.config.shell).toMatch(/MSYS2 Bash/)
+    // login-interactive: /etc/profile builds the MSYS environment. Loud
+    // absence: no install → no profile, upstream discovery stands.
+    expect(tc.config.shell).toMatch(/--login/)
+    expect(tc.config.shell).toMatch(/existsSync/)
+    expect(tc.config.shellCandidates).toMatch(/c !== 'bash'/)
   })
 })
 

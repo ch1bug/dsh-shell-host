@@ -286,3 +286,44 @@ planned:
    E2E; the `enginePath`/`engineArgs` double `resolveBackend` call is a
    recorded non-issue (two fs probes per terminal-row evaluation, memoized
    only if ever measured to matter).
+
+## T5/D8 amendment (2026-09-30, issue #8 — human-approved direction revision D8)
+
+Mid-T5 the delivery shape pivoted (CONTEXT.md D8): the additive `Native
+MSYS2 Bash` preset is replaced by a HOST-PLANE replacement of the built-in
+platform shell executors. This section supersedes the additive-only and
+single-preset pins in T4 §3/§4 above.
+
+1. **Host-plane replacement.** The patch disables `pwsh-sandbox` (it yields
+   the Windows platform-shell role) and re-asserts `bash-sandbox`'s win32
+   disable (a base semantics flip cannot sneak the WSL stub back); both are
+   win32-guarded and dormant on POSIX. It inserts this executor as the host
+   `ctx.shell` row (`bash-msys`; default `backend: 'msys2'`,
+   `subsystem: 'UCRT64'`). The seam allows exactly one provider per
+   composition, so every preset's `tool-bash` resolves this executor —
+   loaded once, effective everywhere. The T4 preset row set is removed BY
+   DESIGN; the session-picker entry disappearing is the pivot itself, not a
+   regression.
+2. **terminal-controller override (sidebar USER terminal).** The default
+   shell becomes the install-probed MSYS2 bash with `['--login', '-i']`
+   under a visible name, and the bare `bash` candidate is pruned (the host
+   PATH has no MSYS2; bare `bash` resolves only to the WSL stub). No
+   install → no profile → upstream discovery stands (loud absence, probe
+   order shared with `src/detect.ts`).
+3. **`name:` guards on every override row** (review finding). The three
+   override ops carry the base rows' `name` values; under loader patch
+   semantics `name` is a validation guard, so a base-side rename makes the
+   op skip loudly instead of silently reconfiguring whatever row took over
+   the id. The descriptor suite pins the guard strings verbatim.
+4. **Known trade-offs, recorded rather than silent.** (a) The web-app
+   `standard`/`minimal` presets' win32 `pwsh` tool now hands its command
+   text to bash (the seam has no dialect translation, by upstream
+   contract); bash-dialect presets are the deployment answer. (b)
+   `permission-presets` refuses to compose over a non-confining executor
+   (`sandboxMode === undefined` is a hard misconfiguration there), so D8
+   removes the `/permission` switcher on win32 — regression, NOT accepted:
+   tracked as #10 (fix path decided there). (c) The engine-side E2E
+   checklist lives in an EXPLICIT lane (`pnpm test:e2e`,
+   `vitest.e2e.config.ts`), honoring spec #1's testing decision that
+   end-to-end acceptance stays out of the unit loop; the suite skips when
+   no MSYS2 install is found.

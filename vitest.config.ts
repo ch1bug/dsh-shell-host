@@ -21,24 +21,29 @@ const alias = (name: string, p: string) => ({ find: new RegExp(`^${name}$`), rep
 // (ADR-0001 Consequences), so the executor's msys2 behavior is regression-
 // guarded on Windows; the ported POSIX suites stay excluded until a later
 // ticket serves them a POSIX lane.
+// The T5 engine-side E2E checklist is an EXPLICIT lane (spec #1 testing
+// decision: end-to-end acceptance stays out of the unit loop) — see
+// vitest.e2e.config.ts / `pnpm test:e2e`.
 const specInclude = process.platform === 'win32'
   ? ['tests/descriptor.spec.ts', 'tests/detect.spec.ts']
   : ['tests/**/*.spec.ts']
 
+export const testAliases = [
+  alias('@deepseek-ai/cordis', 'vendor/cordis'),
+  alias('@deepseek-ai/cosmokit', 'vendor/cosmokit'),
+  alias('@deepseek-ai/schemastery', 'vendor/schemastery'),
+  alias('@deepseek-ai/cordis-plugin-loader', 'vendor/loader'),
+  alias('@deepseek-ai/dsh-shell', 'packages/shell/shell'),
+  alias('@deepseek-ai/dsh-subprocess', 'packages/subprocess/subprocess'),
+  alias('@deepseek-ai/dsh-subprocess-local', 'packages/subprocess/subprocess-local'),
+  alias('@deepseek-ai/dsh-timeout', 'packages/util/timeout'),
+  alias('@deepseek-ai/dsh-http-proxy', 'packages/util/http-proxy'),
+  alias('@deepseek-ai/dsh-lazy-require', 'packages/util/lazy-require'),
+]
+
 export default defineConfig({
   resolve: {
-    alias: [
-      alias('@deepseek-ai/cordis', 'vendor/cordis'),
-      alias('@deepseek-ai/cosmokit', 'vendor/cosmokit'),
-      alias('@deepseek-ai/schemastery', 'vendor/schemastery'),
-      alias('@deepseek-ai/cordis-plugin-loader', 'vendor/loader'),
-      alias('@deepseek-ai/dsh-shell', 'packages/shell/shell'),
-      alias('@deepseek-ai/dsh-subprocess', 'packages/subprocess/subprocess'),
-      alias('@deepseek-ai/dsh-subprocess-local', 'packages/subprocess/subprocess-local'),
-      alias('@deepseek-ai/dsh-timeout', 'packages/util/timeout'),
-      alias('@deepseek-ai/dsh-http-proxy', 'packages/util/http-proxy'),
-      alias('@deepseek-ai/dsh-lazy-require', 'packages/util/lazy-require'),
-    ],
+    alias: testAliases,
   },
   test: {
     environment: 'node',

@@ -1,0 +1,34 @@
+{
+  // Typecheck facade for the browser half (src/client). noEmit BY DESIGN: the
+  // JS emit is tsdown's job (it bundles src/client/index.ts directly, reading
+  // `jsx` from the package tsconfig).
+  //
+  // Unlike the host facade (tsconfig.json), this config does NOT reuse the
+  // upstream source paths map: the `/client` type imports pull whole browser
+  // plugin graphs whose ambient pieces (CSS-module declarations, node types)
+  // live in each package's own tsconfig boundary, so a source-level program
+  // cannot close. Instead it maps exactly the specifiers we import onto the
+  // upstream BUILT declarations (lib/types, kept current by the upstream
+  // checkout's own builds) — a closed declaration-only program.
+  "extends": "../deepseek-harness/tsconfig.base.client.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "incremental": false,
+    "paths": {
+      "react": ["../deepseek-harness/packages/client/ui-primitives/node_modules/@types/react/index.d.ts"],
+      "react/jsx-runtime": ["../deepseek-harness/packages/client/ui-primitives/node_modules/@types/react/jsx-runtime.d.ts"],
+      "@deepseek-ai/cordis": ["../deepseek-harness/vendor/cordis/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-store": ["../deepseek-harness/packages/client/store/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-slots": ["../deepseek-harness/packages/client/ui-slots/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-primitives": ["../deepseek-harness/packages/client/ui-primitives/lib/types/index.d.ts"],
+      "@deepseek-ai/dsh-client-locale/client": ["../deepseek-harness/packages/client/locale/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-settings/client": ["../deepseek-harness/packages/client/ui-settings/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-plugin-manager/client": ["../deepseek-harness/packages/client/ui-plugin-manager/lib/types/client/index.d.ts"],
+      "@deepseek-ai/dsh-client-ui-renderer/client": ["../deepseek-harness/packages/client/ui-renderer/lib/types/client/index.d.ts"]
+    }
+  },
+  "include": [
+    "src/client"
+  ]
+}
