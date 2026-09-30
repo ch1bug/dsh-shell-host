@@ -51,7 +51,7 @@ const alias = (name: string, p: string) => ({ find: new RegExp(`^${name}$`), rep
 // decision: end-to-end acceptance stays out of the unit loop) — see
 // vitest.e2e.config.ts / `pnpm test:e2e`.
 const specInclude = process.platform === 'win32'
-  ? ['tests/descriptor.spec.ts', 'tests/detect.spec.ts', 'tests/permission-presets.spec.ts']
+  ? ['tests/descriptor.spec.ts', 'tests/detect.spec.ts', 'tests/permission-presets.spec.ts', 'tests/built-artifact.spec.ts']
   : ['tests/**/*.spec.ts']
 
 export const testAliases = [

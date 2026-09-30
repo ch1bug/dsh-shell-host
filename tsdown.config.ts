@@ -1,4 +1,9 @@
 import { defineConfig } from 'tsdown'
+import ts from 'typescript'
+// #10 live finding: oxc passes @Remote(...) through to the host lib where
+// Node 24 rejects it at import; lower standard decorators with TypeScript
+// (the same transform as vitest.config.ts). See tsdown-plugin.ts.
+import { standardDecoratorLoweringPlugin } from './tsdown-plugin.ts'
 
 /**
  * The loader module table rows this client bundle may require: the platform
@@ -19,6 +24,7 @@ const CLIENT_EXTERNALS = [
 // package's own code is inlined). clean stays OFF because tsc's declaration
 // emit (lib/types/) shares the outDir root.
 const lib = defineConfig({
+  plugins: [standardDecoratorLoweringPlugin()],
   // #10: two entries — the executor and the permission-presets fork (the
   // loader composes the fork under dsh-bash-msys/permission-presets).
   entry: ['src/index.ts', 'src/permission-presets.ts'],

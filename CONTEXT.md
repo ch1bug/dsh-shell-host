@@ -52,6 +52,10 @@ DSH bundle:**Windows 平台的 MSYS2 环境层** —— 在宿主平面完全替
   dsh-settings 走 built 声明两条实现期事实)
 
 新事实(已验证):
+- **tsdown(oxc)不降级标准装饰器**:@Remote(...) 会原样进入宿主 lib,Node 24 导入即
+  「Invalid or unexpected token」——插件行组装但永远不激活,UI 面全黑且无可见报错
+  (#10 live 发现)。修复 = tsdown-plugin.ts(TypeScript transpileModule 预变换,
+  与 vitest 装饰器预变换同源);tests/built-artifact.spec.ts 锁住产物可导入性
 - vite 的 RegExp alias 不匹配含 `/` 的子路径 specifier(如
   `@deepseek-ai/dsh-commands/brand`)——子路径 alias 必须用 string find
 - 装饰器源码(`@Remote(...)`)在本仓 vitest 下必须先过 TypeScript 预变换

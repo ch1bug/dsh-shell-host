@@ -68,6 +68,14 @@ Ship a **host-side fork** of the plugin inside this package
   command definition id, event/projection shapes) now also constrain this
   fork: the drift alarm is the identity assertions in the acceptance suite
   plus the re-diff discipline above.
+- **Live-finding amendment (2026-09-30, first human checkpoint failed and was
+  diagnosed):** tsdown's oxc transformer passes the `@Remote('catalog')`
+  decorator through to the host lib, where Node rejects it as a syntax error
+  at import — the fork row composed but the plugin never activated, leaving
+  all three UI surfaces dark with no visible error. Fix: tsdown-plugin.ts
+  lowers standard decorators with TypeScript before bundling (the same
+  transform as vitest.config.ts); tests/built-artifact.spec.ts guards the
+  built artifact's importability.
 - The fork accepts `zod@4.4.3` (upstream's own pin) as a runtime dependency —
   a newer minor (4.6.x) produced type-instantiation failures at the
   projection `register` call, so the pin is deliberate.
