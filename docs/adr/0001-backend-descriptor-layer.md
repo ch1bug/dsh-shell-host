@@ -239,3 +239,50 @@ Recorded here rather than left as silent drift (same rule as the T2 amendment):
    MSYS2 (`usr\bin\bash.exe`). Detection failure is loud, naming the config
    knob (`msysRoot`/`bashPath`) and every probed location; POSIX plain stays
    byte-equivalent bare `bash`.
+
+## T4 amendment (2026-09-30, issue #7)
+
+Recorded here rather than left as silent drift (same rule as the T2/T3
+amendments). T4 restores the phase-1 deferrals exactly as the T2 amendment
+planned:
+
+1. **`argv.interactive` ships.** The descriptor's argv carries both mode
+   templates again (§4): `msys2` declares `['--login', '-i']` (D3; the VS
+   Code `bash (MSYS2)` profile argv); the plain descriptor declares `[]` —
+   a plain PTY starts bare bash (Git Bash's runtime bakes its own
+   `MSYSTEM=MINGW64` and profiles already load, so forcing `--login` there
+   adds nothing phase 1 needs; revisit with the pwsh/wsl backends).
+   `expandOneShotArgv` stays the only consumer inside the executor's
+   one-shot path; the interactive template is consumed by the PTY
+   projection below, not by `execute()`.
+2. **PTY projection on the executor.** `LocalBashExecutor` exposes
+   `enginePath` (the resolved executable, `resolveExecutable` semantics) and
+   `engineArgs` (the resolved `argv.interactive`) — the same member names the
+   `dsh-bash-native` preset demonstration uses, so a
+   `@deepseek-ai/dsh-terminal-bash` row reads
+   `ctx.get('shell')?.enginePath / engineArgs` without backend-specific
+   knowledge. Resolution errors stay loud (the getter throws) — a
+   misconfigured backend can never silently start a wrong PTY shell.
+3. **The preset is a bundle patch, not executor code.** The agent preset
+   (`Native MSYS2 Bash`, id `bash-msys`) is a `cordis.patch.yml` inserted
+   via the package's `dsh.bundle.patch` field, mirroring the
+   `dsh-bash-native` full preset's row set (D5): persona +
+   agent-instructions, one `isolate: { shell, terminals }` group carrying
+   the `dsh-bash-msys` executor (default config: `backend: 'msys2'`),
+   `dsh-terminal` + `dsh-terminal-bash` (`shellPath`/`shellArgs` from the
+   projection above, `inject: [shell]`), the bash tool (persistent
+   alternative disabled), file/search/job/skill/goal tools, and the
+   plan/compaction/delegation groups. The patch is additive only — no row
+   another preset owns is reconfigured or disabled, and the preset never
+   touches `agent-preset-registry`.
+4. **The PTY row's expressions fail loudly (review finding, 2026-09-30).**
+   The `dsh-terminal-bash` `shellPath`/`shellArgs` expressions throw when the
+   realm's executor resolved no `enginePath`/`engineArgs` instead of the
+   `?? ''`/`?? []` fallback the `dsh-bash-native` demonstration uses — a
+   silent fallback would let the terminal plugin start its own default shell,
+   the exact wrong-PTY outcome §2 rules out. A `tests/descriptor.spec.ts`
+   block pins the patch structure (single additive preset row, backend
+   selection, loud expressions) as the in-repo drift alarm until #8's live
+   E2E; the `enginePath`/`engineArgs` double `resolveBackend` call is a
+   recorded non-issue (two fs probes per terminal-row evaluation, memoized
+   only if ever measured to matter).

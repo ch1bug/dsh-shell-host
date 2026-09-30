@@ -126,6 +126,26 @@ export class LocalBashExecutor extends ShellExecutor {
   }
 
   /**
+   * The resolved login-interactive shell for a PTY terminal (D3, T4): the
+   * executable the one-shot path resolves (`resolveExecutable` semantics) and
+   * the backend's `argv.interactive` template. `@deepseek-ai/dsh-terminal-bash`
+   * preset rows read these members (`ctx.get('shell')?.enginePath/engineArgs`)
+   * — the same member names the `dsh-bash-native` preset demonstration uses,
+   * so the terminal side carries no backend-specific path knowledge (ADR-0001
+   * T4 amendment).
+   * @throws the loud backend-resolution error when the configured backend
+   *   cannot serve a shell (detection failure, unknown/reserved id).
+   */
+  get enginePath(): string {
+    return resolveExecutable(resolveBackend(this.config))
+  }
+
+  /** The interactive argv template of the resolved backend (see {@link enginePath}). */
+  get engineArgs(): readonly string[] {
+    return resolveBackend(this.config).argv.interactive
+  }
+
+  /**
    * Resolve a request into a fully-specified spec: fill `workdir` from
    * `config.cwd` (else `process.cwd()`), and `timeoutMs` from
    * `config.timeoutMs`, capped at `config.maxTimeoutMs`. The tool layer calls

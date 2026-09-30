@@ -32,6 +32,8 @@ export interface BackendDescriptor {
   /** One-shot argv template; the entry containing {@link COMMAND_TOKEN} receives the command. */
   argv: {
     oneShot: readonly string[]
+    /** Login-interactive argv template for a PTY terminal (D3, T4); empty = bare shell. */
+    interactive: readonly string[]
   }
   /** Injected plain variables. Layering (issue #5, human-harmonized): caller env wins over these; only the PATH prefix merge cuts ahead. */
   env: Readonly<Record<string, string>>
@@ -60,7 +62,9 @@ const identityMapping = {
 function plainBackend(config: Config): BackendDescriptor {
   const base = {
     id: 'plain',
-    argv: { oneShot: ['-c', COMMAND_TOKEN] },
+    // A plain PTY starts bare bash (T4 amendment): Git Bash bakes its own
+    // MSYSTEM and its profiles already load without --login.
+    argv: { oneShot: ['-c', COMMAND_TOKEN], interactive: [] },
     env: {},
     pathPrefix: [],
     pathMapping: identityMapping,
@@ -115,7 +119,9 @@ function msys2Backend(config: Config): BackendDescriptor {
   return {
     id: 'msys2',
     executable: [config.bashPath.get() ?? join(msysRoot, 'usr', 'bin', 'bash.exe')],
-    argv: { oneShot: ['-c', COMMAND_TOKEN] },
+    // Login-interactive argv for the PTY terminal (D3; the VS Code `bash
+    // (MSYS2)` profile). /etc/profile builds the MSYS environment.
+    argv: { oneShot: ['-c', COMMAND_TOKEN], interactive: ['--login', '-i'] },
     env: { MSYSTEM: msystem, CHERE_INVOKING: '1' },
     pathPrefix: prefix,
     pathMapping: {

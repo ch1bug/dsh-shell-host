@@ -1,7 +1,8 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import YAML from 'yaml'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { LocalBashExecutor } from '../src/index.ts'
 import { resolveBackend } from '../src/backends.ts'
@@ -191,6 +192,79 @@ describe('T3: detection + zero-config (public boundary)', () => {
       return
     }
     expect(() => bash.resolve({ command: 'true' })).toThrow(/msysRoot.*Probed:/s)
+  })
+})
+
+describe('T4: interactive argv + PTY projection (public boundary)', () => {
+  it.skipIf(!hasMsys2)('msys2 descriptor declares the login-interactive argv template (--login -i, D3)', async () => {
+    const bash = await setup({ backend: 'msys2', msysRoot })
+    const backend = resolveBackend(bash.config)
+    expect(backend.argv.interactive).toEqual(['--login', '-i'])
+    // One-shot stays non-login (upstream contract): /etc/profile's cd would
+    // move every command out of its requested cwd.
+    expect(backend.argv.oneShot).toEqual(['-c', '{command}'])
+  })
+
+  it.skipIf(!hasMsys2)('plain descriptor (subsystem none) declares an empty interactive template', async () => {
+    const bash = await setup({ backend: 'msys2', subsystem: 'none', bashPath: join(msysRoot, 'usr', 'bin', 'bash.exe') })
+    const backend = resolveBackend(bash.config)
+    expect(backend.argv.interactive).toEqual([])
+  })
+
+  it.skipIf(!hasMsys2)('executor projects enginePath/engineArgs for the PTY terminal row', async () => {
+    const bash = await setup({ backend: 'msys2', msysRoot })
+    // The dsh-terminal-bash row reads exactly these two members (the
+    // dsh-bash-native preset demonstration pattern).
+    expect(bash.enginePath).toBe(join(msysRoot, 'usr', 'bin', 'bash.exe'))
+    expect(bash.engineArgs).toEqual(['--login', '-i'])
+  })
+
+  it.skipIf(!hasMsys2)('executor enginePath honors an explicit bashPath override', async () => {
+    const explicit = join(msysRoot, 'usr', 'bin', 'bash.exe')
+    const bash = await setup({ backend: 'msys2', bashPath: explicit })
+    expect(bash.enginePath).toBe(explicit)
+    expect(bash.engineArgs).toEqual(['--login', '-i'])
+  })
+})
+
+describe('T4: the bundle patch (cordis.patch.yml) — structure + loud PTY wiring', () => {
+  // The patch is data the desktop profile composes; until the #8 live E2E,
+  // this is the only in-repo drift alarm for the preset's wiring (the
+  // dsh-bash-native patch ships the same idea as test-preset-parity.mjs).
+  const doc = YAML.parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'))
+
+  it('inserts exactly one additive preset row: bash-msys, mirroring the demonstrated row set', () => {
+    // A bundle patch is a sequence of operations; this one is insert-only.
+    expect(doc).toEqual([{ insert: [expect.objectContaining({ name: '@deepseek-ai/dsh-agent-preset' })] }])
+    const preset = doc[0].insert[0].config
+    expect(preset.id).toBe('bash-msys')
+    expect(preset.name).toBe('Native MSYS2 Bash')
+    const ids = preset.plugins.map((row: { id: string }) => row.id)
+    // D5 mirror of the dsh-bash-native demonstration: bash tool, file/search/
+    // job/skill/goal tools, terminal pair inside the isolated shell group.
+    for (const required of ['persona', 'bash-msys-shell', 'tool-fs', 'tool-fs-search', 'tool-jobs', 'skill-filesystem', 'tool-skill', 'command-goal', 'tool-goal']) {
+      expect(ids).toContain(required)
+    }
+    // Never reconfigures the host: no registry row in a bundle patch.
+    expect(ids).not.toContain('agent-preset-registry')
+  })
+
+  it('the executor row selects the msys2 backend; the PTY row reads the projection and fails loudly when absent', () => {
+    const shell = doc[0].insert[0].config.plugins.find((row: { id: string }) => row.id === 'bash-msys-shell').config
+    const executor = shell.find((row: { id: string }) => row.id === 'bash-msys')
+    expect(executor.name).toBe('dsh-bash-msys')
+    expect(executor.config.backend).toBe('msys2')
+    const pty = shell.find((row: { id: string }) => row.id === 'bash-msys-terminal-pty')
+    expect(pty.name).toBe('@deepseek-ai/dsh-terminal-bash')
+    expect(pty.inject).toEqual(['shell'])
+    // Loud, not silent: an unresolvable shell realm must fail the row, never
+    // fall back to the terminal plugin's own default shell (the one silent
+    // wrong-PTY path the ADR T4 amendment §2 rules out; `?? ''` would do
+    // exactly that — review finding, 2026-09-30).
+    for (const key of ['shellPath', 'shellArgs']) {
+      expect(String(pty.config[key])).toMatch(/ctx\.get\('shell'\)/)
+      expect(String(pty.config[key])).not.toMatch(/\?\? ''|\?\? \[\]/)
+    }
   })
 })
 
