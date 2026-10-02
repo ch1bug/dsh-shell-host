@@ -29,6 +29,18 @@ every preset's tooling works over it unchanged.
 
 All rows carry win32 guards; on POSIX the bundle is dormant.
 
+### Host MSYS2 prerequisites（宿主环境最低工具集，2026-10-02 实测补齐）
+
+本 bundle 只把 shell 缝绑到 MSYS2 bash——**不负责装齐 MSYS2 工具链**。裸 MSYS2 缺
+常用工具会让 agent 的验证手段悄悄降级（实测：diff/cmp 缺失时所有 diff 类验证被迫
+绕 `git diff --no-index`）。安装后请补齐：
+
+```bash
+pacman -S --needed diffutils patch jq unzip rsync
+```
+
+判定方法：agent 会话里 `command -v diff` 落空即缺。新增工具需求时在此处追加清单。
+
 Known trade-off: web-app's `standard`/`minimal` presets enable the `pwsh`
 tool on win32; after the replacement its command text is handed to bash (the
 seam has no dialect translation, by upstream contract). Use bash-dialect
