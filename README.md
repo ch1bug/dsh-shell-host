@@ -18,8 +18,8 @@ every preset's tooling works over it unchanged.
 1. Disables the base bundle's platform executors on Windows: `pwsh-sandbox`
    (yields the platform-shell role) and `bash-sandbox` (re-stated; its win32
    `bash -c` would hit the `C:\Windows\System32\bash.exe` WSL stub anyway).
-2. Inserts this package's executor as `ctx.shell` (row id `bash-msys`,
-   backend `msys2`, subsystem `UCRT64`). Every preset's `tool-bash` resolves
+2. Inserts this package's executor as `ctx.shell` (row id `bash-msys`; backend configurable: `plain` / `msys2` / `pwsh`,
+   default `msys2` with subsystem `UCRT64` — pwsh landed in #3 / D7 phase 1.5, `wsl` reserved). Every preset's `tool-bash` resolves
    the host seam — Matt 工作流, shipped presets, anything bash-dialect.
 3. Overrides `terminal-controller` (the right-sidebar USER terminal): MSYS2
    bash `--login -i` becomes the default shell with a visible name, and the
@@ -61,7 +61,9 @@ closure-factory artifact over the platform module table (requires only
   commit `639ed01539` (`packages/shell/bash-local`). Between 0.1.7-rc.2 and
   0.2.0-rc.2 this package's src/tests are byte-identical (only the version
   field moved); baseline = what the local desktop (0.2.0-rc.2) runs.
-- **Functional deviations: none.** `src/index.ts` is upstream verbatim.
+- **Functional deviations:** `src/index.ts` is upstream verbatim;
+  `src/backends.ts` / `src/detect.ts` are this repo's extensions (backend registry
+  plain/msys2/pwsh + wsl-reserved, pwsh probing — #3 / D7 phase 1.5), beyond upstream.
   Ported-test deviations (mechanical only, both documented here):
   - `tests/executor.spec.ts` imports `LocalBashExecutor` from `../src/index.ts`
     instead of the upstream package name (the package here is `dsh-bash-msys`).
@@ -76,6 +78,6 @@ closure-factory artifact over the platform module table (requires only
   emit, and pnpm `link:` overrides so the installer never touches the
   registry for the scope. Tooling (typescript/vitest/tsdown) comes from npm.
 
-Status: v0.1.0 — host-plane replacement + settings page landed
-(typecheck both facades, vitest 36 passed, win32 live E2E green).
+Status: v0.1.x — host-plane replacement + settings page + pwsh backend
+(505be8e, #3 phase 1.5; typecheck both facades, vitest 53 passed | 1 skipped, win32 live E2E green).
 See `CONTEXT.md` and GitHub Issues for the plan.
