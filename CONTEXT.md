@@ -9,7 +9,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 ## 已验证事实(来源:代码调研 + 实测,2026-09-30)
 
 - **基线改道(2026-09-30 human 拍板)**:fork 目标从 0.1.7-rc.2 改为 **0.2.0-rc.2**(本地桌面端已是 0.2.0-rc.2)。两版本间 bash-local 的 src/tests 字节级一致(仅版本号),基线成本为零;上游 tag `dsh-v0.2.0-rc.2` = commit `639ed01539`
-- **依赖策略(2026-09-30 human 拍板)**:@deepseek-ai 包**一律不走 npm registry**(npm latest 标签陈旧);从本地源码库 `<old-work>\deepseek-harness`(已钉在 dsh-v0.2.0-rc.2 tag)解析:tsc 经 tsconfig.base.json paths、vitest 经显式 source alias、声明产物经 `tsc -b` 构建、pnpm overrides link: 兜底。工具链(typescript/vitest/tsdown)走 npm
+- **依赖策略(2026-10-03 human A0 拍板,推翻 09-30 决策,见 ADR-0006)**:@deepseek-ai 包**一律走 npm 发布 dist**(alpha.1 起官方全套含类型上 npm);peer 精确锚定官方版本,tsc/vitest 一律 node_modules 解析,本地源码 checkout 的三处枚举(overrides/extends/alias)已拆除。工具链(typescript/vitest/tsdown)走 npm
 - 上游 schema 仅 6 项 volatile 配置(cwd/timeoutMs/maxTimeoutMs/maxOutputBytes/maxSpillBytes/graceMs);bash 二进制硬编码 `'bash'` 沿 PATH 解析,无 bashPath、无 envOverrides 配置项;注册 `ctx.shell`;`static inject = ["subprocess"]`;one-shot = `['bash','-c',cmd]` 非 login 无 rc;env 层叠 ENV_OVERRIDES→caller env→dshEnv;后台作业/spill 输出/ctx.jobs 集成现成
 - 上游 vitest.config.ts 在 win32 排除 bash-local 套件("a real POSIX shell is unavailable on Windows")——T1 基线镜像该策略;实测探针(WSL bash):23/36 过,失败全部为 POSIX 环境假设(cwd 字面量/signal 语义),移植接线零缺陷
 - `dsh-terminal-bash` 的 shellPath/shellArgs 是其自有独立 Config(默认 `/bin/bash` + `--noprofile --norc -i`),不依赖 executor
@@ -64,10 +64,10 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   (vitest.config.ts `standardDecoratorPlugin`,移植自上游 vitest.shared.ts)
 - zod 4.6.x 会让 projection `register` 的泛型推断 TS2589;fork 钉 `zod@4.4.3`
   (与上游一致)
-- **依赖策略例外(仅类型)**:fork 的 `dsh-settings` 类型导入走兄弟仓 BUILT
-  声明(`../../deepseek-harness/.../lib/types/index.d.ts`)——settings→config-editor→hmr
-  源链在本仓单程序松弛 flags 下不可编译;运行时导入被剥离,不违反
-  「不走 npm」铁律。此例外记录于 ADR-0002,复制该模式前先读它
+- **依赖策略例外(仅类型)——已随 ADR-0006 失效(2026-10-03)**:fork 的
+  `dsh-settings` 类型导入现走 npm dist 声明(`@deepseek-ai/dsh-settings`),
+  源链隔离理由(settings→config-editor→hmr 不可编译)仍成立,npm dist 天然
+  免疫;历史决策见 ADR-0002
 
 
 ## D9 (#2 grill 共识, 2026-10-03, 见 ADR-0003)

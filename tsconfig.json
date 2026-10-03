@@ -1,28 +1,26 @@
 {
-  // Resolution + typecheck facade for src and tests. Extends the upstream
-  // monorepo's facade (local checkout at ../deepseek-harness, pinned to tag
-  // dsh-v0.2.0-rc.2): every @deepseek-ai/* specifier resolves to upstream
-  // SOURCE via its maintained paths map — the same table upstream's own
-  // vitest runs on (vite-tsconfig-paths treats the no-include facade as
-  // match-all). @deepseek-ai packages are never installed from npm.
-  "extends": "../deepseek-harness/tsconfig.base.json",
+  // Resolution + typecheck facade for src and tests. ADR-0005 anchor bump
+  // (dsh-v0.2.1-alpha.1): the facade no longer extends the upstream
+  // monorepo's source-paths map — every @deepseek-ai/* specifier resolves
+  // through node_modules to the PUBLISHED dist's declarations (lib/types,
+  // shipped in the alpha.1 tarballs with full subpath exports). The compiler
+  // options below port the upstream base verbatim (minus its source paths
+  // facade); the relaxation flags keep the union of the upstream vendors'
+  // own relaxations, since the dist declarations were compiled under those
+  // boundaries. Our own src/tests stay authored to full base strictness.
   "compilerOptions": {
-    "noEmit": true,
-    "composite": false,
-    "incremental": false,
-    // The browser half (src/client) is bundled by tsdown, whose oxc transform
-    // reads these two options for the TSX files; they are inert for the host
-    // facade's own sources (no JSX there).
-    "jsx": "react-jsx",
-    "jsxImportSource": "react",
-    // Upstream compiles each package behind its own tsconfig boundary: the
-    // vendor/ packages (cordis, cosmokit, loader, schemastery) relax these
-    // flags in their own tsconfigs, while packages/* keep base strictness.
-    // This repo ingests upstream SOURCE directly (no per-package
-    // boundaries), so the typecheck lane takes the union of the vendor
-    // relaxations — exactly the flags upstream vendors already declare (the
-    // union is cordis's set; the others are subsets). Our own src/tests are
-    // authored to full base strictness regardless.
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
     "noImplicitAny": false,
     "noImplicitThis": false,
     "strictFunctionTypes": false,
@@ -30,7 +28,15 @@
     "exactOptionalPropertyTypes": false,
     "noImplicitOverride": false,
     "noUnusedLocals": false,
-    "noUnusedParameters": false
+    "noUnusedParameters": false,
+    // The browser half (src/client) is bundled by tsdown, whose oxc transform
+    // reads these two options for the TSX files; they are inert for the host
+    // facade's own sources (no JSX there).
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "noEmit": true,
+    "composite": false,
+    "incremental": false
   },
   "include": [
     "src",
@@ -38,8 +44,8 @@
     "vitest.config.ts",
     "tsdown.config.ts"
   ],
-  // The browser half has its own facade (tsconfig.client.json) over built
-  // upstream declarations — a source-level program cannot close there.
+  // The browser half has its own facade (tsconfig.client.json) over the
+  // client dist declarations.
   "exclude": [
     "src/client"
   ]

@@ -2,6 +2,9 @@
 import { Context, resolveConfig, type Fiber, type Plugin } from '@deepseek-ai/cordis'
 import { expect, vi } from 'vitest'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
+// Type-only: the `app-boot/config-reload` cordis event this helper emits is
+// declared in the dsh-app-boot dist's Context merge (ADR-0005 npm lane).
+import type {} from '@deepseek-ai/dsh-app-boot'
 
 function merge(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
   const result = { ...base }

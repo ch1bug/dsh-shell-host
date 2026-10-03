@@ -23,13 +23,11 @@
  *
  * @module dsh-shell-host/permission-presets
  */
-// Type-only: the settings surface this service re-configures. Imported from
-// the upstream package's BUILT declaration (not the source paths facade) so
-// the typecheck program does not ingest the settings -> config-editor -> hmr
-// source chain, which does not compile under this repo's relaxed single-
-// program flags (the runtime import is stripped; node_modules carries the
-// built face for consumers of our emitted d.ts).
-import type {} from '../../deepseek-harness/packages/settings/settings/lib/types/index.d.ts'
+// Type-only: the settings surface this service re-configures. Resolved from
+// the published dist declaration (ADR-0005 npm lane); the runtime import is
+// stripped, and the typecheck program stays free of the settings ->
+// config-editor -> hmr source chain.
+import type {} from '@deepseek-ai/dsh-settings'
 
 import type { Volatile } from '@deepseek-ai/cordis'
 

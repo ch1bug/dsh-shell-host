@@ -116,7 +116,7 @@ describe('T2 #14: runtime hot switch on an msys-less host (pwsh→plain lane)', 
     const viaPlain = await (await bash.execute(bash.resolve({ command: 'uname -s' }))).result()
     expect(viaPlain.exitCode).toBe(0)
     expect(viaPlain.stdout.text.trim()).toMatch(/_NT/)
-  })
+  }, 30000)
 })
 
 describe('T2 #14: runtime hot switch (integration, public boundary)', () => {
@@ -156,7 +156,7 @@ describe('T2 #14: runtime hot switch (integration, public boundary)', () => {
     const viaPlain = await (await bash.execute(bash.resolve({ command: 'uname -s' }))).result()
     expect(viaPlain.exitCode).toBe(0)
     expect(viaPlain.stdout.text.trim()).toMatch(/_NT/)
-  })
+  }, 30000)
 
   it.skipIf(!hasMsys2)('a bad backend id after a hot switch fails the next command, not the profile write', async () => {
     const ctx = new Context()

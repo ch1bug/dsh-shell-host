@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "权限预设",
+    "description": "由 dsh-shell-host 组装的宿主平面权限预设（只读 / workspace-write / danger-full-access）。"
+  }
+}

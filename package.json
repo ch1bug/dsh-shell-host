@@ -1,6 +1,6 @@
 {
   "name": "dsh-shell-host",
-  "version": "0.2.0-rc.2-r1",
+  "version": "0.2.1-alpha.1-r1",
   "private": true,
   "description": "dsh-shell-host: the host-plane shell executor replacement layer for the DSH shell seam on Windows (VS Code terminal-profile modeled), forked from @deepseek-ai/dsh-bash-local with an identical external interface — pluggable backends (msys2 default, plain, pwsh; wsl reserved) — plus a Plugins-page settings card and a host-only fork of the permission-presets plugin (issue #10).",
   "type": "module",
@@ -45,37 +45,38 @@
     "./permission-presets": {
       "types": "./lib/types/permission-presets.d.ts",
       "default": "./lib/permission-presets.js"
-    }
+    },
+    "./permission-presets/locale/*": "./assets/permission-presets/locale/*"
   },
   "files": [
     "lib/index.js",
     "lib/client.js",
     "lib/types/**/*.d.ts",
-    "lib/permission-presets.js"
+    "lib/permission-presets.js",
+    "assets/permission-presets/locale/*.json"
   ],
   "scripts": {
-    "build": "tsc -b ../deepseek-harness/packages/shell/shell ../deepseek-harness/packages/subprocess/subprocess ../deepseek-harness/packages/util/timeout ../deepseek-harness/vendor/cordis ../deepseek-harness/vendor/schemastery ../deepseek-harness/packages/core/session ../deepseek-harness/packages/session/session-projection && tsc -p tsconfig.build.json && tsdown",
-    "_build-note": "the @deepseek-ai closure is enumerated in THREE places that must move together: this tsc -b list (declaration emit), pnpm-workspace.yaml overrides (installer), vitest.config.ts resolve.alias (test runtime)",
+    "build": "tsc -p tsconfig.build.json && tsdown",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.4",
-    "@deepseek-ai/dsh-shell": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-timeout": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-sandbox-policy": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-session": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-session-projection": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-settings": "0.2.0-rc.2"
+    "@deepseek-ai/cordis": "4.0.5-alpha.1",
+    "@deepseek-ai/dsh-shell": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-subprocess": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-timeout": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-sandbox": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-sandbox-policy": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-user-approval": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-session": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-session-projection": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-commands": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-settings": "0.2.1-alpha.1"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "~3.18.4",
+    "@deepseek-ai/schemastery": "3.18.5-alpha.1",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -83,6 +84,18 @@
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8",
-    "yaml": "^2.9.1"
+    "yaml": "^2.9.1",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.6-alpha.1",
+    "@deepseek-ai/dsh-subprocess-local": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-client-locale": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-client-store": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.1-alpha.1",
+    "@types/react": "^19",
+    "@deepseek-ai/dsh-app-boot": "0.2.1-alpha.1",
+    "@deepseek-ai/dsh-settings": "0.2.1-alpha.1"
   }
 }
