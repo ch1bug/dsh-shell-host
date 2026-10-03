@@ -266,7 +266,7 @@ describe('T4: the bundle patch (cordis.patch.yml) — host shell replacement + l
     // `bash` candidate (System32 stub) through install probes.
     const tc = doc.find((op) => op.id === 'terminal-controller') as { config: Record<string, string> }
     expect((tc as { name?: string }).name).toBe('@deepseek-ai/dsh-api-terminal-controller')
-    expect(tc.config.shell).toMatch(/MSYS2 Bash/)
+    expect(tc.config.shell).toMatch(/Shell Host \(MSYS2\)/)
     // login-interactive: /etc/profile builds the MSYS environment. Loud
     // absence: no install → no profile, upstream discovery stands.
     expect(tc.config.shell).toMatch(/--login/)

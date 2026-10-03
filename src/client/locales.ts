@@ -15,8 +15,8 @@ export type ShellSettingsLocaleKey =
 
 /** English copy. */
 export const en: Record<ShellSettingsLocaleKey, string> = {
-  title: 'MSYS2 Shell',
-  description: 'The Windows platform shell: an MSYS2 (or plain POSIX bash) environment behind the bash tool and the terminal. Configuration re-applies to new commands without a reload.',
+  title: 'Shell Host',
+  description: 'The Windows platform shell behind the bash tool and the terminal — pluggable backends (MSYS2 default, plain bash, PowerShell). Configuration re-applies to new commands without a reload.',
   backend: 'Backend',
   backendHint: "'msys2' injects the MSYSTEM environment and PATH surface; 'plain' runs a detected bash with no injection (Git Bash / Cygwin); 'pwsh' runs Windows PowerShell (PowerShell 7 preferred, no injection).",
   subsystem: 'Subsystem (MSYSTEM)',
@@ -42,8 +42,8 @@ export const en: Record<ShellSettingsLocaleKey, string> = {
 
 /** Simplified Chinese copy. */
 export const zh: Record<ShellSettingsLocaleKey, string> = {
-  title: 'MSYS2 Shell',
-  description: 'Windows 平台 shell:bash 工具与终端背后的 MSYS2(或纯 POSIX bash)环境。配置保存后对新命令即时生效,无需重启。',
+  title: 'Shell Host',
+  description: 'Windows 平台 shell:bash 工具与终端背后的宿主 shell,后端可插拔(MSYS2 默认、纯 bash、PowerShell)。配置保存后对新命令即时生效,无需重启。',
   backend: '后端',
   backendHint: "'msys2' 注入 MSYSTEM 环境与 PATH 表面;'plain' 直接运行探测到的 bash,不做注入(Git Bash / Cygwin);'pwsh' 运行 Windows PowerShell(优先 PowerShell 7,不做注入)。",
   subsystem: '子系统(MSYSTEM)',

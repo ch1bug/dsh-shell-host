@@ -81,6 +81,6 @@
   name: '@deepseek-ai/dsh-api-terminal-controller'
   config:
     shell: !!js >-
-      (() => { const fs = process.getBuiltinModule('node:fs'); const path = ['C:/msys64/usr/bin/bash.exe', `${process.env.HOMEDRIVE ?? 'C:'}/msys64/usr/bin/bash.exe`].find(p => fs.existsSync(p)); return path === undefined ? undefined : { path, name: 'MSYS2 Bash', args: ['--login', '-i'] }; })()
+      (() => { const fs = process.getBuiltinModule('node:fs'); const path = ['C:/msys64/usr/bin/bash.exe', `${process.env.HOMEDRIVE ?? 'C:'}/msys64/usr/bin/bash.exe`].find(p => fs.existsSync(p)); return path === undefined ? undefined : { path, name: 'Shell Host (MSYS2)', args: ['--login', '-i'] }; })()
     shellCandidates: !!js >-
       (() => { const fs = process.getBuiltinModule('node:fs'); const msys = ['C:/msys64/usr/bin/bash.exe', `${process.env.HOMEDRIVE ?? 'C:'}/msys64/usr/bin/bash.exe`].some(p => fs.existsSync(p)); return ['zsh', 'bash', 'fish', 'pwsh', 'powershell', 'cmd'].filter(c => c !== 'bash' || !msys); })()
