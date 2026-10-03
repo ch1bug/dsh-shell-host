@@ -1,11 +1,11 @@
 {
   // Declaration emit mirroring upstream packaging: lib/types/index.d.ts for
   // the published types face. Runtime JS is bundled separately by tsdown.
-  // `paths` is cleared ON PURPOSE in this config: the typecheck facade maps
-  // @deepseek-ai/* to upstream SOURCE, but emit must resolve them as
-  // EXTERNAL declaration files (upstream's own project-reference pattern) —
-  // node_modules link: entries point at the monorepo checkout, whose
-  // lib/types/*.d.ts are built first by the build script's `tsc -b` step.
+  // `paths` stays cleared: the typecheck facade resolves @deepseek-ai/*
+  // through node_modules (published dist declarations), and emit must see
+  // them as EXTERNAL declaration files. Since the ADR-0005 anchor bump
+  // (dsh-v0.2.1-alpha.1) no upstream `tsc -b` pre-pass is needed — the dists
+  // ship built lib/types in the tarballs.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,

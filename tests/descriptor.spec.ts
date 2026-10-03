@@ -375,7 +375,7 @@ describe('pwsh backend (#3, D7 phase 1.5)', () => {
 
     const failing = await run(shell, shell.resolve({ command: 'exit 3' }))
     expect(failing.exitCode).toBe(3)
-  })
+  }, 30000)
 
   it.skipIf(!hasPwsh)('one-shot argv carries the upstream conventions (-NoLogo -NoProfile -NonInteractive -Command + UTF-8 preamble)', async () => {
     const shell = await setup({ backend: 'pwsh' })

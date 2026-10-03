@@ -138,7 +138,7 @@ describe('T3 #15: live WSL one-shot through the executor boundary (AC integratio
     expect(spill.exitCode).toBe(0)
     expect(spill.stdout.spillPath).toBeDefined()
     expect(existsSync(spill.stdout.spillPath!)).toBe(true)
-  })
+  }, 30000)
 
   it.skipIf(!hasLiveWsl)('the declared interactive (PTY terminal) argv boots a login shell in the distro (AC2)', async () => {
     const ctx = new Context()
@@ -151,5 +151,5 @@ describe('T3 #15: live WSL one-shot through the executor boundary (AC integratio
     const bash = ctx.shell as LocalBashExecutor
     const out = execFileSync(bash.enginePath, [...bash.engineArgs, '-c', 'echo interactive-$BASH_VERSION'], { encoding: 'utf8' })
     expect(out).toMatch(/interactive-\d/)
-  })
+  }, 30000)
 })

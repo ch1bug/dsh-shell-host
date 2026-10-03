@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Permission presets",
+    "description": "Host-plane permission presets (read-only / workspace-write / danger-full-access) composed by dsh-shell-host."
+  }
+}

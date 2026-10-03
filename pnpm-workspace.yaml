@@ -1,23 +1,59 @@
-# pnpm 11 config home for this repo. @deepseek-ai packages are NEVER fetched
-# from the npm registry (human decision 2026-09-30: resolve them from the
-# local upstream source checkout instead). Every specifier pnpm could resolve
-# in that scope is overridden to a link: into the monorepo checkout pinned at
-# tag dsh-v0.2.0-rc.2. Nothing imports through node_modules — tsconfig paths
-# (typecheck/vitest) resolve @deepseek-ai/* to upstream SOURCE — so the link
-# targets being unbuilt is irrelevant; the overrides exist purely so pnpm
-# never touches the registry for the @deepseek-ai scope.
-autoInstallPeers: false
-overrides:
-  '@deepseek-ai/schemastery': link:../deepseek-harness/vendor/schemastery
-  '@deepseek-ai/cordis': link:../deepseek-harness/vendor/cordis
-  '@deepseek-ai/dsh-shell': link:../deepseek-harness/packages/shell/shell
-  '@deepseek-ai/dsh-subprocess': link:../deepseek-harness/packages/subprocess/subprocess
-  '@deepseek-ai/dsh-timeout': link:../deepseek-harness/packages/util/timeout
-  '@deepseek-ai/dsh-sandbox': link:../deepseek-harness/packages/sandbox/sandbox
-  '@deepseek-ai/dsh-sandbox-policy': link:../deepseek-harness/packages/sandbox/sandbox-policy
-  '@deepseek-ai/dsh-user-approval': link:../deepseek-harness/packages/interaction/user-approval
-  '@deepseek-ai/dsh-typert-protocol': link:../deepseek-harness/packages/typert/protocol
-  '@deepseek-ai/dsh-session': link:../deepseek-harness/packages/core/session
-  '@deepseek-ai/dsh-session-projection': link:../deepseek-harness/packages/session/session-projection
-  '@deepseek-ai/dsh-commands': link:../deepseek-harness/packages/interaction/commands
-  '@deepseek-ai/dsh-settings': link:../deepseek-harness/packages/settings/settings
+# pnpm 11 config home for this repo. ADR-0005 anchor bump (2026-10-03,
+# human decision A0): the @deepseek-ai lane moved from the local upstream
+# source checkout (link: overrides, never npm) to the PUBLISHED npm dists —
+# the anchor dsh-v0.2.1-alpha.1 ships exact versions of every package this
+# repo imports, types included (lib/types/*.d.ts ride in the tarballs). No
+# overrides remain: specifiers resolve through the registry, and the typecheck
+# facades (tsconfig.json / tsconfig.client.json) read the dist declarations.
+# Peers install for real: the typecheck/vitest lanes import the seam packages
+# directly (types + runtime JS from the dists), not just declare them.
+autoInstallPeers: true
+# dsh-subprocess-local's native closure (node-pty, koffi) needs postinstall
+# builds; without them the dist's runtime imports fail at test time.
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  koffi: true
+  node-pty: true
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/cordis-plugin-loader@1.0.6-alpha.1'
+  - '@deepseek-ai/cosmokit@1.8.6-alpha.1'
+  - '@deepseek-ai/dsh-brand@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-client-locale@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-client-store@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-client-ui-plugin-manager@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-client-ui-primitives@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-client-ui-renderer@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-client-ui-settings@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-client-ui-slots@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-lazy-require@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-subprocess-local@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-timeout@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-typert-protocol@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-win32-process@0.2.1-alpha.1'
+  - '@deepseek-ai/schemastery@3.18.5-alpha.1'
+  - '@deepseek-ai/cordis-plugin-group@1.0.5-alpha.1'
+  - '@deepseek-ai/cordis-plugin-include@1.0.10-alpha.1'
+  - '@deepseek-ai/cordis@4.0.5-alpha.1'
+  - '@deepseek-ai/dsh-agent@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-app-boot@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-atomic-write@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-attachment@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-commands@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-config-editor@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-home-paths@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-http-proxy@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-launch-environment@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-llm@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-package-manifest@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-sandbox-policy@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-sandbox@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-scope@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-session-projection@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-session@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-settings@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-shell@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-subprocess@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-system-prompt@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-user-approval@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-util-crypto@0.2.1-alpha.1'
+  - '@deepseek-ai/dsh-util-values@0.2.1-alpha.1'

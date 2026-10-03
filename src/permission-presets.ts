@@ -23,13 +23,11 @@
  *
  * @module dsh-shell-host/permission-presets
  */
-// Type-only: the settings surface this service re-configures. Imported from
-// the upstream package's BUILT declaration (not the source paths facade) so
-// the typecheck program does not ingest the settings -> config-editor -> hmr
-// source chain, which does not compile under this repo's relaxed single-
-// program flags (the runtime import is stripped; node_modules carries the
-// built face for consumers of our emitted d.ts).
-import type {} from '../../deepseek-harness/packages/settings/settings/lib/types/index.d.ts'
+// Type-only: the settings surface this service re-configures. Resolved from
+// the published dist declaration (ADR-0005 npm lane); the runtime import is
+// stripped, and the typecheck program stays free of the settings ->
+// config-editor -> hmr source chain.
+import type {} from '@deepseek-ai/dsh-settings'
 
 import type { Volatile } from '@deepseek-ai/cordis'
 
@@ -240,6 +238,10 @@ export interface Config {
  */
 export class PermissionPresetService extends TypertRemoteService {
   // Inline schema call: the config catalog walks `static Config` statically.
+  // Cast to the hand-written Config face: the inferred type reaches
+  // schemastery's Dict (cosmokit), which TS2883 refuses to name portably in
+  // emitted declarations under the npm lane (ADR-0006). Runtime validation
+  // is unchanged — the cast records the declared face, nothing more.
   static Config = z.object({
     presets: z.dict(z.object({
       sandbox: z.union(SANDBOX_MODES as SandboxMode[]).required(),
@@ -257,7 +259,7 @@ export class PermissionPresetService extends TypertRemoteService {
       },
     }),
     defaultPreset: z.string().volatile(),
-  })
+  }) as unknown as Schemastery<Config>
 
   static inject = ['sandboxPolicy', 'approval', 'sessions', 'sessionProjections']
 

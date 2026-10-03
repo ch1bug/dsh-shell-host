@@ -7,7 +7,7 @@ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type { ApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
-import ShellPermissionPresets, { CUSTOM_PRESET } from '../src/permission-presets.ts'
+import ShellPermissionPresets, { CUSTOM_PRESET, type Config } from '../src/permission-presets.ts'
 
 /**
  * #10 acceptance tests: the host-only fork of `@deepseek-ai/dsh-permission-presets`
@@ -49,7 +49,7 @@ async function mounted(options: {
   ctx.provide('approval', {
     config: { policy: 'approvalDefault' in options ? options.approvalDefault : 'ask' },
   })
-  await ctx.plugin(ShellPermissionPresets, options.config ?? {})
+  await ctx.plugin(ShellPermissionPresets, (options.config ?? {}) as unknown as Config)
   return ctx
 }
 
