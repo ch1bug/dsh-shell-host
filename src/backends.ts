@@ -19,12 +19,30 @@ import type { Config } from './index.ts'
 export const COMMAND_TOKEN = '{command}'
 
 /**
- * Declarative backend description. Field provenance (ADR-0001): `executable`
- * ← VS Code `ITerminalExecutable` (ordered fallback candidates); `argv` ←
- * `IShellLaunchConfig.args` / `shellIntegrationArgs` mode templates; `env` ←
- * `ITerminalProfile.env`; PATH prefixing ← VS Code `addEnvMixinPathPrefix`.
+ * Backend-specific fields carried by the `wsl` descriptor (ADR-0003 decision
+ * 4, ticket #13): like a VS Code terminal profile, the descriptor is the
+ * single declaration place — no per-backend side config section, and no
+ * invented argv-template placeholders (`{distro}`-style); these values feed
+ * the backend/bridge directly (T3 #15). The declaration is type-only here:
+ * `wsl` stays a reserved registry id until T3.
  */
-export interface BackendDescriptor {
+export interface WslSpecific {
+  /** WSL distro name fed to `wsl.exe -d <distro>`; optional — distro discovery is a descriptor concern (ADR-0003 decision 3). */
+  distro?: string
+}
+
+/** Per-backend `specific` sections, keyed by the owning descriptor id. */
+export interface BackendSpecificMap {
+  wsl: WslSpecific
+}
+
+/** Runtime mirror of {@link BackendSpecificMap}'s keys: the ids that own a `specific` section. */
+const SPECIFIC_OWNERS: ReadonlySet<string> = new Set(['wsl'] satisfies readonly (keyof BackendSpecificMap)[])
+
+/**
+ * Base descriptor shape shared by every backend (ADR-0001 field set).
+ */
+export interface BackendDescriptorBase {
   /** Registry id: `'plain' | 'msys2' | 'pwsh'` implemented; `'wsl'` reserved. */
   id: string
   /** Ordered executable candidates. A bare name spawns through PATH lookup (upstream `plain` behavior); absolute paths must exist. */
@@ -44,6 +62,38 @@ export interface BackendDescriptor {
     toShell(winPath: string): Promise<string>
     fromShell(shellPath: string): Promise<string>
   }
+}
+
+/** Descriptor carrying its own {@link BackendSpecificMap} section. */
+export interface SpecificBackendDescriptor<K extends keyof BackendSpecificMap = keyof BackendSpecificMap> extends BackendDescriptorBase {
+  id: K
+  /** Backend-specific fields, owned by descriptor id `K`. Optional: absent when nothing to declare. */
+  specific?: BackendSpecificMap[K]
+}
+
+/**
+ * Declarative backend description. Field provenance (ADR-0001): `executable`
+ * ← VS Code `ITerminalExecutable` (ordered fallback candidates); `argv` ←
+ * `IShellLaunchConfig.args` / `shellIntegrationArgs` mode templates; `env` ←
+ * `ITerminalProfile.env`; PATH prefixing ← VS Code `addEnvMixinPathPrefix`.
+ *
+ * Backend-specific fields (ADR-0003 decision 4, ticket #13) ride the
+ * descriptor itself via the discriminated union: a non-owning id's variant
+ * has no `specific` member, so foreign fields are unrepresentable at the
+ * type level, and {@link assertServiceableBackend} rejects one loudly at
+ * runtime. Consumers read the section through {@link backendSpecific}.
+ */
+export type BackendDescriptor = BackendDescriptorBase | SpecificBackendDescriptor
+
+/**
+ * Read the backend-specific section owned by `id`, or undefined. A
+ * non-owning backend IGNORES foreign specific fields (never throws) — the
+ * documented ignore semantics for the cross-backend consumption rule
+ * (ADR-0003 decision 4): only the owner's id opens its own section.
+ */
+export function backendSpecific<K extends keyof BackendSpecificMap>(backend: BackendDescriptor, id: K): BackendSpecificMap[K] | undefined {
+  if (backend.id !== id) return undefined
+  return (backend as SpecificBackendDescriptor<K>).specific
 }
 
 const identityMapping = {
@@ -68,7 +118,7 @@ function plainBackend(config: Config): BackendDescriptor {
     env: {},
     pathPrefix: [],
     pathMapping: identityMapping,
-  } satisfies Omit<BackendDescriptor, 'executable'>
+  } satisfies Omit<BackendDescriptorBase, 'executable'>
   if (process.platform !== 'win32') {
     // POSIX keeps the byte-equivalent bare name (upstream contract); nothing
     // to detect there (detectPlainBash is win32-only by design).
@@ -225,6 +275,15 @@ export function assertServiceableBackend(backend: BackendDescriptor): void {
   }
   if (!backend.argv.oneShot.some(arg => arg.includes(COMMAND_TOKEN))) {
     throw new Error(`bash-local: backend '${backend.id}' oneShot argv template lacks a ${COMMAND_TOKEN} placeholder`)
+  }
+  // Backend-specific accessibility (ADR-0003 decision 4): a `specific`
+  // section belongs to the id that declares it (BackendSpecificMap); any
+  // other id carrying one is a mis-declaration and fails loudly naming the
+  // owner — a non-owning backend otherwise simply ignores foreign fields
+  // (backendSpecific). `wsl` behavior itself lands in T3 (#15); the
+  // reserved-id selection rejection in resolveBackend is untouched here.
+  if ('specific' in backend && !SPECIFIC_OWNERS.has(backend.id)) {
+    throw new Error(`bash-local: backend '${backend.id}' declares a backend-specific section, which belongs to: ${[...SPECIFIC_OWNERS].map(id => `'${id}'`).join(', ')} (ADR-0003 decision 4)`)
   }
 }
 

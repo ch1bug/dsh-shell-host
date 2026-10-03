@@ -5,7 +5,8 @@ import { Context } from '@deepseek-ai/cordis'
 import YAML from 'yaml'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { LocalBashExecutor } from '../src/index.ts'
-import { resolveBackend } from '../src/backends.ts'
+import { assertServiceableBackend, backendSpecific, resolveBackend } from '../src/backends.ts'
+import type { BackendDescriptor } from '../src/backends.ts'
 import { detectPwsh, PLAIN_BASH_CANDIDATES } from '../src/detect.ts'
 import type { ShellExecSpec, ShellExecution, ShellRunResult } from '@deepseek-ai/dsh-shell'
 
@@ -296,6 +297,63 @@ describe('backend selection validation (fails loudly at the public boundary)', (
  */
 const pwshExe = detectPwsh()
 const hasPwsh = pwshExe !== undefined
+
+/**
+ * T1 #13: backend-specific descriptor fields (ADR-0003 decision 4, VS Code
+ * terminal-profile semantics — the descriptor is the single declaration
+ * place). The discriminated `id` union types accessibility: only the `wsl`
+ * descriptor declares a `specific` section; plain/msys2/pwsh have none, and
+ * a non-owning backend ignores foreign specific fields — typed (no `specific`
+ * member) and at runtime (assertServiceableBackend rejects one, loudly).
+ * `wsl` behavior itself is T3 #15: its reserved-id loud rejection stays.
+ */
+describe('T1 #13: backend-specific descriptor fields (ADR-0003 decision 4)', () => {
+  const identityMapping = {
+    toShell: async (path: string): Promise<string> => path,
+    fromShell: async (path: string): Promise<string> => path,
+  }
+
+  it.skipIf(!hasMsys2)('implemented descriptors carry no specific section', async () => {
+    const msys2 = resolveBackend((await setup({ backend: 'msys2', msysRoot })).config)
+    expect(msys2.id).toBe('msys2')
+    expect((msys2 as { specific?: unknown }).specific).toBeUndefined()
+    const plain = resolveBackend((await setup({ backend: 'msys2', subsystem: 'none', bashPath: join(msysRoot, 'usr', 'bin', 'bash.exe') })).config)
+    expect(plain.id).toBe('plain')
+    expect((plain as { specific?: unknown }).specific).toBeUndefined()
+    if (hasPwsh) {
+      const pwsh = resolveBackend((await setup({ backend: 'pwsh' })).config)
+      expect(pwsh.id).toBe('pwsh')
+      expect((pwsh as { specific?: unknown }).specific).toBeUndefined()
+    }
+  })
+
+  it.skipIf(!hasMsys2)('backendSpecific() reads the section only from the owning backend id — non-owners ignore foreign fields', async () => {
+    const msys2 = resolveBackend((await setup({ backend: 'msys2', msysRoot })).config)
+    // Non-owner asks for the wsl section: undefined, never a throw — the
+    // documented ignore semantics (AC 2).
+    expect(backendSpecific(msys2, 'wsl')).toBeUndefined()
+    // Type channel proof: a wsl-shaped descriptor's specific section reads
+    // back through the owner's id (T3 will consume `distro` from here).
+    const wsl = { id: 'wsl', specific: { distro: 'Ubuntu-22.04' } } as unknown as Parameters<typeof backendSpecific>[0]
+    expect(backendSpecific(wsl, 'wsl')).toEqual({ distro: 'Ubuntu-22.04' })
+    // Type-level accessibility constraint: a non-owner id is not even
+    // expressible as the requested key.
+    // @ts-expect-error 'plain' owns no specific section
+    expect(backendSpecific(wsl, 'plain')).toBeUndefined()
+  })
+
+  it('assertServiceableBackend rejects a specific section on a non-owning descriptor id (loud, names both ids)', () => {
+    expect(() => assertServiceableBackend({
+      id: 'plain',
+      executable: ['bash'],
+      argv: { oneShot: ['-c', '{command}'], interactive: [] },
+      env: {},
+      pathPrefix: [],
+      pathMapping: identityMapping,
+      specific: { distro: 'Ubuntu' },
+    } as unknown as BackendDescriptor)).toThrow(/'plain'.*'wsl'/)
+  })
+})
 
 describe('pwsh backend (#3, D7 phase 1.5)', () => {
   it.skipIf(!hasPwsh)('runs one-shot commands through PowerShell and returns output and exit codes', async () => {
