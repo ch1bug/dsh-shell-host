@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This workspace is a DSH bundle repo (`dsh-bash-msys`) built with the Matt
+This workspace is a DSH bundle repo (`dsh-shell-host`) built with the Matt
 Pocock AI-coding workflow. Route work through the flow skills (grill →
 to-spec → to-tickets → implement).
 
@@ -8,7 +8,7 @@ to-spec → to-tickets → implement).
 
 ### Issue tracker
 
-Issues live in GitHub Issues (`ch1bug/dsh-bash-msys`), operated via the `gh`
+Issues live in GitHub Issues (`ch1bug/dsh-shell-host`), operated via the `gh`
 CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels

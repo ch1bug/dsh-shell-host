@@ -11,10 +11,10 @@ import {
  * The settings-controller serves one namespace per Loader entry id, so this
  * string is both the configForms key and the card's identity on the Plugins page.
  */
-export const MSYS_NS = 'bash-msys'
+export const SHELL_NS = 'shell-host'
 
 /** The MSYS2 fields this page edits — a subset of the served schema by design. */
-export interface MsysSettings {
+export interface ShellSettings {
   /** Backend selector: `'msys2'` (environment injection) or `'plain'` (detected bash). */
   backend?: string
   /** MSYS2 subsystem injected as `MSYSTEM` (`UCRT64` default; `'none'` disables injection). */
@@ -30,7 +30,7 @@ export interface MsysSettings {
 }
 
 /** What the MSYS2 page renders. */
-export interface MsysCardState extends SettingsFormShell {
+export interface ShellCardState extends SettingsFormShell {
   /** Backend selector. */
   backend: SettingsFieldState
   /** MSYSTEM subsystem. */
@@ -46,20 +46,20 @@ export interface MsysCardState extends SettingsFormShell {
 }
 
 /** The registration-side face the MSYS2 page's slot entry injects. */
-export interface MsysCardFace extends SettingsFormActions {
+export interface ShellCardFace extends SettingsFormActions {
   hooks: {
-    /** Page snapshot bound by the renderer as useMsysCard. */
-    msysCard: SnapshotStore<MsysCardState>
+    /** Page snapshot bound by the renderer as useShellCard. */
+    shellCard: SnapshotStore<ShellCardState>
   }
 }
 
 /** Bridges the executor entry's form onto the page's staged form. */
-export class MsysCardController {
-  private readonly form: SettingsFormModel<MsysSettings>
-  private readonly store: SnapshotStore<MsysCardState>
+export class ShellCardController {
+  private readonly form: SettingsFormModel<ShellSettings>
+  private readonly store: SnapshotStore<ShellCardState>
 
   /** @param scope - the shared configuration form of the composed executor entry. */
-  constructor(scope: SettingsFormScope<MsysSettings>) {
+  constructor(scope: SettingsFormScope<ShellSettings>) {
     this.form = new SettingsFormModel(scope, [
       settingsTextField('backend'),
       settingsTextField('subsystem'),
@@ -71,7 +71,7 @@ export class MsysCardController {
     this.store = this.form.bind(() => this.projection())
   }
 
-  private projection(): MsysCardState {
+  private projection(): ShellCardState {
     return {
       ...this.form.shell(),
       backend: this.form.field('backend'),
@@ -87,8 +87,8 @@ export class MsysCardController {
    * Build the face the page's slot registration injects.
    * @returns the page's snapshot and its form actions.
    */
-  inject(): MsysCardFace {
-    return { hooks: { msysCard: this.store }, ...this.form.actions() }
+  inject(): ShellCardFace {
+    return { hooks: { shellCard: this.store }, ...this.form.actions() }
   }
 
   /** Release the form subscription. */

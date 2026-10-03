@@ -126,7 +126,7 @@ carries a path-mapping member with `toShell` (cwd in) and `fromShell`
 
 ## Decision
 
-`dsh-bash-msys` gets a declarative `BackendDescriptor` (T2 implements):
+`dsh-shell-host` gets a declarative `BackendDescriptor` (T2 implements):
 
 ```ts
 interface BackendDescriptor {
@@ -264,11 +264,11 @@ planned:
    knowledge. Resolution errors stay loud (the getter throws) — a
    misconfigured backend can never silently start a wrong PTY shell.
 3. **The preset is a bundle patch, not executor code.** The agent preset
-   (`Native MSYS2 Bash`, id `bash-msys`) is a `cordis.patch.yml` inserted
+   (`Native MSYS2 Bash`, id `shell-host`) is a `cordis.patch.yml` inserted
    via the package's `dsh.bundle.patch` field, mirroring the
    `dsh-bash-native` full preset's row set (D5): persona +
    agent-instructions, one `isolate: { shell, terminals }` group carrying
-   the `dsh-bash-msys` executor (default config: `backend: 'msys2'`),
+   the `dsh-shell-host` executor (default config: `backend: 'msys2'`),
    `dsh-terminal` + `dsh-terminal-bash` (`shellPath`/`shellArgs` from the
    projection above, `inject: [shell]`), the bash tool (persistent
    alternative disabled), file/search/job/skill/goal tools, and the
@@ -298,7 +298,7 @@ single-preset pins in T4 §3/§4 above.
    the Windows platform-shell role) and re-asserts `bash-sandbox`'s win32
    disable (a base semantics flip cannot sneak the WSL stub back); both are
    win32-guarded and dormant on POSIX. It inserts this executor as the host
-   `ctx.shell` row (`bash-msys`; default `backend: 'msys2'`,
+   `ctx.shell` row (`shell-host`; default `backend: 'msys2'`,
    `subsystem: 'UCRT64'`). The seam allows exactly one provider per
    composition, so every preset's `tool-bash` resolves this executor —
    loaded once, effective everywhere. The T4 preset row set is removed BY

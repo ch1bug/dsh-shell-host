@@ -4,22 +4,22 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { SettingsForm, SettingsValueField } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { formLabels } from './locales.ts'
-import type { MsysCardFace } from './msys-card-controller.ts'
+import type { ShellCardFace } from './shell-card-controller.ts'
 
 /** Props the renderer binds for the MSYS2 page. */
-export type MsysCardProps =
+export type ShellCardProps =
   PropsRuntime<'plugins.item'>
-  & PropsLocale<'settings.bash-msys'>
-  & InjectFace<MsysCardFace>
+  & PropsLocale<'settings.shell-host'>
+  & InjectFace<ShellCardFace>
 
 /**
  * Render the MSYS2 executor's one-liner or its settings form, as the Plugins page asks.
  * @param props - the view asked for, locale copy, the form snapshot, and its actions.
  * @returns the one-liner, or the form.
  */
-export function MsysCard(props: MsysCardProps) {
+export function ShellCard(props: ShellCardProps) {
   const { t } = props
-  const state = props.useMsysCard(snapshot => snapshot)
+  const state = props.useShellCard(snapshot => snapshot)
   if (props.view === 'summary') return t('description')
   const disabled = !state.writable
   const overriddenLabel = t('overridden')
@@ -27,7 +27,7 @@ export function MsysCard(props: MsysCardProps) {
   return (
     <SettingsForm labels={formLabels(t)} state={state} onSave={props.save} onDiscard={props.discard}>
       <SettingsValueField
-        id="plugin-config-bash-msys-backend"
+        id="plugin-config-shell-host-backend"
         label={t('backend')}
         hint={t('backendHint')}
         overriddenLabel={overriddenLabel}
@@ -39,7 +39,7 @@ export function MsysCard(props: MsysCardProps) {
         onReset={() => { props.resetField('backend') }}
       />
       <SettingsValueField
-        id="plugin-config-bash-msys-subsystem"
+        id="plugin-config-shell-host-subsystem"
         label={t('subsystem')}
         hint={t('subsystemHint')}
         overriddenLabel={overriddenLabel}
@@ -51,7 +51,7 @@ export function MsysCard(props: MsysCardProps) {
         onReset={() => { props.resetField('subsystem') }}
       />
       <SettingsValueField
-        id="plugin-config-bash-msys-root"
+        id="plugin-config-shell-host-root"
         label={t('msysRoot')}
         hint={t('msysRootHint')}
         overriddenLabel={overriddenLabel}
@@ -63,7 +63,7 @@ export function MsysCard(props: MsysCardProps) {
         onReset={() => { props.resetField('msysRoot') }}
       />
       <SettingsValueField
-        id="plugin-config-bash-msys-bash-path"
+        id="plugin-config-shell-host-bash-path"
         label={t('bashPath')}
         hint={t('bashPathHint')}
         overriddenLabel={overriddenLabel}
@@ -75,7 +75,7 @@ export function MsysCard(props: MsysCardProps) {
         onReset={() => { props.resetField('bashPath') }}
       />
       <SettingsValueField
-        id="plugin-config-bash-msys-timeout"
+        id="plugin-config-shell-host-timeout"
         label={t('timeoutMs')}
         hint={t('timeoutMsHint')}
         overriddenLabel={overriddenLabel}
@@ -88,7 +88,7 @@ export function MsysCard(props: MsysCardProps) {
         onReset={() => { props.resetField('timeoutMs') }}
       />
       <SettingsValueField
-        id="plugin-config-bash-msys-output"
+        id="plugin-config-shell-host-output"
         label={t('maxOutputBytes')}
         hint={t('maxOutputBytesHint')}
         overriddenLabel={overriddenLabel}

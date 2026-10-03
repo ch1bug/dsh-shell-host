@@ -1,4 +1,4 @@
-# dsh-bash-msys bundle patch: Windows 宿主级 shell 替换(MSYS2 平台层)。
+# dsh-shell-host bundle patch: Windows 宿主级 shell 替换(MSYS2 平台层)。
 #
 # 建模立场:MSYS2 是独立于 bash 的环境层——安装根(msysRoot)、子系统(MSYSTEM)、
 # PATH 表面、pacman/cygpath 工具链是一等公民;bash 只是该环境中可配置的 shell
@@ -16,7 +16,7 @@
 # base 的 win32 挂载:bash-sandbox disabled / pwsh-sandbox enabled。这里:
 #   1) 禁用 pwsh-sandbox —— Windows 平台 shell 角色由 MSYS2 承担;
 #   2) 重申 bash-sandbox 的 win32 禁用(防 base 语义翻转,POSIX 不受影响);
-#   3) 插入本执行器(id: bash-msys)。POSIX 上所有行休眠(平台守卫)。
+#   3) 插入本执行器(id: shell-host)。POSIX 上所有行休眠(平台守卫)。
 #   所有 override 行带 name: 守卫(loader 校验语义:name 不匹配 → 该 op
 #   被跳过):基座若改名,这里是响亮失败,而不是把配置写进顶替该 id 的无关行。
 #
@@ -30,8 +30,8 @@
   name: '@deepseek-ai/dsh-bash-sandbox'
   disabled: !!js process.platform === 'win32'
 - insert:
-    - id: bash-msys
-      name: dsh-bash-msys
+    - id: shell-host
+      name: dsh-shell-host
       disabled: !!js process.platform !== 'win32'
       config:
         backend: msys2
@@ -57,7 +57,7 @@
 # (bash-sandbox src),fork 回退值与之逐值等价,双平台行为无损。
 - insert:
     - id: permission
-      name: dsh-bash-msys/permission-presets
+      name: dsh-shell-host/permission-presets
       config:
         presets:
           read-only:

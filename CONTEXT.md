@@ -1,10 +1,10 @@
-# CONTEXT.md — dsh-bash-msys
+# CONTEXT.md — dsh-shell-host
 
 > 状态:初始化骨架。术语表与决策随 grill/implement 惰性填充。
 
 ## 项目一句话
 
-DSH bundle:**Windows 平台的 MSYS2 环境层** —— 在宿主平面完全替换内置平台 shell 执行器(对外接口与 `@deepseek-ai/dsh-bash-local` 逐字段一致,内部按 VS Code 终端 profile 建模),并自带 Plugins 页设置卡片。MSYS2 是独立于 bash 的环境:安装根/子系统(MSYSTEM)/PATH 表面/pacman/cygpath 是一等公民,bash 只是其中可配置的 shell。
+DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-msys,#12 改名)—— 在宿主平面完全替换内置平台 shell 执行器(对外接口与 `@deepseek-ai/dsh-bash-local` 逐字段一致,内部按 VS Code 终端 profile 建模),backend 可插拔(msys2 默认 / plain / pwsh,wsl reserved),并自带 Plugins 页设置卡片。MSYS2 backend 是独立于 bash 的环境:安装根/子系统(MSYSTEM)/PATH 表面/pacman/cygpath 是一等公民,bash 只是其中可配置的 shell。
 
 ## 已验证事实(来源:代码调研 + 实测,2026-09-30)
 
@@ -30,15 +30,15 @@ DSH bundle:**Windows 平台的 MSYS2 环境层** —— 在宿主平面完全替
 - D6 原 brush bundle(dsh-bash-native)待本项目在真实会话验证通过后再从 profile 卸载
 - D7(2026-09-30 triage;#3 落地 2026-09-30)backend 描述符层一次到位:executor 第一版即含声明式 backend 层(spawn/argv 模板/env/路径映射),模式参照 VS Code terminal-profile/remote;phase 1 只实现 msys2 后端,pwsh/wsl 描述符占位(#3/#2),落地=填描述符+补测试,不做破坏性重构。**phase 1.5(#3 已落地):pwsh 描述符就位**——pwsh.exe/powershell.exe 有序探测(PS7 安装根→PATH→WinPS 5.1,无声回落已删除,缺失响亮报全部探测点)、one-shot `-NoLogo -NoProfile -NonInteractive -Command`+UTF-8 前导、interactive `-l -noexit`(-Login 需 pwsh≥7.4)、env{}/pathPrefix[]/恒等路径映射;argv 惯例勘源上游 pwsh-local(dsh-v0.2.0-rc.2),**非监禁姿态**(详见 ADR-0001 #3 amendment)。WSL 涉及 ssh/远程语义,明确 phase 2
 - D8(2026-09-30 human 拍板,方向修订)**从"并列 preset"改为"宿主级替换"**:完全替代内置 bash 执行器、对外接口保持一致、内部实现参考 VS Code、加前端配置页。落地形态:
-  - patch 在宿主平面禁用 `pwsh-sandbox`/`bash-sandbox`(win32 守卫)+ insert 本执行器(行 id `bash-msys`)——seam 每 composition 恰一个 provider,preset 树的 tool-bash 解析宿主 ctx.shell,装载即全 preset 生效
+  - patch 在宿主平面禁用 `pwsh-sandbox`/`bash-sandbox`(win32 守卫)+ insert 本执行器(行 id `shell-host`)——seam 每 composition 恰一个 provider,preset 树的 tool-bash 解析宿主 ctx.shell,装载即全 preset 生效
   - 已知取舍:web-app standard/minimal preset 的 `pwsh` 工具(win32 启用)在替换后命令文本交给 bash(上游契约:无方言翻译);本部署用 bash-dialect preset
-  - 前端设置页 = 包内 client half(lib/client.js closure factory,只外部依赖平台模块表的 primitives + react/jsx-runtime),绑定 configForms namespace **`bash-msys`(= Loader 行 id,settings-controller 自动按行派生表单)**;volatile 字段经 settings user-section 运行时改预算,免重启
+  - 前端设置页 = 包内 client half(lib/client.js closure factory,只外部依赖平台模块表的 primitives + react/jsx-runtime),绑定 configForms namespace **`shell-host`(= Loader 行 id,settings-controller 自动按行派生表单)**;volatile 字段经 settings user-section 运行时改预算,免重启
   - 顺带覆盖 `terminal-controller`(宿主级侧边栏用户终端):默认 shell 显式指 MSYS2 bash `--login -i`,摘掉裸 `bash` 候选(宿主 PATH 无 MSYS2,裸 bash 只会命中 WSL stub);!!js existsSync 探测,未安装则回退上游发现
 
 ## D8 follow-up (#10, 2026-09-30)
 
 - **permission-presets host-only fork(human 拍板:只 fork 不提上游)**:D8 副作用
-  #10 修复 = 包内 `src/permission-presets.ts`(入口 `dsh-bash-msys/permission-presets`)
+  #10 修复 = 包内 `src/permission-presets.ts`(入口 `dsh-shell-host/permission-presets`)
   ——同名服务 `permissionPresets` + 同 Typert 命名空间 + 同命令 definitionId
   `@deepseek-ai/dsh-permission-presets` + 同 `permission/preset` 事件/`permissions`
   投影,原版 client UI 零改动复活(不 fork 任何 client 代码)

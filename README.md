@@ -1,7 +1,9 @@
-# dsh-bash-msys
+# dsh-shell-host
 
-DSH bundle: **the MSYS2 platform layer for Windows** — a host-plane replacement
-of the built-in platform shell executors, with a Plugins-page settings card.
+DSH bundle: **the host-plane shell executor replacement layer for Windows** — a
+replacement of the built-in platform shell executors with pluggable backends
+(`msys2` default, `plain`, `pwsh`; `wsl` reserved), plus a Plugins-page
+settings card. MSYS2 is the default backend, not the bundle's identity.
 
 Positioning: MSYS2 is an ENVIRONMENT independent of any one shell — install
 root (`msysRoot`), subsystem (`MSYSTEM`), PATH surface, pacman/cygpath tooling
@@ -18,7 +20,7 @@ every preset's tooling works over it unchanged.
 1. Disables the base bundle's platform executors on Windows: `pwsh-sandbox`
    (yields the platform-shell role) and `bash-sandbox` (re-stated; its win32
    `bash -c` would hit the `C:\Windows\System32\bash.exe` WSL stub anyway).
-2. Inserts this package's executor as `ctx.shell` (row id `bash-msys`; backend configurable: `plain` / `msys2` / `pwsh`,
+2. Inserts this package's executor as `ctx.shell` (row id `shell-host`; backend configurable: `plain` / `msys2` / `pwsh`,
    default `msys2` with subsystem `UCRT64` — pwsh landed in #3 / D7 phase 1.5, `wsl` reserved). Every preset's `tool-bash` resolves
    the host seam — Matt 工作流, shipped presets, anything bash-dialect.
 3. Overrides `terminal-controller` (the right-sidebar USER terminal): MSYS2
@@ -58,8 +60,8 @@ WSL System32 stub excluded, and fails loudly naming every probed location.
 ## Front-end settings page
 
 `src/client/` ships the browser half (served as
-`/plugins/dsh-bash-msys/client.js`): a Plugins-page card (order 11, after the
-stock Shell card) bound to the `bash-msys` configForms namespace — backend,
+`/plugins/dsh-shell-host/client.js`): a Plugins-page card (order 11, after the
+stock Shell card) bound to the `shell-host` configForms namespace — backend,
 subsystem, install root, bash path, plus the command budgets. Values write
 through the settings user-section and re-apply to new commands without a
 reload (all config fields are volatile). The bundle's `lib/client.js` is a
@@ -78,7 +80,7 @@ closure-factory artifact over the platform module table (requires only
   plain/msys2/pwsh + wsl-reserved, pwsh probing — #3 / D7 phase 1.5), beyond upstream.
   Ported-test deviations (mechanical only, both documented here):
   - `tests/executor.spec.ts` imports `LocalBashExecutor` from `../src/index.ts`
-    instead of the upstream package name (the package here is `dsh-bash-msys`).
+    instead of the upstream package name (the package here is `dsh-shell-host`).
   - `tests/settings.spec.ts` imports `live-config.ts` from `./helpers/` —
     the helper is ported verbatim from upstream
     `packages/settings/settings/tests/live-config.ts`.

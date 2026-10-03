@@ -1,8 +1,8 @@
 {
-  "name": "dsh-bash-msys",
+  "name": "dsh-shell-host",
   "version": "0.1.0",
   "private": true,
-  "description": "dsh-bash-msys: the Windows MSYS2 platform layer for the DSH shell seam — a host-plane replacement of the built-in platform shell executors (VS Code terminal-profile modeled), forked from @deepseek-ai/dsh-bash-local with an identical external interface, plus a Plugins-page settings card and a host-only fork of the permission-presets plugin (issue #10).",
+  "description": "dsh-shell-host: the host-plane shell executor replacement layer for the DSH shell seam on Windows (VS Code terminal-profile modeled), forked from @deepseek-ai/dsh-bash-local with an identical external interface — pluggable backends (msys2 default, plain, pwsh; wsl reserved) — plus a Plugins-page settings card and a host-only fork of the permission-presets plugin (issue #10).",
   "type": "module",
   "license": "MIT",
   "keywords": [

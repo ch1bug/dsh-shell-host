@@ -8,7 +8,7 @@
  * VS Code-style auto-detection (T3); `pwsh` is the Windows-native PowerShell
  * backend (#3, D7 phase 1.5); `wsl` remains a reserved registry entry that
  * fails loudly when selected.
- * @module dsh-bash-msys/backends
+ * @module dsh-shell-host/backends
  */
 
 import { delimiter, dirname, join } from 'node:path'

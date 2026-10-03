@@ -3,7 +3,7 @@
  * pattern): ordered absolute-path probes resolved with a plain existence
  * check, PATH search with exclusions, and loud failure that names the probed
  * locations. Exists for T3 — T2 was explicit-config only.
- * @module dsh-bash-msys/detect
+ * @module dsh-shell-host/detect
  */
 
 import { existsSync, lstatSync } from 'node:fs'

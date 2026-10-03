@@ -252,8 +252,8 @@ describe('T4: the bundle patch (cordis.patch.yml) — host shell replacement + l
     const inserts = doc.filter((op) => Array.isArray(op.insert))
     expect(inserts.length).toBeGreaterThanOrEqual(1)
     const executor = (inserts[0].insert as Array<Record<string, unknown>>)[0]
-    expect(executor.id).toBe('bash-msys')
-    expect(executor.name).toBe('dsh-bash-msys')
+    expect(executor.id).toBe('shell-host')
+    expect(executor.name).toBe('dsh-shell-host')
     expect(executor.config).toMatchObject({ backend: 'msys2', subsystem: 'UCRT64' })
     expect(String(executor.disabled)).toContain("process.platform !== 'win32'")
     // Never reconfigures the host registries from a bundle patch.

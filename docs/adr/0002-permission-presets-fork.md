@@ -19,7 +19,7 @@ PermissionRow, and the conversation-input permission selector — go dark.
 ## Decision
 
 Ship a **host-side fork** of the plugin inside this package
-(`src/permission-presets.ts`, exported as `dsh-bash-msys/permission-presets`),
+(`src/permission-presets.ts`, exported as `dsh-shell-host/permission-presets`),
 **in-bundle only — an upstream PR is explicitly NOT pursued** (human decision
 2026-09-30; permanent drift surface accepted).
 
@@ -41,7 +41,7 @@ Ship a **host-side fork** of the plugin inside this package
 3. **Mount shape follows the repo's patch discipline:** disable the base
    `permission` row on win32 (with the `name:` validation guard
    `'@deepseek-ai/dsh-permission-presets'`), insert the fork row
-   (`permission-msys`, name `dsh-bash-msys/permission-presets`) carrying the
+   (`permission-msys`, name `dsh-shell-host/permission-presets`) carrying the
    base bundle's 3-preset table verbatim. Both rows are dormant on POSIX,
    where the upstream plugin keeps composing over the confining base executor.
 4. **Drift management:** the fork is a minimal delta of upstream

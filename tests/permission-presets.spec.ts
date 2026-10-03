@@ -7,12 +7,12 @@ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type { ApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
-import MsysPermissionPresets, { CUSTOM_PRESET } from '../src/permission-presets.ts'
+import ShellPermissionPresets, { CUSTOM_PRESET } from '../src/permission-presets.ts'
 
 /**
  * #10 acceptance tests: the host-only fork of `@deepseek-ai/dsh-permission-presets`
  * composes over a NON-confining executor (`sandboxMode === undefined`, the D8
- * bash-msys deployment posture) and revives the permission surfaces through the
+ * shell-host deployment posture) and revives the permission surfaces through the
  * SAME service identity. Pure composition — no MSYS2 install needed, so the
  * suite runs in the win32 unit lane.
  */
@@ -49,7 +49,7 @@ async function mounted(options: {
   ctx.provide('approval', {
     config: { policy: 'approvalDefault' in options ? options.approvalDefault : 'ask' },
   })
-  await ctx.plugin(MsysPermissionPresets, options.config ?? {})
+  await ctx.plugin(ShellPermissionPresets, options.config ?? {})
   return ctx
 }
 
@@ -80,7 +80,7 @@ describe('#10: fork composes over a non-confining executor', () => {
     // imports nor reads the shell capability — executor capabilities are
     // never part of its semantics.
     const source = readFileSync(new URL('../src/permission-presets.ts', import.meta.url), 'utf8')
-    expect(source).not.toMatch(/dsh-shell/)
+    expect(source).not.toMatch(/dsh-shell(?!-host)/) // own module name dsh-shell-host is not an upstream import
     expect(source).not.toMatch(/ctx\.shell/)
   })
 })
@@ -174,7 +174,7 @@ describe('#10: the bundle patch (cordis.patch.yml) — the fork owns the permiss
   // (upstream's own sandboxMode getter reads ctx.sandboxPolicy.defaultMode).
   it('the fork insert owns the permission entry id (settings namespace contract)', () => {
     const inserts = doc.flatMap(op => Array.isArray(op.insert) ? op.insert as Array<Record<string, unknown>> : [])
-    const fork = inserts.find(row => row.name === 'dsh-bash-msys/permission-presets')
+    const fork = inserts.find(row => row.name === 'dsh-shell-host/permission-presets')
     expect(fork).toBeDefined()
     expect(fork?.id).toBe('permission')
     // No platform guard: the fork composes on both platforms (behaviorally
@@ -185,9 +185,9 @@ describe('#10: the bundle patch (cordis.patch.yml) — the fork owns the permiss
     expect(fork?.config).toMatchObject({ presets: BASE_PRESETS })
   })
 
-  it('keeps the executor insert unchanged (one id bash-msys)', () => {
+  it('keeps the executor insert unchanged (one id shell-host)', () => {
     const inserts = doc.flatMap(op => Array.isArray(op.insert) ? op.insert as Array<Record<string, unknown>> : [])
-    expect(inserts.filter(row => row.id === 'bash-msys')).toHaveLength(1)
+    expect(inserts.filter(row => row.id === 'shell-host')).toHaveLength(1)
   })
 
   it('no override op targets the permission id (replacement is same-id insert, not disable)', () => {

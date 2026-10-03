@@ -21,7 +21,7 @@
  * re-diff on every upstream bump. Upstream PR explicitly NOT pursued (human
  * decision 2026-09-30, docs/adr/0002).
  *
- * @module dsh-bash-msys/permission-presets
+ * @module dsh-shell-host/permission-presets
  */
 // Type-only: the settings surface this service re-configures. Imported from
 // the upstream package's BUILT declaration (not the source paths facade) so

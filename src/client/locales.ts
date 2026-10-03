@@ -3,7 +3,7 @@
 import type { SettingsFormLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 
 /** Locale keys the page renders. */
-export type MsysSettingsLocaleKey =
+export type ShellSettingsLocaleKey =
   | 'title' | 'description'
   | 'backend' | 'backendHint'
   | 'subsystem' | 'subsystemHint'
@@ -14,7 +14,7 @@ export type MsysSettingsLocaleKey =
   | 'save' | 'saving' | 'saveFailed' | 'invalidNumber' | 'invalidText'
 
 /** English copy. */
-export const en: Record<MsysSettingsLocaleKey, string> = {
+export const en: Record<ShellSettingsLocaleKey, string> = {
   title: 'MSYS2 Shell',
   description: 'The Windows platform shell: an MSYS2 (or plain POSIX bash) environment behind the bash tool and the terminal. Configuration re-applies to new commands without a reload.',
   backend: 'Backend',
@@ -41,7 +41,7 @@ export const en: Record<MsysSettingsLocaleKey, string> = {
 }
 
 /** Simplified Chinese copy. */
-export const zh: Record<MsysSettingsLocaleKey, string> = {
+export const zh: Record<ShellSettingsLocaleKey, string> = {
   title: 'MSYS2 Shell',
   description: 'Windows 平台 shell:bash 工具与终端背后的 MSYS2(或纯 POSIX bash)环境。配置保存后对新命令即时生效,无需重启。',
   backend: '后端',
@@ -72,6 +72,6 @@ export const zh: Record<MsysSettingsLocaleKey, string> = {
  * @param t - the page's locale reader.
  * @returns the labels the shared settings form renders.
  */
-export function formLabels(t: (key: MsysSettingsLocaleKey) => string): SettingsFormLabels {
+export function formLabels(t: (key: ShellSettingsLocaleKey) => string): SettingsFormLabels {
   return { unavailable: t('unavailable'), readOnly: t('readOnly'), saveFailed: t('saveFailed'), save: t('save'), saving: t('saving') }
 }

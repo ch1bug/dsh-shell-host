@@ -26,7 +26,7 @@ const CLIENT_EXTERNALS = [
 const lib = defineConfig({
   plugins: [standardDecoratorLoweringPlugin()],
   // #10: two entries — the executor and the permission-presets fork (the
-  // loader composes the fork under dsh-bash-msys/permission-presets).
+  // loader composes the fork under dsh-shell-host/permission-presets).
   entry: ['src/index.ts', 'src/permission-presets.ts'],
   outDir: 'lib',
   format: 'esm',
@@ -41,7 +41,7 @@ const lib = defineConfig({
 /**
  * Bundles the tsc-emitted client entry (lib/types/client/index.js) to
  * lib/client.js — the browser face the Web loader serves under
- * /plugins/dsh-bash-msys/client.js. The artifact is the closure-factory shape
+ * /plugins/dsh-shell-host/client.js. The artifact is the closure-factory shape
  * the loader's module table consumes (same contract as every UI plugin's
  * client bundle): the factory receives the table's `require` and returns the
  * module exports, so the platform rows above stay requires and this package's
@@ -64,7 +64,7 @@ const client = defineConfig({
     entryFileNames: 'client.js',
     // Closure-factory handoff consumed by the client module loader
     // (window.__ModuleLoader__), mirroring the shared tsdown.client preset.
-    banner: `window.__ModuleLoader__.load({ id: 'dsh-bash-msys', factory: (require) => {`,
+    banner: `window.__ModuleLoader__.load({ id: 'dsh-shell-host', factory: (require) => {`,
     intro: 'var module = { exports: {} }; var exports = module.exports;',
     footer: 'return module.exports; } });',
   },
