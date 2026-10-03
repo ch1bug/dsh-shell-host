@@ -54,8 +54,10 @@ export interface Config {
   maxSpillBytes: Volatile<number>
   /** Grace period for kill escalation and inherited pipes; at most `MAX_TIMER_DELAY_MS`. */
   graceMs: Volatile<number>
-  /** Backend descriptor selection: `'plain'` (detected bash, no injection, default), `'msys2'` (MSYS2 env + path surface), or `'pwsh'` (Windows PowerShell, native PATH, identity path mapping); a reserved id (`'wsl'`) fails loudly. */
+  /** Backend descriptor selection: `'plain'` (detected bash, no injection, default), `'msys2'` (MSYS2 env + path surface), or `'pwsh'` (Windows PowerShell, native PATH, identity path mapping), or `'wsl'` (a local WSL distro through `wsl.exe -d <distro> -e bash`; ADR-0003 decision 2). */
   backend: Volatile<string | undefined>
+  /** Explicit WSL distro for the `wsl` backend (the descriptor's backend-specific `distro` field, ADR-0003 decision 4); unset = discovered via `wsl.exe --list --quiet` (first distro; none → loud failure). */
+  wslDistro: Volatile<string | undefined>
   /** MSYS2 install root (e.g. `C:\msys64`) for the `msys2` backend; auto-detected from common install locations when unset (explicit config always wins; detection failure is loud). */
   msysRoot: Volatile<string | undefined>
   /** Explicit bash executable; for `msys2` the install root is derived from it, for `plain` it replaces the detected bash. */
@@ -116,6 +118,7 @@ export class LocalBashExecutor extends ShellExecutor {
     maxSpillBytes: z.number().default(DEFAULT_MAX_SPILL_BYTES).volatile(),
     graceMs: z.number().default(DEFAULT_GRACE_MS).volatile(),
     backend: z.string().default('plain').volatile(),
+    wslDistro: z.string().volatile(),
     msysRoot: z.string().volatile(),
     bashPath: z.string().volatile(),
     subsystem: z.string().default('UCRT64').volatile(),
@@ -134,7 +137,7 @@ export class LocalBashExecutor extends ShellExecutor {
    * so the terminal side carries no backend-specific path knowledge (ADR-0001
    * T4 amendment).
    * @throws the loud backend-resolution error when the configured backend
-   *   cannot serve a shell (detection failure, unknown/reserved id).
+   *   cannot serve a shell (detection failure, unknown id).
    */
   get enginePath(): string {
     return resolveExecutable(resolveBackend(this.config))
@@ -155,7 +158,7 @@ export class LocalBashExecutor extends ShellExecutor {
   resolve(request: ShellExecRequest): ShellExecSpec {
     assertServiceableBashConfig(this.config)
     // Fail loudly at the tool layer's first stop for an unusable backend
-    // (reserved id, missing msysRoot) — the same check execute() re-runs.
+    // (missing detection, unknown id) — the same check execute() re-runs.
     resolveBackend(this.config)
     const timeoutMs = clampTimeout(
       request.timeoutMs,
@@ -245,7 +248,7 @@ export class LocalBashExecutor extends ShellExecutor {
   async execute(spec: ShellExecSpec): Promise<ShellExecution> {
     // The descriptor is the backend seam (ADR-0001): selection and validation
     // fail loudly here — before a handle can exist — so a misconfigured or
-    // reserved backend can never silently spawn the wrong shell.
+    // misconfigured backend can never silently spawn the wrong shell.
     const backend = resolveBackend(this.config)
     assertServiceableBackend(backend)
     return this.executeArgv(spec, [resolveExecutable(backend), ...expandOneShotArgv(backend, spec.command)])

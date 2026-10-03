@@ -7,7 +7,7 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { LocalBashExecutor } from '../src/index.ts'
 import { assertServiceableBackend, backendSpecific, resolveBackend } from '../src/backends.ts'
 import type { BackendDescriptor } from '../src/backends.ts'
-import { detectPwsh, PLAIN_BASH_CANDIDATES } from '../src/detect.ts'
+import { detectPwsh, detectWslExe, PLAIN_BASH_CANDIDATES } from '../src/detect.ts'
 import type { ShellExecSpec, ShellExecution, ShellRunResult } from '@deepseek-ai/dsh-shell'
 
 /**
@@ -277,12 +277,23 @@ describe('T4: the bundle patch (cordis.patch.yml) — host shell replacement + l
 })
 
 describe('backend selection validation (fails loudly at the public boundary)', () => {
-  it("selecting the reserved backend 'wsl' fails with a config-pointing error that no longer lists 'pwsh' as reserved", async () => {
+  // T3 #15 (ADR-0003 Consequences): the reserved-id rejection is gone —
+  // selecting 'wsl' now resolves the real descriptor or fails loudly naming
+  // the WSL probe points. The live descriptor behavior is covered in
+  // wsl-backend.spec.ts; this lane pins the boundary posture and the #3
+  // regression pin ('pwsh' is never named as unimplemented).
+  const hasWslExe = detectWslExe() !== undefined
+  it.skipIf(hasWslExe)("selecting 'wsl' on a WSL-less machine fails loudly naming the probe points", async () => {
     const wsl = await setup({ backend: 'wsl' })
     expect(() => wsl.resolve({ command: 'true' })).toThrow(/wsl/)
-    // #3 regression pin: 'pwsh' graduated from reserved to implemented — the
-    // reserved/unknown enumerations must not name it as unimplemented.
-    expect(() => wsl.resolve({ command: 'true' })).toThrow(/reserved/)
+    expect(() => wsl.resolve({ command: 'true' })).toThrow(/found no WSL/)
+    expect(() => wsl.resolve({ command: 'true' })).not.toThrow(/reserved/)
+    const bogus = await setup({ backend: 'not-a-backend' })
+    expect(() => bogus.resolve({ command: 'true' })).toThrow(/not-a-backend/)
+  })
+  it.skipIf(!hasWslExe)("selecting 'wsl' resolves (T3); unknown ids still fail loudly", async () => {
+    const wsl = await setup({ backend: 'wsl' })
+    expect(resolveBackend(wsl.config).id).toBe('wsl')
     const bogus = await setup({ backend: 'not-a-backend' })
     expect(() => bogus.resolve({ command: 'true' })).toThrow(/not-a-backend/)
   })
@@ -305,7 +316,7 @@ const hasPwsh = pwshExe !== undefined
  * descriptor declares a `specific` section; plain/msys2/pwsh have none, and
  * a non-owning backend ignores foreign specific fields — typed (no `specific`
  * member) and at runtime (assertServiceableBackend rejects one, loudly).
- * `wsl` behavior itself is T3 #15: its reserved-id loud rejection stays.
+ * `wsl` behavior landed in T3 #15: its descriptor is real (wsl-backend.spec).
  */
 describe('T1 #13: backend-specific descriptor fields (ADR-0003 decision 4)', () => {
   const identityMapping = {

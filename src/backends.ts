@@ -6,13 +6,15 @@
  * declaration (`ITerminalExecutable` ordered candidates, `IShellLaunchConfig`
  * argv templates, profile `env`). `msys2` supports explicit configuration and
  * VS Code-style auto-detection (T3); `pwsh` is the Windows-native PowerShell
- * backend (#3, D7 phase 1.5); `wsl` remains a reserved registry entry that
- * fails loudly when selected.
+ * backend (#3, D7 phase 1.5); `wsl` is the local-WSL-distro backend (#15,
+ * ADR-0003 decisions 2–5) with its dedicated cross-VM path bridge.
  * @module dsh-shell-host/backends
  */
 
 import { delimiter, dirname, join } from 'node:path'
-import { detectMsysRoot, detectPlainBash, detectPwsh, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, pwshProbedLocations, spawnableExists } from './detect.ts'
+import { execFileSync } from 'node:child_process'
+import { detectMsysRoot, detectPlainBash, detectPwsh, detectWslExe, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, pwshProbedLocations, spawnableExists, wslProbedLocations } from './detect.ts'
+import { fromWslPath, toWslPath } from './wsl-bridge.ts'
 import type { Config } from './index.ts'
 
 /** Command-payload token inside an argv template (VS Code `{0}` analog). */
@@ -24,7 +26,7 @@ export const COMMAND_TOKEN = '{command}'
  * single declaration place — no per-backend side config section, and no
  * invented argv-template placeholders (`{distro}`-style); these values feed
  * the backend/bridge directly (T3 #15). The declaration is type-only here:
- * `wsl` stays a reserved registry id until T3.
+ * `wsl` carries its real descriptor since T3 (#15).
  */
 export interface WslSpecific {
   /** WSL distro name fed to `wsl.exe -d <distro>`; optional — distro discovery is a descriptor concern (ADR-0003 decision 3). */
@@ -43,7 +45,7 @@ const SPECIFIC_OWNERS: ReadonlySet<string> = new Set(['wsl'] satisfies readonly 
  * Base descriptor shape shared by every backend (ADR-0001 field set).
  */
 export interface BackendDescriptorBase {
-  /** Registry id: `'plain' | 'msys2' | 'pwsh'` implemented; `'wsl'` reserved. */
+  /** Registry id: `'plain' | 'msys2' | 'pwsh' | 'wsl'`, all implemented. */
   id: string
   /** Ordered executable candidates. A bare name spawns through PATH lookup (upstream `plain` behavior); absolute paths must exist. */
   executable: readonly string[]
@@ -241,6 +243,86 @@ async function cygpath(msysRoot: string, flag: string, path: string): Promise<st
 }
 
 /**
+ * Injectable dependencies of {@link wslBackend}: launcher existence and
+ * distro discovery are probed through these, so tests cover the loud-failure
+ * paths without a WSL host (the descriptor.spec detect-injection pattern).
+ */
+export interface WslBackendDeps {
+  /** Existence predicate for the launcher candidates; defaults to {@link spawnableExists}. */
+  exists?: (path: string) => boolean
+  /** Distro discovery; defaults to `wsl.exe --list --quiet` (UTF-16LE output). */
+  listDistros?: (wslExe: string) => readonly string[]
+}
+
+/**
+ * Parse `wsl.exe --list --quiet` output. wsl.exe writes UTF-16LE text whose
+ * first line opens with a BOM (U+FEFF) and trails blank lines; the BOM is
+ * stripped explicitly (a surviving `\uFEFFUbuntu` would break `-d <distro>`),
+ * and discovery takes the first listed distro name.
+ */
+export function parseWslDistroList(output: string): readonly string[] {
+  return output.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0)
+}
+
+/** The default distro discovery: `wsl.exe --list --quiet` (UTF-16LE), first entry. */
+function defaultListDistros(wslExe: string): readonly string[] {
+  return parseWslDistroList(execFileSync(wslExe, ['--list', '--quiet'], { encoding: 'utf16le' }))
+}
+
+/**
+ * wsl backend (issue #15, ADR-0003 decisions 2–4): a local WSL distro as a
+ * registry backend, with the registry's hard host-machine boundary — ssh/remote
+ * semantics never enter (decision 2). Launch protocol (decision 3): one-shot
+ * `wsl.exe -d <distro> -e bash -c <cmd>` — explicit distro, `-e` prevents
+ * wsl.exe from re-interpreting the command line; the only launcher candidate is
+ * the explicit System32 `wsl.exe` (a bare `bash` on the Windows PATH is the
+ * System32 WSL stub hazard, CONTEXT.md verified facts). Interactive (PTY
+ * terminal) mode declares the same distro selection through `-e bash --login
+ * -i`. The distro is a backend-specific descriptor field (decision 4): an
+ * explicit `wslDistro` config knob wins; otherwise discovery runs
+ * `wsl.exe --list --quiet` and takes the first distro (wsl.exe's list order;
+ * the chosen name is pinned into `-d`, so switching the user's WSL default
+ * later never silently changes the spawned distro — the ADR's rejected
+ * default-distro form). Absence fails loudly
+ * naming every probe point — the pwsh detection-failure posture, never a
+ * silent default-distro spawn (rejected: silent semantic change when the user
+ * switches their default). Cross-VM path mapping rides the dedicated
+ * {@link module:dsh-shell-host/wsl-bridge} (decision 5); wsl.exe inherits the
+ * Windows workdir, so the one-shot cwd lands on its drvfs mount point.
+ */
+export function wslBackend(config: Config, deps: WslBackendDeps = {}): SpecificBackendDescriptor<'wsl'> {
+  const wslExe = detectWslExe(deps.exists)
+  if (wslExe === undefined) {
+    throw new Error(
+      `bash-local: backend 'wsl' found no WSL; install WSL (wsl --install) or set backend: 'plain', 'msys2', or 'pwsh'. `
+      + `Probed: ${wslProbedLocations().join(', ')}`,
+    )
+  }
+  const distro = config.wslDistro.get() ?? (deps.listDistros ?? defaultListDistros)(wslExe)[0]
+  if (distro === undefined) {
+    throw new Error(
+      `bash-local: backend 'wsl' found no WSL distro; install one (wsl --install -d <distro>) or set wslDistro explicitly. `
+      + `Discovery probe: '${wslExe} --list --quiet' returned no installed distro`,
+    )
+  }
+  return {
+    id: 'wsl',
+    specific: { distro },
+    executable: [wslExe],
+    argv: {
+      oneShot: ['-d', distro, '-e', 'bash', '-c', COMMAND_TOKEN],
+      interactive: ['-d', distro, '-e', 'bash', '--login', '-i'],
+    },
+    env: {},
+    pathPrefix: [],
+    pathMapping: {
+      toShell: async (winPath) => toWslPath(winPath),
+      fromShell: async (shellPath) => fromWslPath(shellPath, distro),
+    },
+  }
+}
+
+/**
  * Factory building a backend descriptor from the live config. Registry
  * entries are stateless — the descriptor is rebuilt per resolution so the
  * volatile `backend` selection (and every descriptor input) hot-switches
@@ -253,9 +335,9 @@ export type BackendFactory = (config: Config) => BackendDescriptor
  * descriptors registered simultaneously; the `backend` config field remains
  * a single volatile selection resolved at execution time. The registry is
  * instance-free by decision — named backend instances are explicitly not
- * built (no real use case today; upgrading later is additive). `wsl` is a
- * reserved entry that fails loudly until T3 (#15) supplies its real
- * descriptor + bridge.
+ * built (no real use case today; upgrading later is additive). All four
+ * shipped ids — plain/msys2/pwsh/wsl — are registered with real factories
+ * (wsl since T3 #15).
  */
 const BACKEND_REGISTRY = new Map<string, BackendFactory>()
 
@@ -268,7 +350,7 @@ export function registerBackend(id: string, factory: BackendFactory): void {
   BACKEND_REGISTRY.set(id, factory)
 }
 
-/** The currently registered backend ids — the loud unknown-id enumeration reads this. The settings card's `backend` field is free text and never enumerates ids (so the reserved `wsl` entry is never offered). */
+/** The currently registered backend ids — the loud unknown-id enumeration reads this. The settings card's `backend` field is free text and never enumerates ids (backends are selected by config, not by enumeration). */
 export function registeredBackendIds(): ReadonlySet<string> {
   return new Set(BACKEND_REGISTRY.keys())
 }
@@ -282,12 +364,7 @@ registerBackend('msys2', (config) => {
   return msys2Backend(config)
 })
 registerBackend('pwsh', () => pwshBackend())
-registerBackend('wsl', () => {
-  // Reserved until T3 (#15, ADR-0003 decision 2): loud rejection names the
-  // ticket and the implemented alternatives — a misconfiguration can never
-  // silently spawn the wrong shell.
-  throw new Error(`bash-local: backend 'wsl' is reserved and not implemented yet (see the project issues); set backend: 'plain', 'msys2', or 'pwsh'`)
-})
+registerBackend('wsl', (config) => wslBackend(config))
 
 /**
  * Resolve the configured backend descriptor from the registry. Unknown ids
@@ -320,8 +397,8 @@ export function assertServiceableBackend(backend: BackendDescriptor): void {
   // section belongs to the id that declares it (BackendSpecificMap); any
   // other id carrying one is a mis-declaration and fails loudly naming the
   // owner — a non-owning backend otherwise simply ignores foreign fields
-  // (backendSpecific). `wsl` behavior itself lands in T3 (#15); the
-  // reserved-id selection rejection in resolveBackend is untouched here.
+  // (backendSpecific). Since T3 (#15) the wsl descriptor itself is the only
+  // specific-section owner in the shipped registry.
   if ('specific' in backend && !SPECIFIC_OWNERS.has(backend.id)) {
     throw new Error(`bash-local: backend '${backend.id}' declares a backend-specific section, which belongs to: ${[...SPECIFIC_OWNERS].map(id => `'${id}'`).join(', ')} (ADR-0003 decision 4)`)
   }

@@ -136,6 +136,36 @@ export function detectPwsh(
   return undefined
 }
 
+/**
+ * Every WSL launcher location the wsl backend probes (win32, #15, ADR-0003
+ * decision 3): the explicit System32 `wsl.exe` — the only candidate by
+ * decision. A bare `bash` on the Windows PATH is a known unreliable probe
+ * (CONTEXT.md verified facts: it hits the System32 WSL stub) and the System32
+ * `bash.exe` launcher collides with that hazard, so neither is ever probed.
+ */
+export function wslProbedLocations(env: NodeJS.ProcessEnv = process.env): readonly string[] {
+  return [join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'wsl.exe')]
+}
+
+/**
+ * Resolve the WSL launcher on win32 (issue #15): the explicit System32
+ * `wsl.exe` when it exists.
+ * @param exists - injectable existence predicate (tests use fake paths).
+ * @param env - environment for the well-known root; defaults to the process env.
+ * @returns the resolved absolute path, or undefined (the caller must then
+ *   fail loudly naming the probed locations — the pwsh posture).
+ */
+export function detectWslExe(
+  exists: (path: string) => boolean = spawnableExists,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (process.platform !== 'win32') return undefined
+  for (const candidate of wslProbedLocations(env)) {
+    if (exists(candidate)) return candidate
+  }
+  return undefined
+}
+
 /** PATH entries carrying a `pwsh.exe`, quotes stripped (`setx`-style definitions). */
 function pathEntries(path: string | undefined): string[] {
   return (path ?? '').split(delimiter)

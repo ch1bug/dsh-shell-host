@@ -13,7 +13,7 @@ import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { LocalBashExecutor } from '../src/index.ts'
 import { registerBackend, registeredBackendIds, resolveBackend } from '../src/backends.ts'
-import { detectPwsh } from '../src/detect.ts'
+import { detectPwsh, detectWslExe } from '../src/detect.ts'
 import { liveConfig } from './helpers/live-config.ts'
 
 const msysRoot = process.env.DSH_MSYS_ROOT ?? 'C:\\msys64'
@@ -46,12 +46,28 @@ describe('T2 #14: the registry layer', () => {
     await ctx.fiber.dispose()
   })
 
-  it("the reserved 'wsl' entry still fails loudly (T3 replaces it with a real descriptor)", async () => {
+  // T3 #15 (ADR-0003 Consequences): the reserved-id loud rejection is replaced
+  // by real descriptor behavior. Live coverage of the resolved wsl descriptor
+  // lives in wsl-backend.spec.ts; this registry-lane test pins that selecting
+  // 'wsl' through the executor boundary either resolves the real backend or
+  // fails loudly naming the probe points — never the old reserved rejection.
+  const hasWslExe = detectWslExe() !== undefined
+  it.skipIf(!hasWslExe)("the 'wsl' entry resolves a real descriptor (T3 replaces the reserved rejection)", async () => {
     const ctx = new Context()
     await ctx.plugin(LocalSubprocessRuntime)
     await ctx.plugin(LocalBashExecutor, { backend: 'wsl' })
     const bash = ctx.shell as LocalBashExecutor
-    expect(() => bash.resolve({ command: 'true' })).toThrow(/'wsl' is reserved/)
+    expect(resolveBackend(bash.config).id).toBe('wsl')
+    expect(() => bash.resolve({ command: 'true' })).not.toThrow(/reserved/)
+    await ctx.fiber.dispose()
+  })
+  it.skipIf(hasWslExe)("selecting 'wsl' without a WSL install fails loudly naming the probe points", async () => {
+    const ctx = new Context()
+    await ctx.plugin(LocalSubprocessRuntime)
+    await ctx.plugin(LocalBashExecutor, { backend: 'wsl' })
+    const bash = ctx.shell as LocalBashExecutor
+    expect(() => bash.resolve({ command: 'true' })).toThrow(/found no WSL/)
+    expect(() => bash.resolve({ command: 'true' })).toThrow(/System32\\wsl\.exe/)
     await ctx.fiber.dispose()
   })
 
