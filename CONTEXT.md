@@ -70,6 +70,17 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   「不走 npm」铁律。此例外记录于 ADR-0002,复制该模式前先读它
 
 
+## D9 (#2 grill 共识, 2026-10-03, 见 ADR-0003)
+
+- **多后端 = registry + 运行时单选热切**(Q1=A):`backend` 字段保持单选 volatile,对外契约与 bash-local 逐字段一致不变;不做命名实例、不做 per-call 选择(D8 红线)
+- **wsl 进 registry,边界写死**(Q2=C):registry 仅限本机后端(含本机 WSL 发行版);ssh/远程语义永不进 registry,独立票锚定
+- **wsl 启动协议**(Q3=A):`wsl.exe -d <distro> -e bash -c <cmd>`,显式 distro,缺失响亮报全部探测点(与 pwsh 探测失败姿态同构)
+- **backend 专属字段长在 descriptor 上**(Q6=B,VS Code profile 语义):wsl descriptor 自带 distro 等 VM 字段,无旁路 config 节,无模板占位符发明
+- **跨 VM 路径映射由 WSL 桥承载**(Q7):toShell(fromShell)双向都归 wsl 后端专属桥模块——`/mnt/<drive>/` 规则、`\\wsl$\<distro>\` 反向映射、drvfs 边角都在桥内实现与测试
+- **拆票**(Q5=C):T1 descriptor 表达力扩展 → T2 multi-backend registry/切换层 → T3 wsl descriptor + 桥;远程票独立
+
 ## 术语表(惰性)
 
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。
+- **Backend Registry(后端注册表)**:全部已注册 backend descriptor 的集合;`backend` config 单选指向其一(运行时可热切)。仅限本机后端(含本机 WSL);远程语义永不入册(ADR-0003)。
+- **WSL 桥(WSL bridge)**:wsl 后端专属的跨 VM 路径映射层,toShell/fromShell 双向(ADR-0003 决策 5)——通用 descriptor 映射与透传都不承担该职责。
