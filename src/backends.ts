@@ -241,27 +241,67 @@ async function cygpath(msysRoot: string, flag: string, path: string): Promise<st
 }
 
 /**
- * Resolve the configured backend descriptor. Unknown or reserved ids
- * (`wsl` — issue #2) fail loudly naming the id and the config knob, so a
- * misconfiguration can never silently spawn the wrong shell.
+ * Factory building a backend descriptor from the live config. Registry
+ * entries are stateless — the descriptor is rebuilt per resolution so the
+ * volatile `backend` selection (and every descriptor input) hot-switches
+ * without remounting the executor (ADR-0003 decision 1).
+ */
+export type BackendFactory = (config: Config) => BackendDescriptor
+
+/**
+ * The multi-backend registry (ADR-0003 decision 1, ticket #14): several
+ * descriptors registered simultaneously; the `backend` config field remains
+ * a single volatile selection resolved at execution time. The registry is
+ * instance-free by decision — named backend instances are explicitly not
+ * built (no real use case today; upgrading later is additive). `wsl` is a
+ * reserved entry that fails loudly until T3 (#15) supplies its real
+ * descriptor + bridge.
+ */
+const BACKEND_REGISTRY = new Map<string, BackendFactory>()
+
+/**
+ * Register (or replace) a backend factory. The module's shipped backends are
+ * registered below; the export exists for additive extension (T3's wsl
+ * descriptor registers the same way — no switch edit, no core change).
+ */
+export function registerBackend(id: string, factory: BackendFactory): void {
+  BACKEND_REGISTRY.set(id, factory)
+}
+
+/** The currently registered backend ids — the loud unknown-id enumeration reads this. The settings card's `backend` field is free text and never enumerates ids (so the reserved `wsl` entry is never offered). */
+export function registeredBackendIds(): ReadonlySet<string> {
+  return new Set(BACKEND_REGISTRY.keys())
+}
+
+registerBackend('plain', (config) => plainBackend(config))
+registerBackend('msys2', (config) => {
+  // subsystem 'none' = plain bash, no MSYS env injection (issue #6): Git
+  // Bash and Cygwin ride the same descriptor surface with env {} and no
+  // PATH prefix.
+  if (config.subsystem.get() === 'none') return plainBackend(config)
+  return msys2Backend(config)
+})
+registerBackend('pwsh', () => pwshBackend())
+registerBackend('wsl', () => {
+  // Reserved until T3 (#15, ADR-0003 decision 2): loud rejection names the
+  // ticket and the implemented alternatives — a misconfiguration can never
+  // silently spawn the wrong shell.
+  throw new Error(`bash-local: backend 'wsl' is reserved and not implemented yet (see the project issues); set backend: 'plain', 'msys2', or 'pwsh'`)
+})
+
+/**
+ * Resolve the configured backend descriptor from the registry. Unknown ids
+ * fail loudly naming the id and every registered id, so a misconfiguration
+ * can never silently spawn the wrong shell.
  * @throws Error naming the backend and the config field to change.
  */
 export function resolveBackend(config: Config): BackendDescriptor {
   const id = config.backend.get() ?? 'plain'
-  switch (id) {
-    case 'plain': return plainBackend(config)
-    case 'msys2':
-      // subsystem 'none' = plain bash, no MSYS env injection (issue #6): Git
-      // Bash and Cygwin ride the same descriptor surface with env {} and no
-      // PATH prefix.
-      if (config.subsystem.get() === 'none') return plainBackend(config)
-      return msys2Backend(config)
-    case 'pwsh': return pwshBackend()
-    case 'wsl':
-      throw new Error(`bash-local: backend '${id}' is reserved and not implemented yet (see the project issues); set backend: 'plain', 'msys2', or 'pwsh'`)
-    default:
-      throw new Error(`bash-local: unknown backend '${id}'; expected one of: plain, msys2, pwsh (wsl is reserved)`)
+  const factory = BACKEND_REGISTRY.get(id)
+  if (factory === undefined) {
+    throw new Error(`bash-local: unknown backend '${id}'; registered backends: ${[...BACKEND_REGISTRY.keys()].join(', ')}`)
   }
+  return factory(config)
 }
 
 /**
