@@ -1,6 +1,6 @@
 {
   "name": "dsh-shell-host",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.2-r1",
   "private": true,
   "description": "dsh-shell-host: the host-plane shell executor replacement layer for the DSH shell seam on Windows (VS Code terminal-profile modeled), forked from @deepseek-ai/dsh-bash-local with an identical external interface — pluggable backends (msys2 default, plain, pwsh; wsl reserved) — plus a Plugins-page settings card and a host-only fork of the permission-presets plugin (issue #10).",
   "type": "module",
