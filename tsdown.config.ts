@@ -27,7 +27,9 @@ const lib = defineConfig({
   plugins: [standardDecoratorLoweringPlugin()],
   // #10: two entries — the executor and the permission-presets fork (the
   // loader composes the fork under dsh-shell-host/permission-presets).
-  entry: ['src/index.ts', 'src/permission-presets.ts'],
+  // #28 (ADR-0007): the pty entry joins — lib/pty/index.js behind the
+  // dsh-shell-host/pty export.
+  entry: ['src/index.ts', 'src/permission-presets.ts', 'src/pty/index.ts'],
   outDir: 'lib',
   format: 'esm',
   platform: 'node',

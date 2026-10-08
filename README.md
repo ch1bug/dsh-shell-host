@@ -92,6 +92,32 @@ reload (all config fields are volatile). The bundle's `lib/client.js` is a
 closure-factory artifact over the platform module table (requires only
 `@deepseek-ai/dsh-client-ui-primitives` and `react/jsx-runtime`).
 
+## The `./pty` entry (issue #28, ADR-0007)
+
+`src/pty/` is the absorbed dsh-pty-session module (pure move from the
+dsh-pty-session repo, anchored at `dsh-v0.2.1-alpha.1-r1` per ADR-0005): a
+Layer 0, protocol-agnostic PTY session core over the harness's owner-scoped
+terminal seam (`ctx.terminals`). Four tools — `pty_open` / `pty_send` /
+`pty_tail` / `pty_close` — plus a programmatic facade (`ctx.provide("pty")`)
+for consumer plugins. Persistent/interactive session ownership (ADR-0004
+decision 5) is unchanged; only the home moved, and the entry keeps its own
+settings namespace (`dsh-pty-session` plugin name, `backendType` +
+`tailLines` config) — ADR-0007: sharing the package does not merge config
+surfaces.
+
+```js
+import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
+```
+
+Mount it via the bundle layer with `name: 'dsh-shell-host/pty'` (plus a
+terminal provider — the plugin needs `ctx.terminals`, which default desktop
+compositions do not mount). Division of labor with `backends/ssh.ts`
+(ADR-0006): the ssh registry backend runs ONE-SHOT commands over a
+ControlMaster connection opened and torn down per invocation; `./pty` owns
+PERSISTENT sessions (survive turns, incremental tail cursor) — for a
+long-running remote session, point `pty_open` at an ssh-capable backend
+type; do not route it through the one-shot registry backend.
+
 ## Provenance (issue #23 status)
 
 - History: started as a fork of `@deepseek-ai/dsh-bash-local` **0.2.0-rc.2**
