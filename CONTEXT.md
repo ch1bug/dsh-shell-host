@@ -91,7 +91,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 ## 术语表(惰性)
 
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。
-- **Backend Registry(后端注册表)**:全部已注册 backend descriptor 的集合;`backend` config 单选指向其一(运行时可热切)。仅限本机后端(含本机 WSL);远程语义永不入册(ADR-0003)。
+- **Backend Registry(后端注册表)**:全部已注册 backend descriptor 的集合;`backend` config 单选指向其一(运行时可热切)。#23(路B)起 = msys2 / plain / pwsh / wsl / **ssh**(ssh 入册系 #23 授权,ADR-0006 缩小 ADR-0003 决策 2 的边界;持久会话仍不入册)。
 - **WSL 桥(WSL bridge)**:wsl 后端专属的跨 VM 路径映射层,toShell/fromShell 双向(ADR-0003 决策 5)——通用 descriptor 映射与透传都不承担该职责。
-- **远程执行器(Remote executor)**:`dsh-shell-remote` 仓的 one-shot 远程执行世界(ADR-0004)——薄 ssh 传输、契约与 bash-local 字段一致、路径语义全为远端;永不进 Backend Registry。
+- **远程执行器(Remote executor)**:`dsh-shell-remote` 仓的 one-shot 远程执行世界(ADR-0004)——薄 ssh 传输、契约与 bash-local 字段一致、路径语义全为远端。#23(路B)后该传输合并为 shell-host 的 `ssh` 后端(ADR-0006),原仓归档或留薄壳;**持久会话仍不入册**。
 - **持久会话(Persistent session)**:交互式/长生命周期 shell 语义,归 `dsh-pty-session` 仓(本地或 ssh 实例);shell-host 与 shell-remote 都不承载(ADR-0004 决策 5)。

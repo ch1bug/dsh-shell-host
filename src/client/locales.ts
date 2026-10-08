@@ -5,7 +5,7 @@ import type { SettingsFormLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 /** Locale keys the page renders. */
 export type ShellSettingsLocaleKey =
   | 'title' | 'description'
-  | 'backend' | 'backendHint'
+  | 'backend' | 'backendHint' | 'backendDefault'
   | 'subsystem' | 'subsystemHint'
   | 'msysRoot' | 'msysRootHint'
   | 'bashPath' | 'bashPathHint' | 'sshHost' | 'sshHostHint'
@@ -19,6 +19,7 @@ export const en: Record<ShellSettingsLocaleKey, string> = {
   description: 'The Windows platform shell behind the bash tool and the terminal — routed backends (MSYS2 default, plain bash, PowerShell, WSL, SSH). Configuration re-applies to new commands without a reload.',
   backend: 'Backend',
   backendHint: "'msys2' injects the MSYSTEM environment and PATH surface; 'plain' runs a detected bash with no injection (Git Bash / Cygwin); 'pwsh' runs Windows PowerShell (PowerShell 7 preferred, no injection); 'wsl' runs a local WSL distro through wsl.exe; 'ssh' runs a remote host's bash over system OpenSSH (requires the sshHost setting).",
+  backendDefault: '(default: msys2)',
   subsystem: 'Subsystem (MSYSTEM)',
   subsystemHint: "MSYS2 subsystem for PATH and toolchains: UCRT64 (default), MSYS, MINGW64, CLANG64…; 'none' disables injection.",
   msysRoot: 'MSYS2 install root',
@@ -48,6 +49,7 @@ export const zh: Record<ShellSettingsLocaleKey, string> = {
   description: 'Windows 平台 shell:bash 工具与终端背后的宿主 shell,后端按配置路由(MSYS2 默认、纯 bash、PowerShell、WSL、SSH)。配置保存后对新命令即时生效,无需重启。',
   backend: '后端',
   backendHint: "'msys2' 注入 MSYSTEM 环境与 PATH 表面;'plain' 直接运行探测到的 bash,不做注入(Git Bash / Cygwin);'pwsh' 运行 Windows PowerShell(优先 PowerShell 7,不做注入);'wsl' 通过 wsl.exe 运行本地 WSL 发行版;'ssh' 通过系统 OpenSSH 运行远程主机的 bash(需配置 sshHost)。",
+  backendDefault: '(默认:msys2)',
   subsystem: '子系统(MSYSTEM)',
   subsystemHint: 'MSYS2 子系统决定 PATH 与工具链:UCRT64(默认)、MSYS、MINGW64、CLANG64…;none 表示不注入。',
   msysRoot: 'MSYS2 安装根',

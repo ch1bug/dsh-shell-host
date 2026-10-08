@@ -36,7 +36,7 @@ export function sshBackend(config: Config): SpecificBackendDescriptor<'ssh'> {
   const host = config.sshHost.get()?.trim() ?? ''
   if (host.length === 0) {
     throw new Error(
-      `bash-local: backend 'ssh' requires a remote target; set sshHost (a ~/.ssh/config alias or [user@]host) explicitly`,
+      `shell-host: backend 'ssh' requires a remote target; set sshHost (a ~/.ssh/config alias or [user@]host) explicitly`,
     )
   }
   return {
