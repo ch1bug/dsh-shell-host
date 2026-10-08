@@ -61,7 +61,8 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - vite 的 RegExp alias 不匹配含 `/` 的子路径 specifier(如
   `@deepseek-ai/dsh-commands/brand`)——子路径 alias 必须用 string find
 - 装饰器源码(`@Remote(...)`)在本仓 vitest 下必须先过 TypeScript 预变换
-  (vitest.config.ts `standardDecoratorPlugin`,移植自上游 vitest.shared.ts)
+  (vitest.shared.ts `standardDecoratorPlugin`,移植自上游同名文件;unit/machine
+  两个 project 各自挂载,#34 起 vitest.config.ts 为 projects 结构)
 - zod 4.6.x 会让 projection `register` 的泛型推断 TS2589;fork 钉 `zod@4.4.3`
   (与上游一致)
 - **依赖策略例外(仅类型)**:fork 的 `dsh-settings` 类型导入走兄弟仓 BUILT
