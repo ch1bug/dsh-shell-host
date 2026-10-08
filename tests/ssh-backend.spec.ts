@@ -38,12 +38,12 @@ describe('ssh backend (issue #23 AC6/AC9)', () => {
     expect(backend).toHaveProperty('specific', { host: 'alias' })
   })
 
-  it('injects no env and no PATH prefix; path semantics stay remote (identity mapping)', () => {
+  it('injects no env and no PATH prefix; path semantics stay remote (identity mapping)', async () => {
     const backend = resolveBackend(config({ sshHost: 'alias' }))
     expect(backend.env).toEqual({})
     expect(backend.pathPrefix).toEqual([])
-    expect(backend.pathMapping.toShell('/remote/path')).resolves.toBe('/remote/path')
-    expect(backend.pathMapping.fromShell('/remote/path')).resolves.toBe('/remote/path')
+    await expect(backend.pathMapping.toShell('/remote/path')).resolves.toBe('/remote/path')
+    await expect(backend.pathMapping.fromShell('/remote/path')).resolves.toBe('/remote/path')
   })
 
   it('fails loudly on a missing host (no silent spawn against an unnamed remote)', () => {
