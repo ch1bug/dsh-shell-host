@@ -4,7 +4,6 @@
  * (the msys2 suite's explicit-config pattern; no real ssh is spawned here).
  */
 import { describe, expect, it } from 'vitest'
-import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { registeredBackendIds, resolveBackend } from '../src/backends.ts'
 import type { Config } from '../src/index.ts'
@@ -55,7 +54,3 @@ describe('ssh backend (issue #23 AC6/AC9)', () => {
     expect(() => resolveBackend(config({ sshHost: '   ' }))).toThrow(/sshHost/)
   })
 })
-
-// Context import guard: the descriptor resolution is context-free, but keeping
-// the cordis import in scope pins the peer closure the registry runs under.
-void Context

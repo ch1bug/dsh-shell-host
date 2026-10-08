@@ -20,6 +20,8 @@ type SelectFieldProps = {
   id: string
   label: string
   hint: string
+  /** Locale copy for the empty-draft placeholder option (inherit = the composition default). */
+  placeholderLabel: string
   options: readonly string[]
   disabled: boolean
   overriddenLabel: string
@@ -31,11 +33,12 @@ type SelectFieldProps = {
 
 /**
  * A choice field in the shared settings form's layout: the same head row
- * (label, overridden badge, reset) and hint paragraph as
- * {@link SettingsValueField}, with a native `<select>` as the control — the
- * backend ids are a closed set, so free text is the wrong control (AC8).
- * An empty draft renders a default-marked placeholder option (inherit the
- * composition value).
+ * (label, overridden badge, reset) and hint paragraph as the primitives'
+ * `SettingsValueField` (lib/settings-form/fields.tsx — no select variant is
+ * exported, so this mirrors its DOM; re-diff on upstream bumps), with a
+ * native `<select>` as the control — the backend ids are a closed set, so
+ * free text is the wrong control (AC8). An empty draft renders a
+ * default-marked placeholder option (inherit the composition value).
  */
 function SettingsSelectField(props: SelectFieldProps) {
   const { field } = props
@@ -57,7 +60,7 @@ function SettingsSelectField(props: SelectFieldProps) {
         onChange={(event) => { props.onEdit(event.target.value) }}
         style={{ maxWidth: 280 }}
       >
-        {field.text === '' ? <option value="">(default: msys2)</option> : null}
+        {field.text === '' ? <option value="">{props.placeholderLabel}</option> : null}
         {props.options.map(option => <option key={option} value={option}>{option}</option>)}
       </select>
       <p style={{ margin: 0, opacity: 0.7, fontSize: '0.9em' }}>{props.hint}</p>
@@ -83,6 +86,7 @@ export function ShellCard(props: ShellCardProps) {
         id="plugin-config-shell-host-backend"
         label={t('backend')}
         hint={t('backendHint')}
+        placeholderLabel={t('backendDefault')}
         options={BACKEND_OPTIONS}
         disabled={disabled}
         overriddenLabel={overriddenLabel}

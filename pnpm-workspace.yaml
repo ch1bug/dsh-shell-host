@@ -12,7 +12,3 @@ onlyBuiltDependencies:
   - '@deepseek-ai/dsh-subprocess-local'
   - koffi
   - node-pty
-allowBuilds:
-  '@deepseek-ai/dsh-subprocess-local': set this to true or false
-  koffi: set this to true or false
-  node-pty: set this to true or false
