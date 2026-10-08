@@ -41,10 +41,10 @@ const unitLaneExclusions = [
   ...machineLane,
   'tests/_e2e-smoke.spec.ts',
   // executor.spec.ts exercises POSIX signal semantics (TERM-trap → SIGKILL
-  // escalation); Windows has no signals, so it fails on win32 — same policy
-  // family as upstream's windowsUnsupportedPackages ("a real POSIX shell is
-  // unavailable on Windows").
-  'tests/executor.spec.ts',
+  // escalation). Win32-conditional, mirroring the upstream
+  // windowsUnsupportedPackages policy family ("a real POSIX shell is
+  // unavailable on Windows"): POSIX hosts keep collecting it.
+  ...(process.platform === 'win32' ? ['tests/executor.spec.ts'] : []),
 ]
 const specInclude = ['tests/**/*.spec.ts', ...unitLaneExclusions.map((f) => `!${f}`)]
 
