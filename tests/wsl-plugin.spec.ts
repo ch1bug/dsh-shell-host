@@ -1,0 +1,164 @@
+// tests/wsl-plugin.spec.ts — the `./wsl` entry (issue #30, ADR-0007 pure
+// move from dsh-wsl-bridge, anchor dsh-v0.2.1-alpha.1-r1). Smoke suite: the
+// plugin contract (name/inject/apply), the seven-tool registration, and a
+// full tool execution round-trip through a fake host shell seam. The source
+// repo shipped no tests; these are written against the source repo's tool-
+// level behavior descriptions (its README "How it works" + tool docs).
+import { describe, expect, it } from 'vitest'
+
+import * as wslPlugin from '../src/wsl-plugin/index.js'
+
+/** Fake shell-seam result the tools consume. */
+function fakeRun(stdout = '', stderr = '', exitCode = 0) {
+  return {
+    exitCode,
+    stdout: { text: stdout },
+    stderr: { text: stderr },
+  }
+}
+
+/** Build a fake ctx: tools.register collector + a scripted shell service. */
+function fakeCtx(script: (request: any) => any) {
+  const registered: any[] = []
+  const calls: any[] = []
+  const ctx = {
+    get(serviceName: string) {
+      if (serviceName === 'shell') {
+        return {
+          resolve: (request: any) => request,
+          execute: async (request: any) => {
+            calls.push(request)
+            const result = script(request)
+            return { result: async () => result }
+          },
+        }
+      }
+      return undefined // sandboxPolicy absent by default
+    },
+    tools: { register: (tool: any) => registered.push(tool) },
+  }
+  return { ctx, registered, calls }
+}
+
+describe('./wsl entry contract (issue #30, ADR-0007)', () => {
+  it('exposes the absorbed plugin contract: name, inject, apply', () => {
+    expect(wslPlugin.name).toBe('dsh-wsl-bridge')
+    expect(wslPlugin.inject).toEqual(['tools', 'shell', 'sandboxPolicy'])
+    expect(typeof wslPlugin.apply).toBe('function')
+  })
+
+  it('registers exactly the seven win_* tools via defineTool + ctx.tools.register', () => {
+    const { ctx, registered } = fakeCtx(() => fakeRun())
+    wslPlugin.apply(ctx as any)
+    expect(registered.map((t) => t.name)).toEqual([
+      'win_ls', 'win_read', 'win_write', 'win_run', 'win_open', 'win_path', 'win_drives',
+    ])
+    for (const tool of registered) {
+      expect(typeof tool.execute).toBe('function')
+      expect(typeof tool.description).toBe('string')
+      expect(tool.parameters).toBeTypeOf('object')
+    }
+  })
+})
+
+describe('win_* tool behavior through the fake shell seam', () => {
+  it('win_path passes either form through wslpath and reports both sides', async () => {
+    const { ctx, registered, calls } = fakeCtx((request) => fakeRun('C:\\Users\\me\n'))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_path')!
+    const out = await tool.execute({ path: '/mnt/c/Users/me' }, { agent: { session: {} } })
+    expect(calls[0].command).toBe(`wslpath -w '/mnt/c/Users/me'`)
+    expect(out).toEqual({ input: '/mnt/c/Users/me', wslPath: '/mnt/c/Users/me', winPath: 'C:\\Users\\me', error: null })
+  })
+
+  it('win_ls parses long listings into entries and normalizes the path', async () => {
+    const listing = 'total 4\n-rw-r--r-- 1 me me 12 2026-10-08 17:00 notes.txt\ndrwxr-xr-x 1 me me 0 2026-10-08 17:00 docs\n'
+    const { ctx, registered, calls } = fakeCtx(() => fakeRun(listing))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_ls')!
+    const out = await tool.execute({ path: 'C:\\Users\\me' }, {})
+    expect(calls[0].command).toBe(`ls -la --time-style=long-iso '/mnt/c/Users/me'`)
+    expect(out.path).toBe('/mnt/c/Users/me')
+    expect(out.winPath).toBe('C:\\Users\\me')
+    expect(out.entries).toEqual([
+      { perms: '-rw-r--r--', size: 12, mtime: '2026-10-08 17:00', name: 'notes.txt', isDir: false },
+      { perms: 'drwxr-xr-x', size: 0, mtime: '2026-10-08 17:00', name: 'docs', isDir: true },
+    ])
+    expect(out.error).toBeNull()
+  })
+
+  it('win_write base64-encodes UTF-8 content (non-Latin-1 safe) and reports byte count', async () => {
+    const { ctx, registered, calls } = fakeCtx(() => fakeRun('', '', 0))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_write')!
+    const out = await tool.execute({ path: 'C:\\Users\\me\\中文.txt', content: '你好' }, {})
+    const cmd = calls[0].command as string
+    expect(cmd).toContain(`mkdir -p '/mnt/c/Users/me'`)
+    expect(cmd).toContain(`| base64 -d > '/mnt/c/Users/me/中文.txt'`)
+    // '你好' is 6 UTF-8 bytes — the count comes from TextEncoder, not btoa.
+    expect(out.bytes).toBe(6)
+    expect(out.exitCode).toBe(0)
+    expect(out.error).toBeNull()
+  })
+
+  it('win_read returns content on success and a loud error on failure', async () => {
+    const { ctx, registered } = fakeCtx(() => fakeRun('line1\nline2\n'))
+    wslPlugin.apply(ctx as any)
+    const read = registered.find((t) => t.name === 'win_read')!
+    const ok = await read.execute({ path: '/mnt/c/x.txt' }, {})
+    expect(ok.content).toBe('line1\nline2\n')
+    expect(ok.error).toBeNull()
+
+    const failing = fakeCtx(() => fakeRun('', 'sed: no such file', 1))
+    wslPlugin.apply(failing.ctx as any)
+    const bad = failing.registered.find((t) => t.name === 'win_read')!
+    const err = await bad.execute({ path: '/mnt/c/x.txt' }, {})
+    expect(err.exitCode).toBe(1)
+    expect(err.error).toBe('sed: no such file')
+    expect(err.content).toBe('')
+  })
+
+  it('win_run (direct) executes as-is in WSL bash and forwards the seam result', async () => {
+    const { ctx, registered, calls } = fakeCtx(() => ({ exitCode: 3, timedOut: false, aborted: false, stdout: { text: 'out' }, stderr: { text: 'err' } }))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_run')!
+    const out = await tool.execute({ command: '/mnt/c/Windows/System32/ipconfig.exe /all', shell: 'direct', cwd: 'C:\\Work' }, {})
+    expect(calls[0].command).toBe('/mnt/c/Windows/System32/ipconfig.exe /all')
+    expect(calls[0].workdir).toBe('/mnt/c/Work')
+    expect(out).toMatchObject({ shell: 'direct', exitCode: 3, stdout: 'out', stderr: 'err' })
+  })
+
+  it('win_open reports the explorer exit-code-1 note and both path forms', async () => {
+    const { ctx, registered } = fakeCtx(() => fakeRun('', '', 1))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_open')!
+    const out = await tool.execute({ path: 'C:\\Users' }, {})
+    expect(out.winPath).toBe('C:\\Users')
+    expect(out.wslPath).toBe('/mnt/c/Users')
+    expect(out.note).toContain('with code 1 on success')
+  })
+
+  it('win_drives parses /mnt into drive rows', async () => {
+    const { ctx, registered } = fakeCtx(() => fakeRun('c\nd\n'))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_drives')!
+    const out = await tool.execute({}, {})
+    expect(out.drives).toEqual([
+      { drive: 'C', wslPath: '/mnt/c', winPath: 'C:\\' },
+      { drive: 'D', wslPath: '/mnt/d', winPath: 'D:\\' },
+    ])
+  })
+})
+
+describe('path helpers (the plugin entry keeps its own converters — two layers, ADR-0007)', () => {
+  it('internal converters pass relative/POSIX paths through unchanged (source behavior, unlike the strict backend bridge)', async () => {
+    const { ctx, registered, calls } = fakeCtx(() => fakeRun(''))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_ls')!
+    await tool.execute({ path: 'relative\\dir' }, {})
+    // The plugin's simplified toWslPath passes a relative path through
+    // (slashes normalized) — src/wsl-bridge.ts would throw loudly. The two
+    // converters are deliberately NOT merged (pure move; ADR-0007).
+    expect(calls[0].command).toBe(`ls -la --time-style=long-iso 'relative/dir'`)
+  })
+})

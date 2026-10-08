@@ -31,7 +31,12 @@ const lib = defineConfig({
   // dsh-shell-host/pty export.
   // #29 (ADR-0007): the remote entry joins — lib/remote/index.js behind the
   // dsh-shell-host/remote export (NOT a registry backend, ADR-0007).
-  entry: ['src/index.ts', 'src/permission-presets.ts', 'src/pty/index.ts', 'src/remote/index.ts'],
+  // #30 (ADR-0007): the wsl entry joins — lib/wsl-plugin/index.js behind the
+  // dsh-shell-host/wsl export. Plugin-LAYER entry (defineTool + ctx.tools):
+  // registers model tools, not execution backends (ADR-0007 "Entry form
+  // differences"; named wsl-plugin to avoid src/wsl-bridge.ts, ADR-0003
+  // decision 5's in-backend mapping layer — two layers, not one).
+  entry: ['src/index.ts', 'src/permission-presets.ts', 'src/pty/index.ts', 'src/remote/index.ts', 'src/wsl-plugin/index.ts'],
   outDir: 'lib',
   format: 'esm',
   platform: 'node',
