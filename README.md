@@ -149,6 +149,41 @@ Two boundaries, per ADR-0007:
   ADR-0004's separate-repo half is superseded; the D8 field-identical contract
   and the loud spill rejection carry over as-is.
 
+## The `./wsl` entry (issue #30, ADR-0007)
+
+`src/wsl-plugin/` is the absorbed dsh-wsl-bridge module (pure move, source
+anchored at `dsh-v0.2.1-alpha.1-r1` per ADR-0005): Windows access tools for
+agents running inside WSL — `win_ls` / `win_read` / `win_write` / `win_run`
+(cmd / powershell / direct interop) / `win_open` / `win_path` / `win_drives`.
+Everything runs through the host `shell` service with the calling session's
+sandbox policy applied per call (the same seam the built-in bash tool uses);
+path normalization accepts both `C:\Users\me` and `/mnt/c/Users/me` forms;
+`win_run` writes temp `.bat`/`.ps1` files to `C:\Windows\Temp` and cleans up
+after itself.
+
+```js
+import * as wsl from 'dsh-shell-host/wsl'   // { name, inject, apply }
+```
+
+Mount it via the bundle layer with `name: 'dsh-shell-host/wsl'` (the row name
+is the module path of this entry — the source repo's old plugin name
+`dsh-wsl-bridge` no longer resolves post-absorption; verified against a live
+`dsh plugin add` profile install). The plugin needs the `shell` and
+`sandboxPolicy` services. **This is a plugin-LAYER entry**
+(ADR-0007 "Entry form differences"): it is built on `defineTool` + `ctx.tools`
+and registers model tools — categorically different from the executor entries
+`./host`/`./pty`/`./remote`, which produce executor semantics (one-shot /
+persistent execution worlds) and never touch the tool seam. `./wsl` is not a
+registry backend; the `backend` config single-select (ADR-0003/ADR-0006)
+never points at it.
+
+**Two layers, deliberately not merged** (ADR-0007 redundancy check): this
+plugin entry's internal path converters are its own simplified helpers
+(relative paths pass through); `src/wsl-bridge.ts` (ADR-0003 decision 5) is
+the `wsl` backend's strict cross-VM mapping layer (relative paths throw
+loudly, `\\wsl$` UNC handled, exercised by `tests/wsl-bridge.spec.ts`). They
+answer different layers of one domain and are kept separate on purpose.
+
 ## Provenance (issue #23 status)
 
 - History: started as a fork of `@deepseek-ai/dsh-bash-local` **0.2.0-rc.2**

@@ -53,6 +53,10 @@
     "./remote": {
       "types": "./lib/types/remote/index.d.ts",
       "default": "./lib/remote/index.js"
+    },
+    "./wsl": {
+      "types": "./lib/types/wsl-plugin/index.d.ts",
+      "default": "./lib/wsl-plugin/index.js"
     }
   },
   "files": [
@@ -61,7 +65,8 @@
     "lib/types/**/*.d.ts",
     "lib/permission-presets.js",
     "lib/pty/index.js",
-    "lib/remote/index.js"
+    "lib/remote/index.js",
+    "lib/wsl-plugin/index.js"
   ],
   "scripts": {
     "build": "tsdown",

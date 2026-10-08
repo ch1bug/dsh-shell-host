@@ -42,7 +42,7 @@ function standardDecoratorPlugin() {
 // decision: end-to-end acceptance stays out of the unit loop) — see
 // vitest.e2e.config.ts / `pnpm test:e2e`.
 const specInclude = process.platform === 'win32'
-  ? ['tests/descriptor.spec.ts', 'tests/registry.spec.ts', 'tests/detect.spec.ts', 'tests/permission-presets.spec.ts', 'tests/pty-session.spec.ts', 'tests/built-artifact.spec.ts', 'tests/wsl-bridge.spec.ts', 'tests/wsl-backend.spec.ts', 'tests/ssh-backend.spec.ts', 'tests/remote-descriptor.spec.ts', 'tests/remote-executor.spec.ts', 'tests/remote-types.spec.ts', 'tests/remote-conformance.spec.ts']
+  ? ['tests/descriptor.spec.ts', 'tests/registry.spec.ts', 'tests/detect.spec.ts', 'tests/permission-presets.spec.ts', 'tests/pty-session.spec.ts', 'tests/built-artifact.spec.ts', 'tests/wsl-bridge.spec.ts', 'tests/wsl-backend.spec.ts', 'tests/ssh-backend.spec.ts', 'tests/remote-descriptor.spec.ts', 'tests/remote-executor.spec.ts', 'tests/remote-types.spec.ts', 'tests/remote-conformance.spec.ts', 'tests/wsl-plugin.spec.ts']
   : ['tests/**/*.spec.ts']
 
 export default defineConfig({
