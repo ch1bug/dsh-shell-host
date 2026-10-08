@@ -252,8 +252,13 @@ function registerTools(ctx: WslCtx): void {
       parameters: {},
       output: { schema: { type: 'json' }, render: renderJson as any },
       async execute(_args: Record<string, never>, exec: { agent?: { session?: unknown } | null; signal?: AbortSignal }) {
-        const r = await run(ctx, `ls -1 /mnt 2>/dev/null | grep -E '^[a-z]$'`, exec, { timeoutMs: 10000 })
-        const drives = r.stdout.text.split('\n').map((s) => s.trim()).filter(Boolean)
+        // #32: no grep — a pattern ending in `$` collides with the executor's
+        // bash -c quoting (`$'` opens ANSI-C quoting, "unexpected EOF") and
+        // the tool returned empty drives on the real seam. The listing comes
+        // back raw; drive filtering happens here, in JS.
+        const r = await run(ctx, `ls -1 /mnt 2>/dev/null`, exec, { timeoutMs: 10000 })
+        const drives = r.stdout.text.split('\n').map((s) => s.trim())
+          .filter((d) => /^[a-z]$/.test(d))
           .map((d) => ({ drive: d.toUpperCase(), wslPath: '/mnt/' + d, winPath: d.toUpperCase() + ':\\' }))
         return { drives, raw: r.stdout.text }
       },
