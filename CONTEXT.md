@@ -94,4 +94,5 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **Backend Registry(后端注册表)**:全部已注册 backend descriptor 的集合;`backend` config 单选指向其一(运行时可热切)。#23(路B)起 = msys2 / plain / pwsh / wsl / **ssh**(ssh 入册系 #23 授权,ADR-0006 缩小 ADR-0003 决策 2 的边界;持久会话仍不入册)。
 - **WSL 桥(WSL bridge)**:wsl 后端专属的跨 VM 路径映射层,toShell/fromShell 双向(ADR-0003 决策 5)——通用 descriptor 映射与透传都不承担该职责。
 - **远程执行器(Remote executor)**:`dsh-shell-remote` 仓的 one-shot 远程执行世界(ADR-0004)——薄 ssh 传输、契约与 bash-local 字段一致、路径语义全为远端。#23(路B)后该传输合并为 shell-host 的 `ssh` 后端(ADR-0006),原仓归档或留薄壳;**持久会话仍不入册**。
-- **持久会话(Persistent session)**:交互式/长生命周期 shell 语义,归 `dsh-pty-session` 仓(本地或 ssh 实例);shell-host 与 shell-remote 都不承载(ADR-0004 决策 5)。
+- **持久会话(Persistent session)**:交互式/长生命周期 shell 语义,归 `dsh-pty-session` 仓(本地或 ssh 实例);shell-host 与 shell-remote 都不承载(ADR-0004 决策 5)。ADR-0007 后迁入 shell-host 包的 `./pty` entry,所有权结论不变。
+- **Entry(包入口)**:dsh-shell-host 单包多入口的导出单元(ADR-0007)——`./host` 执行器(现状)、`./pty` 持久会话、`./remote` 远程 one-shot、`./wsl` 插件层桥。executor entries(`./host`/`./pty`/`./remote`)产出执行语义;`./wsl` 是插件层 entry(defineTool + ctx.tools,依赖 @deepseek-ai/dsh-tools),注册工具而非执行后端,与其内嵌的 `src/wsl-bridge.ts` 纯路径映射是两层、不合并。各 entry 独立 settings namespace,共享包不合并配置面。
