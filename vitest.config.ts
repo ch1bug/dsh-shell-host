@@ -24,10 +24,29 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // machine lane restores the signal without weakening any assertion or
 // skipping coverage — on a WSL-less host the same suites still run their
 // injected/loud-failure cases here and keep their skipIf guards.
+// #44: the unit lane collects by POSITION CONVENTION — any tests/**/*.spec.ts
+// is collected with zero config (a new spec can no longer be silently missed
+// by a stale allowlist). The only exclusions are EXPLICIT, each with a stated
+// reason. `machineLane` below stays an explicit list on purpose: it selects
+// the suites that run SERIALLY (fileParallelism off, live WSL spawns), so
+// membership there is a deliberate per-suite choice, not collection gating.
 const machineLane = ['tests/wsl-backend.spec.ts', 'tests/registry.spec.ts', 'tests/wsl-plugin-live.spec.ts']
-const specInclude = process.platform === 'win32'
-  ? ['tests/descriptor.spec.ts', 'tests/detect.spec.ts', 'tests/permission-presets.spec.ts', 'tests/pty-session.spec.ts', 'tests/built-artifact.spec.ts', 'tests/wsl-bridge.spec.ts', 'tests/ssh-backend.spec.ts', 'tests/remote-descriptor.spec.ts', 'tests/remote-executor.spec.ts', 'tests/remote-types.spec.ts', 'tests/remote-conformance.spec.ts', 'tests/wsl-plugin.spec.ts', 'tests/subprocess-context-pin.spec.ts']
-  : ['tests/**/*.spec.ts']
+// Explicit exclusion outlet: a spec listed here is exempt from the unit lane,
+// each with its reason. machineLane files are excluded because the serial
+// machine project owns them; _e2e-smoke is excluded because the EXPLICIT e2e
+// lane (vitest.e2e.config.ts, `pnpm test:e2e`) owns it. Add an entry ONLY to
+// exempt a spec from the unit lane entirely — every other tests/**/*.spec.ts
+// is collected by position, with zero config.
+const unitLaneExclusions = [
+  ...machineLane,
+  'tests/_e2e-smoke.spec.ts',
+  // executor.spec.ts exercises POSIX signal semantics (TERM-trap → SIGKILL
+  // escalation); Windows has no signals, so it fails on win32 — same policy
+  // family as upstream's windowsUnsupportedPackages ("a real POSIX shell is
+  // unavailable on Windows").
+  'tests/executor.spec.ts',
+]
+const specInclude = ['tests/**/*.spec.ts', ...unitLaneExclusions.map((f) => `!${f}`)]
 
 const shared = {
   environment: 'node',
@@ -44,7 +63,7 @@ export default defineConfig({
     projects: [
       {
         plugins: lanePlugins,
-        test: { ...shared, name: 'unit', include: [...specInclude, ...machineLane.map((f) => `!${f}`)] },
+        test: { ...shared, name: 'unit', include: specInclude },
       },
       {
         plugins: lanePlugins,
@@ -58,3 +77,4 @@ export default defineConfig({
     ],
   },
 })
+
