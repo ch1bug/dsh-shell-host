@@ -39,7 +39,7 @@ interface ShellRun {
   exitCode: number
   timedOut?: boolean
   aborted?: boolean
-  stdout: { text: string }
+  stdout: { text: string; truncated?: boolean }
   stderr: { text: string }
 }
 
@@ -77,7 +77,7 @@ interface WslExec {
 
 /** Execute through the host shell seam (foreground = await the handle's
  * result() projection; no run() on the alpha.1 seam, dsh-shell-host #17). */
-async function run(ctx: WslCtx, command: string, exec: WslExec, opts: { timeoutMs?: number; workdir?: string } = {}): Promise<ShellRun> {
+async function run(ctx: WslCtx, command: string, exec: WslExec, opts: { timeoutMs?: number; workdir?: string; stdoutMaxBytes?: number } = {}): Promise<ShellRun> {
   const sandboxPolicy = ctx.get('sandboxPolicy')
   const policy = sandboxPolicy === undefined ? undefined : sandboxPolicy.resolve(
     exec.agent !== undefined ? { session: (exec.agent as { session?: unknown }).session } : {}
@@ -87,6 +87,10 @@ async function run(ctx: WslCtx, command: string, exec: WslExec, opts: { timeoutM
     command,
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     ...(opts.workdir !== undefined ? { workdir: opts.workdir } : {}),
+    // #33: per-request stdout cap override — the seam applies its own default
+    // (64KB) when omitted; overflow keeps only the TAIL and sets
+    // `stdout.truncated` on the result.
+    ...(opts.stdoutMaxBytes !== undefined ? { stdoutMaxBytes: opts.stdoutMaxBytes } : {}),
     ...(policy !== undefined ? { sandboxPolicy: policy } : {}),
     ...(exec !== undefined && exec.signal !== undefined ? { signal: exec.signal } : {}),
   }
@@ -102,17 +106,22 @@ function registerTools(ctx: WslCtx): void {
   const tools = [
     {
       name: 'win_ls',
-      description: 'List a Windows-side directory from inside WSL. Accepts either a Windows path (C:\\Users\\me) or a WSL mount path (/mnt/c/Users/me); both are normalized automatically. Returns parsed entries plus the raw `ls -la` listing.',
+      // #33: large directories overflow the executor's default 64KB stdout
+      // cap (the tail is kept, the head dropped) — the result now carries an
+      // explicit `truncated` signal plus a `note`, and `stdoutMaxBytes`
+      // raises the cap so the caller can fetch the complete listing.
+      description: 'List a Windows-side directory from inside WSL. Accepts either a Windows path (C:\\Users\\me) or a WSL mount path (/mnt/c/Users/me); both are normalized automatically. Returns parsed entries plus the raw `ls -la` listing. Very large directories may hit the executor\'s stdout cap: check `truncated` in the result, and pass stdoutMaxBytes (bytes, e.g. 1048576) to raise the cap and get the complete listing.',
       parameters: {
         path: { type: 'string', required: true, description: 'Directory to list, e.g. C:\\Users\\me or /mnt/c/Users/me' },
         long: { type: 'boolean', description: 'Detailed listing with sizes/timestamps (default true)' },
+        stdoutMaxBytes: { type: 'integer', description: 'Per-call stdout byte cap override (default: executor default, 64KB). Raise it (e.g. 1048576) when listing a very large directory; `truncated: true` in the result means the listing was cut.' },
       },
       output: { schema: { type: 'json' }, render: renderJson as any },
-      async execute(args: { path: string; long?: boolean }, exec: { agent?: { session?: unknown } | null; signal?: AbortSignal }) {
+      async execute(args: { path: string; long?: boolean; stdoutMaxBytes?: number }, exec: { agent?: { session?: unknown } | null; signal?: AbortSignal }) {
         const p = toWslPath(args.path)
         const long = args.long !== false
         const cmd = (long ? 'ls -la --time-style=long-iso ' : 'ls -1 ') + shq(p)
-        const r = await run(ctx, cmd, exec, { timeoutMs: 20000 })
+        const r = await run(ctx, cmd, exec, { timeoutMs: 20000, stdoutMaxBytes: args.stdoutMaxBytes })
         const entries: Array<Record<string, unknown>> = []
         if (long) {
           for (const line of r.stdout.text.split('\n')) {
@@ -125,8 +134,17 @@ function registerTools(ctx: WslCtx): void {
             if (nm !== '' && nm !== 'total') entries.push({ name: nm })
           }
         }
+        // #33: truncation is caller-visible. The executor keeps only the
+        // stdout TAIL past the cap, so head entries vanish — pre-#33 that
+        // happened silently (exitCode 0, error null). Now the result marks
+        // it explicitly and names the escape hatch. Small-directory output
+        // is field-identical to pre-#33 plus `truncated: false`.
+        const truncated = r.stdout.truncated === true
+        const note = truncated
+          ? 'stdout truncated by the executor cap; the listing is incomplete (head entries dropped). Pass a larger stdoutMaxBytes (bytes) or list a subdirectory to get the full listing.'
+          : null
         return {
-          path: p, winPath: toWinPath(p), exitCode: r.exitCode, entries,
+          path: p, winPath: toWinPath(p), exitCode: r.exitCode, entries, truncated, note,
           raw: r.stdout.text,
           error: r.stderr.text.trim() !== '' ? r.stderr.text.trim() : null,
         }
