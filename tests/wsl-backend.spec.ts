@@ -140,6 +140,26 @@ describe('T3 #15: live WSL one-shot through the executor boundary (AC integratio
     expect(existsSync(spill.stdout.spillPath!)).toBe(true)
   })
 
+  it.skipIf(!hasLiveWsl)('per-call stderrMaxBytes raises the stderr cap without touching stdout (#42)', async () => {
+    const ctx = new Context()
+    onTestFinished(() => ctx.fiber.dispose())
+    await ctx.plugin(LocalSubprocessRuntime)
+    await liveConfig(ctx, LocalBashExecutor, { backend: 'wsl', graceMs: 200 })
+    const bash = ctx.shell as LocalBashExecutor
+
+    // Mirror of the stdout raise/spill probe above, on the stderr side: the
+    // per-call override lifts ONLY stderr past the config default (64KB),
+    // while the oversized stdout keeps the default cap and truncates.
+    const r = await (await bash.execute(bash.resolve({
+      command: 'printf "%.0sx" $(seq 1 100000); printf "%.0se" $(seq 1 5000) >&2',
+      stderrMaxBytes: 8192,
+    }))).result()
+    expect(r.exitCode).toBe(0)
+    expect(r.stderr.truncated).toBe(false)
+    expect(r.stderr.text).toBe('e'.repeat(5000))
+    expect(r.stdout.truncated).toBe(true)
+  })
+
   it.skipIf(!hasLiveWsl)('the declared interactive (PTY terminal) argv boots a login shell in the distro (AC2)', async () => {
     const ctx = new Context()
     onTestFinished(() => ctx.fiber.dispose())

@@ -205,6 +205,8 @@ export interface ShellExecRequest {
   onExpiry?: ShellExpiryPolicy | undefined
   /** Foreground stdout capture budget in bytes; absent uses the executor's default cap. */
   stdoutMaxBytes?: number | undefined
+  /** Foreground stderr capture budget in bytes; absent uses the executor's default cap (#42, mirrors {@link stdoutMaxBytes}). */
+  stderrMaxBytes?: number | undefined
   /** Abort signal — implementations kill the command when it fires. */
   signal?: AbortSignal | undefined
   /** Bytes to write to the command's stdin, then close it; absent leaves stdin empty. */
@@ -226,6 +228,8 @@ export interface ShellExecSpec {
   onExpiry: ShellExpiryPolicy
   /** Resolved stdout capture budget, applied to every execution's stdout. */
   stdoutMaxBytes: number
+  /** Resolved stderr capture budget, applied to every execution's stderr (#42, mirrors {@link ShellExecSpec.stdoutMaxBytes}). */
+  stderrMaxBytes: number
   /** Abort signal — implementations kill the command when it fires. */
   signal?: AbortSignal | undefined
   /** Bytes to write to stdin before closing it; absent means no stdin. */

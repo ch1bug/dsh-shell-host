@@ -91,7 +91,7 @@ function pickDefined<T extends Record<string, unknown>>(mapping: T): Partial<T> 
 
 /** Execute through the host shell seam (foreground = await the handle's
  * result() projection; no run() on the alpha.1 seam, dsh-shell-host #17). */
-async function run(ctx: WslCtx, command: string, exec: WslExec, opts: { timeoutMs?: number; workdir?: string; stdoutMaxBytes?: number } = {}): Promise<ShellRun> {
+async function run(ctx: WslCtx, command: string, exec: WslExec, opts: { timeoutMs?: number; workdir?: string; stdoutMaxBytes?: number; stderrMaxBytes?: number } = {}): Promise<ShellRun> {
   const sandboxPolicy = ctx.get('sandboxPolicy')
   const policy = sandboxPolicy === undefined ? undefined : sandboxPolicy.resolve(
     exec.agent !== undefined ? { session: (exec.agent as { session?: unknown }).session } : {}
@@ -106,6 +106,9 @@ async function run(ctx: WslCtx, command: string, exec: WslExec, opts: { timeoutM
       // (64KB) when omitted; overflow keeps only the TAIL and sets
       // `stdout.truncated` on the result.
       stdoutMaxBytes: opts.stdoutMaxBytes,
+      // #42: the stderr-side twin of the stdout cap override — same default,
+      // same tail-keeping truncation with `stderr.truncated` on the result.
+      stderrMaxBytes: opts.stderrMaxBytes,
       sandboxPolicy: policy,
       signal: exec.signal,
     }),
@@ -217,15 +220,17 @@ function registerTools(ctx: WslCtx): void {
     },
     {
       name: 'win_run',
-      description: 'Run a Windows program or command line and capture its output. shell="cmd" wraps with cmd.exe /c (UTF-8 codepage first); shell="powershell" writes a temp .ps1 (UTF-8 BOM, console output forced to UTF-8) and runs via powershell.exe -File; shell="direct" executes the string as-is in WSL bash (WSL interop for .exe). Windows paths for cwd converted automatically; cmd/powershell default to C:\\ when no cwd given. Either stream past the executor cap is tail-kept: stdoutTruncated/stderrTruncated in the result mark it (#39).',
+      description: 'Run a Windows program or command line and capture its output. shell="cmd" wraps with cmd.exe /c (UTF-8 codepage first); shell="powershell" writes a temp .ps1 (UTF-8 BOM, console output forced to UTF-8) and runs via powershell.exe -File; shell="direct" executes the string as-is in WSL bash (WSL interop for .exe). Windows paths for cwd converted automatically; cmd/powershell default to C:\\ when no cwd given. Either stream past the executor cap is tail-kept: stdoutTruncated/stderrTruncated in the result mark it (#39). Raise the cap per side with stdoutMaxBytes/stderrMaxBytes (bytes).',
       parameters: {
         command: { type: 'string', required: true, description: 'Command line to run, e.g. "dir C:\\Users" (cmd), "Get-Process explorer" (powershell), or "/mnt/c/Windows/System32/ipconfig.exe /all" (direct)' },
         shell: { type: 'string', enum: ['cmd', 'powershell', 'direct'], description: 'How to execute: cmd (default) | powershell | direct' },
         cwd: { type: 'string', description: 'Working directory on the Windows side (Windows or WSL path)' },
         timeoutMs: { type: 'integer', description: 'Timeout in milliseconds (default 120000)' },
+        stdoutMaxBytes: { type: 'integer', description: 'Per-call stdout byte cap override (default: executor default, 64KB). Raise it when a command emits more; stdoutTruncated: true means stdout was cut.' },
+        stderrMaxBytes: { type: 'integer', description: 'Per-call stderr byte cap override (default: executor default, 64KB). Raise it when a command writes a lot to stderr (e.g. build logs); stderrTruncated: true means stderr was cut.' },
       },
       output: { schema: { type: 'json' }, render: renderJson as any },
-      async execute(args: { command: string; shell?: 'cmd' | 'powershell' | 'direct'; cwd?: string; timeoutMs?: number }, exec: { agent?: { session?: unknown } | null; signal?: AbortSignal }) {
+      async execute(args: { command: string; shell?: 'cmd' | 'powershell' | 'direct'; cwd?: string; timeoutMs?: number; stdoutMaxBytes?: number; stderrMaxBytes?: number }, exec: { agent?: { session?: unknown } | null; signal?: AbortSignal }) {
         const timeoutMs = args.timeoutMs !== undefined ? args.timeoutMs : 120000
         const workdir = args.cwd !== undefined ? toWslPath(args.cwd) : '/mnt/c'
         const rand = Math.random().toString(36).slice(2, 10)
@@ -235,7 +240,7 @@ function registerTools(ctx: WslCtx): void {
           const script = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' + command
           const enc = b64('\ufeff' + script)
           await run(ctx, `printf '%s' ${enc} | base64 -d > ${shq(ps1)}`, exec, { timeoutMs: 10000 })
-          const r = await run(ctx, `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${shq(toWinPath(ps1))}`, exec, { timeoutMs, workdir })
+          const r = await run(ctx, `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${shq(toWinPath(ps1))}`, exec, { timeoutMs, workdir, stdoutMaxBytes: args.stdoutMaxBytes, stderrMaxBytes: args.stderrMaxBytes })
           await run(ctx, `rm -f ${shq(ps1)}`, exec, { timeoutMs: 5000 }).catch(() => {})
           return { shell: 'powershell', exitCode: r.exitCode, timedOut: r.timedOut, aborted: r.aborted, stdout: r.stdout.text, stderr: r.stderr.text,
             // #39: both truncation signals caller-visible, symmetric with the
@@ -243,14 +248,14 @@ function registerTools(ctx: WslCtx): void {
             stdoutTruncated: r.stdout.truncated === true, stderrTruncated: r.stderr.truncated === true }
         }
         if (args.shell === 'direct') {
-          const r = await run(ctx, command, exec, { timeoutMs, workdir })
+          const r = await run(ctx, command, exec, { timeoutMs, workdir, stdoutMaxBytes: args.stdoutMaxBytes, stderrMaxBytes: args.stderrMaxBytes })
           return { shell: 'direct', exitCode: r.exitCode, timedOut: r.timedOut, aborted: r.aborted, stdout: r.stdout.text, stderr: r.stderr.text,
             stdoutTruncated: r.stdout.truncated === true, stderrTruncated: r.stderr.truncated === true } // #39
         }
         const bat = `/mnt/c/Windows/Temp/dsh_${rand}.bat`
         const enc = b64('@echo off\r\nchcp 65001 >nul\r\n' + command + '\r\n')
         await run(ctx, `printf '%s' ${enc} | base64 -d > ${shq(bat)}`, exec, { timeoutMs: 10000 })
-        const r = await run(ctx, `cmd.exe /c ${shq(toWinPath(bat))}`, exec, { timeoutMs, workdir })
+        const r = await run(ctx, `cmd.exe /c ${shq(toWinPath(bat))}`, exec, { timeoutMs, workdir, stdoutMaxBytes: args.stdoutMaxBytes, stderrMaxBytes: args.stderrMaxBytes })
         await run(ctx, `rm -f ${shq(bat)}`, exec, { timeoutMs: 5000 }).catch(() => {})
         return { shell: 'cmd', exitCode: r.exitCode, timedOut: r.timedOut, aborted: r.aborted, stdout: r.stdout.text, stderr: r.stderr.text,
           stdoutTruncated: r.stdout.truncated === true, stderrTruncated: r.stderr.truncated === true } // #39
