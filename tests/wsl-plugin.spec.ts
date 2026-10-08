@@ -9,10 +9,10 @@ import { describe, expect, it } from 'vitest'
 import * as wslPlugin from '../src/wsl-plugin/index.js'
 
 /** Fake shell-seam result the tools consume. */
-function fakeRun(stdout = '', stderr = '', exitCode = 0) {
+function fakeRun(stdout = '', stderr = '', exitCode = 0, truncated = false) {
   return {
     exitCode,
-    stdout: { text: stdout },
+    stdout: { text: stdout, truncated },
     stderr: { text: stderr },
   }
 }
@@ -85,6 +85,43 @@ describe('win_* tool behavior through the fake shell seam', () => {
       { perms: 'drwxr-xr-x', size: 0, mtime: '2026-10-08 17:00', name: 'docs', isDir: true },
     ])
     expect(out.error).toBeNull()
+    // #33: the truncation signal is part of the shape even when nothing was
+    // truncated — a small directory must be field-identical to pre-#33 plus
+    // the explicit `truncated: false`.
+    expect(out.truncated).toBe(false)
+  })
+
+  it('win_ls marks stdout truncation explicitly and names the escape hatch (#33)', async () => {
+    // Over the seam's default 64KB cap the executor keeps only the TAIL and
+    // exits 0 — pre-#33 the tool silently lost the head entries. The result
+    // must carry an explicit, caller-visible truncation signal.
+    const head = 'total 4\n-rw-r--r-- 1 me me 12 2026-10-08 17:00 notes.txt\n'
+    const tail = '-rw-r--r-- 1 me me 1 2026-10-08 17:00 last.txt\n'
+    const { ctx, registered } = fakeCtx(() => fakeRun(head + tail, '', 0, true))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_ls')!
+    const out = await tool.execute({ path: 'C:\\Users\\me' }, {})
+    expect(out.truncated).toBe(true)
+    expect(out.note).toMatch(/truncat/i)
+    expect(out.note).toContain('stdoutMaxBytes')
+    // Error stays stderr-scoped (existing field semantics unchanged).
+    expect(out.error).toBeNull()
+  })
+
+  it('win_ls forwards stdoutMaxBytes to the shell request (#33)', async () => {
+    const { ctx, registered, calls } = fakeCtx(() => fakeRun(''))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_ls')!
+    await tool.execute({ path: 'C:\\Users\\me', stdoutMaxBytes: 262144 }, {})
+    expect(calls[0].stdoutMaxBytes).toBe(262144)
+  })
+
+  it('win_ls omits stdoutMaxBytes when the caller does not pass one (#33 default path)', async () => {
+    const { ctx, registered, calls } = fakeCtx(() => fakeRun(''))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_ls')!
+    await tool.execute({ path: 'C:\\Users\\me' }, {})
+    expect(calls[0]).not.toHaveProperty('stdoutMaxBytes')
   })
 
   it('win_write base64-encodes UTF-8 content (non-Latin-1 safe) and reports byte count', async () => {

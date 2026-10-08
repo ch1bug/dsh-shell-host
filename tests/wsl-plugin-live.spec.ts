@@ -10,6 +10,40 @@
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { bootLiveWsl, hasLiveWsl } from './helpers/live-wsl-plugin.ts'
 
+describe('win_ls truncation on the real WSL seam (#33 AC)', () => {
+  // System32 reliably overflows the seam's default 64KB stdout cap
+  // (~1000-entry tail window, pre-#33 the head entries vanished silently).
+  const SYSTEM32 = '/mnt/c/Windows/System32'
+
+  it.skipIf(!hasLiveWsl)('a >64KB listing comes back with an explicit truncation signal', { timeout: 60_000 }, async () => {
+    const { ctx, tools } = await bootLiveWsl()
+    onTestFinished(() => ctx.fiber.dispose())
+    const out = await tools.get('win_ls')!.execute({ path: SYSTEM32 }, {})
+    expect(out.exitCode).toBe(0)
+    expect(out.truncated).toBe(true)
+    expect(out.note).toMatch(/truncat/i)
+    // The parse still yields the tail window — but visibly incomplete.
+    expect(out.entries.length).toBeGreaterThan(0)
+  })
+
+  it.skipIf(!hasLiveWsl)('raising stdoutMaxBytes returns the COMPLETE entry count (#33 AC-2)', { timeout: 90_000 }, async () => {
+    const { ctx, shell, tools } = await bootLiveWsl()
+    onTestFinished(() => ctx.fiber.dispose())
+    // Ground truth counted by the same seam, short format (names only — no
+    // GBK-mojibake exposure in the timestamp columns).
+    const count = await (await shell.execute(shell.resolve({
+      command: `ls -1 ${SYSTEM32} | wc -l`,
+    }))).result()
+    const expected = Number(count.stdout.text.trim())
+    expect(Number.isFinite(expected) && expected > 0).toBe(true)
+
+    const out = await tools.get('win_ls')!.execute({ path: SYSTEM32, long: false, stdoutMaxBytes: 8 * 1024 * 1024 }, {})
+    expect(out.truncated).toBe(false)
+    expect(out.note).toBeNull()
+    expect(out.entries.length).toBe(expected)
+  })
+})
+
 describe('win_drives on the real WSL seam (#32 AC)', () => {
   it.skipIf(!hasLiveWsl)('returns the mounted drives, first C:, through the real executor', async () => {
     const { ctx, tools } = await bootLiveWsl()
