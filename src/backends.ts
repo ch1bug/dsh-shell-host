@@ -15,6 +15,8 @@ import { delimiter, dirname, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { detectMsysRoot, detectPlainBash, detectPwsh, detectWslExe, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, pwshProbedLocations, spawnableExists, wslProbedLocations } from './detect.ts'
 import { fromWslPath, toWslPath } from './wsl-bridge.ts'
+import { sshBackend } from './backends/ssh.ts'
+import type { SshSpecific } from './backends/ssh.ts'
 import type { Config } from './index.ts'
 
 /** Command-payload token inside an argv template (VS Code `{0}` analog). */
@@ -36,10 +38,11 @@ export interface WslSpecific {
 /** Per-backend `specific` sections, keyed by the owning descriptor id. */
 export interface BackendSpecificMap {
   wsl: WslSpecific
+  ssh: SshSpecific
 }
 
 /** Runtime mirror of {@link BackendSpecificMap}'s keys: the ids that own a `specific` section. */
-const SPECIFIC_OWNERS: ReadonlySet<string> = new Set(['wsl'] satisfies readonly (keyof BackendSpecificMap)[])
+const SPECIFIC_OWNERS: ReadonlySet<string> = new Set(['wsl', 'ssh'] satisfies readonly (keyof BackendSpecificMap)[])
 
 /**
  * Base descriptor shape shared by every backend (ADR-0001 field set).
@@ -365,6 +368,7 @@ registerBackend('msys2', (config) => {
 })
 registerBackend('pwsh', () => pwshBackend())
 registerBackend('wsl', (config) => wslBackend(config))
+registerBackend('ssh', (config) => sshBackend(config))
 
 /**
  * Resolve the configured backend descriptor from the registry. Unknown ids

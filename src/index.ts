@@ -6,19 +6,19 @@
  * classification, the model-friendly terminal environment, and the model-facing
  * stdout/stderr merge for background reads. Execution policy belongs in
  * `tools/pre-execute` or a sandboxing executor.
- * @module @deepseek-ai/dsh-bash-local
+ * @module dsh-shell-host
  */
 
 import type { Volatile } from '@deepseek-ai/cordis'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { delimiter } from 'node:path'
-import { ShellExecutor } from '@deepseek-ai/dsh-shell'
-import type { ShellExecRequest, ShellExecSpec, ShellExecution, ShellProcess, ShellProcessRead, ShellRunResult, CollectedOutput } from '@deepseek-ai/dsh-shell'
-import type { SubprocessCollect, SubprocessHandle, SubprocessOutputReader, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
-import { clampTimeout, deadline, MAX_TIMER_DELAY_MS, timeoutOf } from '@deepseek-ai/dsh-timeout'
-import { assertServiceableBackend, expandOneShotArgv, resolveBackend, resolveExecutable } from './backends.ts'
+import { ShellExecutor } from './core/executor.ts'
+import { routeBackend } from './core/router.ts'
+import { expandOneShotArgv, resolveExecutable } from './backends.ts'
 import type { BackendDescriptor } from './backends.ts'
+import { clampTimeout, deadline, MAX_TIMER_DELAY_MS, timeoutOf } from './timeout.ts'
+import type { CollectedOutput, ShellExecRequest, ShellExecSpec, ShellExecution, ShellProcess, ShellProcessRead, ShellRunResult, SubprocessCollect, SubprocessHandle, SubprocessOutputReader, SubprocessSpawnSpec } from './types.ts'
 
 /**
  * Model-friendly environment overrides: disable colors, pagers, and
@@ -62,6 +62,8 @@ export interface Config {
   msysRoot: Volatile<string | undefined>
   /** Explicit bash executable; for `msys2` the install root is derived from it, for `plain` it replaces the detected bash. */
   bashPath: Volatile<string | undefined>
+  /** Remote target for the `ssh` backend (a `~/.ssh/config` alias or `[user@]host`); required by that backend — an empty value fails loudly. */
+  sshHost: Volatile<string | undefined>
   /** Subsystem selector injected as `MSYSTEM` for `msys2` (default `UCRT64`); `'none'` = plain bash, no MSYS env injection (Git Bash/Cygwin surface). */
   subsystem: Volatile<string | undefined>
 }
@@ -107,7 +109,7 @@ export function assertServiceableBashConfig(config: Config): void {
  * still-running background process stays managed (killed and joined at
  * composition teardown) even across an executor reload.
  */
-export class LocalBashExecutor extends ShellExecutor {
+export class ShellHostExecutor extends ShellExecutor {
   static inject = ['subprocess']
 
   static Config = z.object({
@@ -121,6 +123,7 @@ export class LocalBashExecutor extends ShellExecutor {
     wslDistro: z.string().volatile(),
     msysRoot: z.string().volatile(),
     bashPath: z.string().volatile(),
+    sshHost: z.string().volatile(),
     subsystem: z.string().default('UCRT64').volatile(),
   })
 
@@ -140,12 +143,12 @@ export class LocalBashExecutor extends ShellExecutor {
    *   cannot serve a shell (detection failure, unknown id).
    */
   get enginePath(): string {
-    return resolveExecutable(resolveBackend(this.config))
+    return resolveExecutable(routeBackend(this.config))
   }
 
   /** The interactive argv template of the resolved backend (see {@link enginePath}). */
   get engineArgs(): readonly string[] {
-    return resolveBackend(this.config).argv.interactive
+    return routeBackend(this.config).argv.interactive
   }
 
   /**
@@ -159,7 +162,7 @@ export class LocalBashExecutor extends ShellExecutor {
     assertServiceableBashConfig(this.config)
     // Fail loudly at the tool layer's first stop for an unusable backend
     // (missing detection, unknown id) — the same check execute() re-runs.
-    resolveBackend(this.config)
+    routeBackend(this.config)
     const timeoutMs = clampTimeout(
       request.timeoutMs,
       this.config.timeoutMs.get(),
@@ -207,7 +210,7 @@ export class LocalBashExecutor extends ShellExecutor {
       },
       graceMs: this.config.graceMs.get(),
       signal,
-      env: this.buildEnv(resolveBackend(this.config), spec),
+      env: this.buildEnv(routeBackend(this.config), spec),
     }
   }
 
@@ -246,11 +249,10 @@ export class LocalBashExecutor extends ShellExecutor {
   }
 
   async execute(spec: ShellExecSpec): Promise<ShellExecution> {
-    // The descriptor is the backend seam (ADR-0001): selection and validation
-    // fail loudly here — before a handle can exist — so a misconfigured or
-    // misconfigured backend can never silently spawn the wrong shell.
-    const backend = resolveBackend(this.config)
-    assertServiceableBackend(backend)
+    // The descriptor is the backend seam (ADR-0001): routing and validation
+    // fail loudly here — before a handle can exist — so a misconfigured
+    // backend can never silently spawn the wrong shell.
+    const backend = routeBackend(this.config)
     return this.executeArgv(spec, [resolveExecutable(backend), ...expandOneShotArgv(backend, spec.command)])
   }
 
@@ -331,7 +333,7 @@ export class LocalBashExecutor extends ShellExecutor {
       readFrom: () => ({ text: '', lossy: false, nextOffset: 0 }),
     }
     const collected = running !== undefined
-      ? LocalBashExecutor.collected(running)
+      ? ShellHostExecutor.collected(running)
       : { stdout: emptyReader, stderr: emptyReader }
     const spawnThrow = (): unknown => (syncSpawnError as { error: unknown }).error
     const spawned = preparationTimedOut
@@ -467,4 +469,7 @@ export class LocalBashExecutor extends ShellExecutor {
   protected onProcessDone(_proc: ShellProcess, _stderr: string, _providerRejected: boolean, _providerError?: unknown): void {}
 }
 
-export default LocalBashExecutor
+/** Back-compat alias of {@link ShellHostExecutor} (the rc.2-r1 class name). */
+export { ShellHostExecutor as LocalBashExecutor }
+
+export default ShellHostExecutor

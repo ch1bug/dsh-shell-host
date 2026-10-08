@@ -1,28 +1,32 @@
 {
-  // Resolution + typecheck facade for src and tests. Extends the upstream
-  // monorepo's facade (local checkout at ../deepseek-harness, pinned to tag
-  // dsh-v0.2.0-rc.2): every @deepseek-ai/* specifier resolves to upstream
-  // SOURCE via its maintained paths map — the same table upstream's own
-  // vitest runs on (vite-tsconfig-paths treats the no-include facade as
-  // match-all). @deepseek-ai packages are never installed from npm.
-  "extends": "../deepseek-harness/tsconfig.base.json",
+  // Self-contained resolution + typecheck facade for src and tests (issue #23,
+  // AC3/AC4): no `extends` into an upstream monorepo checkout — every
+  // @deepseek-ai/* specifier resolves to the npm-published BUILT declarations
+  // through node_modules (devDependencies). Drift policy: this file carries
+  // the union of the relaxations upstream's vendor/ packages declare (cordis's
+  // set; the others are subsets); our own src/tests stay authored to full base
+  // strictness. skipLibCheck is on because the npm declarations are consumed
+  // across package boundaries (each upstream package compiled under its own
+  // stricter-than-ours facade).
   "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "noEmit": true,
-    "composite": false,
-    "incremental": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": false,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "types": ["node"],
     // The browser half (src/client) is bundled by tsdown, whose oxc transform
     // reads these two options for the TSX files; they are inert for the host
     // facade's own sources (no JSX there).
     "jsx": "react-jsx",
     "jsxImportSource": "react",
-    // Upstream compiles each package behind its own tsconfig boundary: the
-    // vendor/ packages (cordis, cosmokit, loader, schemastery) relax these
-    // flags in their own tsconfigs, while packages/* keep base strictness.
-    // This repo ingests upstream SOURCE directly (no per-package
-    // boundaries), so the typecheck lane takes the union of the vendor
-    // relaxations — exactly the flags upstream vendors already declare (the
-    // union is cordis's set; the others are subsets). Our own src/tests are
-    // authored to full base strictness regardless.
+    // See the drift-policy note above: the union of upstream vendor relaxations.
     "noImplicitAny": false,
     "noImplicitThis": false,
     "strictFunctionTypes": false,
@@ -38,8 +42,7 @@
     "vitest.config.ts",
     "tsdown.config.ts"
   ],
-  // The browser half has its own facade (tsconfig.client.json) over built
-  // upstream declarations — a source-level program cannot close there.
+  // The browser half has its own facade (tsconfig.client.json).
   "exclude": [
     "src/client"
   ]
