@@ -75,6 +75,26 @@ repos are all anchored at **`dsh-v0.2.1-alpha.1-r1`**, and the merged
 package carries that anchor forward (next release = `-r2` or an anchor
 bump, per ADR-0005 rules).
 
+**DELIBERATE amendment (#35, decided 2026-10-08): the merged package
+does NOT carry the alpha.1-r1 anchor as its package version.** The
+package version stays on the DSH lane it actually consumes (npm dist
+`0.2.0-rc.2` series, currently `0.2.0-rc.2-r1`), and the D8 conformance
+canary derives its anchor from this package.json — the runtime truth.
+Reason: #18 locked the desktop daily-driver on the stable `rc.2` lane;
+a version bump to an alpha.1-equivalent anchor would reintroduce the
+incompatible-peer warning that #18's interim fix removed. The source
+repos' `dsh-v0.2.1-alpha.1-r1` provenance anchor stays recorded in
+ADR-0005 and the entry headers; the "carry forward" obligation is
+discharged by this note, not by the version field. **Revisit trigger:
+when the next RC (or the alpha.1 promotion) lands, re-derive the
+package version + canary anchor from that lane in one move** (the #18
+tracker's three-step upgrade covers the same event). Known risk riding
+with this lane choice (#36 finding): upstream `@deepseek-ai/*` alpha
+copies (schemastery 3.18.5-alpha.1, cosmokit 1.8.6-alpha.1) nest inside
+node_modules via dsh-tools' hard dependency — declaration emit is
+collapsed with `preserveSymlinks` (build lane only); the upstream type
+surface itself is out of this repo's control.
+
 ## Nature of the change
 
 **Pure move.** Absorbing the three repos (`./pty`, `./remote`, `./wsl`)
