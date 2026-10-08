@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectMsysRoot, detectPlainBash, detectPwsh, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, pwshProbedLocations } from '../src/detect.ts'
+import { detectMsysRoot, detectPlainBash, detectPwsh, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, plainBashProbedLocations, pwshProbedLocations } from '../src/detect.ts'
 
 /**
  * T3 detection tests, fully injected (fake `exists` predicates and PATH
@@ -70,6 +70,89 @@ describe('detectPlainBash (win32 PATH probe + ordered fallbacks)', () => {
     const path = 'D:\\ghost;C:\\Program Files\\Git\\bin'
     const exists = existsFor(['C:\\Program Files\\Git\\bin\\bash.exe'])
     expect(detectPlainBash(exists, path)).toBe('C:\\Program Files\\Git\\bin\\bash.exe')
+  })
+})
+
+/**
+ * #25 VS Code getGitBashPaths() parity: git.exe reverse derivation, four
+ * install roots × three subpaths, scoop shims, %HOMEDRIVE% Cygwin roots.
+ * Fully injected (fake exists, fake PATH + env).
+ */
+describe('plainBashProbedLocations / detectPlainBash (#25: VS Code getGitBashPaths parity)', () => {
+  /** Fake env carrying the four well-known install roots. */
+  const rootsEnv = {
+    ProgramW6432: 'P:\\w6432',
+    ProgramFiles: 'P:\\pf',
+    'ProgramFiles(X86)': 'P:\\pf86',
+    LocalAppData: 'P:\\lad',
+    HOMEDRIVE: 'H:',
+    UserProfile: 'U:',
+  }
+
+  it('derives the install root from a git.exe on PATH, ahead of the hardcoded roots', () => {
+    // git.exe lives at <root>\Git\cmd\git.exe — VS Code resolves dirname/../..
+    const path = ['D:\\gitroot\\Git\\cmd', 'D:\\ghost'].join(';')
+    const exists = existsFor(['D:\\gitroot\\Git\\cmd\\git.exe', 'D:\\gitroot\\usr\\bin\\bash.exe'])
+    // Derived root's three subpaths lead the list, before any env-root
+    // candidate (VS Code inserts the derived dir into the set first).
+    const locations = plainBashProbedLocations(path, { ...rootsEnv }, exists)
+    expect(locations.slice(0, 3).map(l => l.toLowerCase())).toEqual([
+      'd:\\gitroot\\git\\bin\\bash.exe',
+      'd:\\gitroot\\git\\usr\\bin\\bash.exe',
+      'd:\\gitroot\\usr\\bin\\bash.exe',
+    ])
+    expect(locations[3].toLowerCase()).toBe('p:\\w6432\\git\\bin\\bash.exe')
+    // Only the derived root's usr\bin layout exists on the fake filesystem.
+    expect(detectPlainBash(exists, path, { ...rootsEnv })).toBe('D:\\gitroot\\usr\\bin\\bash.exe')
+  })
+
+  it('scans the four install roots × Git\\bin, Git\\usr\\bin, usr\\bin in VS Code order', () => {
+    const path = 'D:\\emptycmd'
+    const exists = () => false
+    const locations = plainBashProbedLocations(path, { ...rootsEnv }, exists)
+    expect(locations).toEqual([
+      'P:\\w6432\\Git\\bin\\bash.exe',
+      'P:\\w6432\\Git\\usr\\bin\\bash.exe',
+      'P:\\w6432\\usr\\bin\\bash.exe',
+      'P:\\pf\\Git\\bin\\bash.exe',
+      'P:\\pf\\Git\\usr\\bin\\bash.exe',
+      'P:\\pf\\usr\\bin\\bash.exe',
+      'P:\\pf86\\Git\\bin\\bash.exe',
+      'P:\\pf86\\Git\\usr\\bin\\bash.exe',
+      'P:\\pf86\\usr\\bin\\bash.exe',
+      'P:\\lad\\Program\\Git\\bin\\bash.exe',
+      'P:\\lad\\Program\\Git\\usr\\bin\\bash.exe',
+      'P:\\lad\\Program\\usr\\bin\\bash.exe',
+      'U:\\scoop\\apps\\git\\current\\bin\\bash.exe',
+      'U:\\scoop\\apps\\git-with-openssh\\current\\bin\\bash.exe',
+      'H:\\cygwin64\\bin\\bash.exe',
+      'H:\\cygwin\\bin\\bash.exe',
+      'C:\\msys64\\usr\\bin\\bash.exe',
+      'H:\\msys64\\usr\\bin\\bash.exe',
+    ])
+  })
+
+  it('resolves each Git root subpath shape', () => {
+    // Standard install (Git\bin), then usr\bin fallback, scoop shim, Cygwin.
+    const path = ''
+    const cases: Array<[string, NodeJS.ProcessEnv]> = [
+      ['P:\\w6432\\Git\\bin\\bash.exe', rootsEnv],
+      ['P:\\w6432\\Git\\usr\\bin\\bash.exe', rootsEnv],
+      ['U:\\scoop\\apps\\git-with-openssh\\current\\bin\\bash.exe', rootsEnv],
+    ]
+    for (const [winner, env] of cases) {
+      expect(detectPlainBash(existsFor([winner]), path, env)).toBe(winner)
+    }
+    // Cygwin via %HOMEDRIVE% (not hardcoded C:\) — no real install on host.
+    expect(detectPlainBash(existsFor(['H:\\cygwin64\\bin\\bash.exe']), path, rootsEnv)).toBe('H:\\cygwin64\\bin\\bash.exe')
+    expect(detectPlainBash(existsFor(['H:\\cygwin\\bin\\bash.exe']), path, rootsEnv)).toBe('H:\\cygwin\\bin\\bash.exe')
+  })
+
+  it('skips undefined env roots (addTruthy semantics) and lists every probed point for loud failure', () => {
+    const locations = plainBashProbedLocations('', { HOMEDRIVE: 'H:' }, () => false)
+    expect(locations.every(l => !l.includes('undefined'))).toBe(true)
+    expect(locations.map(l => l.toLowerCase())).toContain('c:\\msys64\\usr\\bin\\bash.exe')
+    expect(detectPlainBash(() => false, '', {})).toBeUndefined()
   })
 })
 

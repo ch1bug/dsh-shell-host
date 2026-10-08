@@ -2,18 +2,22 @@
  * VS Code-style install detection (ADR-0001 §1 `detectAvailableWindowsProfiles`
  * pattern): ordered absolute-path probes resolved with a plain existence
  * check, PATH search with exclusions, and loud failure that names the probed
- * locations. Exists for T3 — T2 was explicit-config only.
+ * locations. The Git Bash / Cygwin candidates are VS Code
+ * `getGitBashPaths()` / `detectedProfiles.set('Cygwin', …)` verbatim (#25);
+ * the MSYS2 candidates are a superset — VS Code has no MSYS2 profile surface
+ * to fold in, and we keep the installer-default `C:\msys64` root first.
+ * Exists for T3 — T2 was explicit-config only.
  * @module dsh-shell-host/detect
  */
 
 import { existsSync, lstatSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
 
 /**
- * MSYS2 install-root probes, VS Code `bash (MSYS2)` order: the installer's
- * default drive root first, then the `${HOMEDRIVE}\msys64` profile candidate
- * (verbatim from VS Code's terminalProfiles.ts). A root qualifies only when
- * its `usr\bin\bash.exe` exists.
+ * MSYS2 install-root probes: the installer's default drive root first (a
+ * superset of VS Code — VS Code has no MSYS2 profile), then the
+ * `${HOMEDRIVE}\msys64` candidate. A root qualifies only when its
+ * `usr\bin\bash.exe` exists.
  */
 export const MSYS2_ROOT_CANDIDATES: readonly string[] = [
   'C:\\msys64',
@@ -21,18 +25,86 @@ export const MSYS2_ROOT_CANDIDATES: readonly string[] = [
 ]
 
 /**
- * Plain-bash fallback candidates (ordered, win32): Git Bash (VS Code
- * `source`-based paths), then Cygwin (VS Code's two candidate roots), then a
- * full MSYS2 install — usable through the `subsystem: 'none'` plain surface.
+ * Every plain-bash location the plain surface probes, in order (win32, #25):
+ * the Git Bash / Cygwin entries are VS Code `getGitBashPaths()` /
+ * `detectedProfiles.set('Cygwin', …)` verbatim —
+ *
+ * 1. the install root reverse-derived from a `git.exe` found on the caller
+ *    PATH (`<root>\cmd\git.exe` → `<root>`), probed first (VS Code inserts it
+ *    into its candidate set before the well-known roots — the one PATH hit
+ *    that always reflects the actual install);
+ * 2. `ProgramW6432` / `ProgramFiles` / `ProgramFiles(X86)` /
+ *    `%LocalAppData%\Program` install roots (skipped when the env var is
+ *    unset, addTruthy semantics), each × `Git\bin\bash.exe`,
+ *    `Git\usr\bin\bash.exe`, `usr\bin\bash.exe` (Git for Windows SDK layout);
+ * 3. the two scoop shims under `%UserProfile%`;
+ * 4. `%HOMEDRIVE%\cygwin64` and `%HOMEDRIVE%\cygwin`.
+ *
+ * Then a full MSYS2 install — a superset of VS Code, usable through the
+ * `subsystem: 'none'` plain surface. The caller (`backends.ts`) joins this
+ * list into the loud-failure message, so it always names the real probe
+ * points. Folded from VS Code's `source`-type ordered-path profile; the
+ * ordering semantics are equivalent.
  */
-export const PLAIN_BASH_CANDIDATES: readonly string[] = [
-  'C:\\Program Files\\Git\\bin\\bash.exe',
-  'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
-  'C:\\cygwin64\\bin\\bash.exe',
-  'C:\\cygwin\\bin\\bash.exe',
-  'C:\\msys64\\usr\\bin\\bash.exe',
-  join(process.env.HOMEDRIVE ?? 'C:', 'msys64', 'usr', 'bin', 'bash.exe'),
-]
+export function plainBashProbedLocations(
+  path: string | undefined = process.env.PATH,
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (candidate: string) => boolean = spawnableExists,
+): readonly string[] {
+  const gitDirs: string[] = []
+  const seen = new Set<string>()
+  const addDir = (dir: string | undefined): void => {
+    if (dir === undefined) return
+    const key = dir.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    gitDirs.push(dir)
+  }
+
+  // git.exe on the PATH lives at `<installdir>\cmd\git.exe`; its install root
+  // is the most reliable candidate (VS Code getGitBashPaths, verbatim shape).
+  for (const dir of (path ?? '').split(delimiter)) {
+    if (dir === '') continue
+    if (exists(join(dir, 'git.exe'))) addDir(resolve(dir, '..', '..'))
+  }
+  addDir(env.ProgramW6432)
+  addDir(env.ProgramFiles)
+  addDir(env['ProgramFiles(X86)'])
+  if (env.LocalAppData) addDir(join(env.LocalAppData, 'Program'))
+
+  const locations: string[] = []
+  for (const gitDir of gitDirs) {
+    locations.push(
+      join(gitDir, 'Git', 'bin', 'bash.exe'),
+      join(gitDir, 'Git', 'usr', 'bin', 'bash.exe'),
+      join(gitDir, 'usr', 'bin', 'bash.exe'), // using Git for Windows SDK
+    )
+  }
+  // Special installs that don't follow the standard directory structure.
+  if (env.UserProfile) {
+    locations.push(
+      join(env.UserProfile, 'scoop', 'apps', 'git', 'current', 'bin', 'bash.exe'),
+      join(env.UserProfile, 'scoop', 'apps', 'git-with-openssh', 'current', 'bin', 'bash.exe'),
+    )
+  }
+  const homeDrive = env.HOMEDRIVE ?? 'C:'
+  locations.push(
+    join(homeDrive, 'cygwin64', 'bin', 'bash.exe'),
+    join(homeDrive, 'cygwin', 'bin', 'bash.exe'),
+    // MSYS2 superset: installer-default root, then the ${HOMEDRIVE} profile root.
+    'C:\\msys64\\usr\\bin\\bash.exe',
+    join(homeDrive, 'msys64', 'usr', 'bin', 'bash.exe'),
+  )
+  return locations
+}
+
+/**
+ * The plain-bash fallback candidates resolved from the real environment at
+ * module load — the list the loud-failure message names. Exact match with
+ * what `detectPlainBash()` probes holds for default-args calls (the only
+ * production caller); injected args may diverge by design.
+ */
+export const PLAIN_BASH_CANDIDATES: readonly string[] = plainBashProbedLocations()
 
 /**
  * Resolve the first MSYS2 root whose `usr\bin\bash.exe` exists, or undefined.
@@ -53,14 +125,19 @@ function isWslSystemBash(candidate: string): boolean {
 /**
  * Resolve a bash for the plain surface on win32: `bash.exe` searched along
  * the caller PATH with the WSL System32 stub excluded, then the ordered
- * {@link PLAIN_BASH_CANDIDATES}. On POSIX there is nothing to detect — the
- * caller keeps the upstream bare `bash` (byte-equivalent contract).
+ * {@link plainBashProbedLocations} list (VS Code getGitBashPaths parity +
+ * MSYS2 superset, #25). On POSIX there is nothing to detect — the caller
+ * keeps the upstream bare `bash` (byte-equivalent contract).
+ * @param exists - injectable existence predicate (tests use fake paths).
+ * @param path - the PATH to probe for `bash.exe` and `git.exe`; defaults to the process PATH.
+ * @param env - environment for the well-known roots; defaults to the process env.
  * @returns the resolved absolute path, or undefined (win32: the caller must
  *   then fail loudly naming the probed locations).
  */
 export function detectPlainBash(
   exists: (path: string) => boolean = existsSync,
   path: string | undefined = process.env.PATH,
+  env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
   if (process.platform !== 'win32') return undefined
   for (const dir of (path ?? '').split(delimiter)) {
@@ -68,7 +145,7 @@ export function detectPlainBash(
     const candidate = join(dir, 'bash.exe')
     if (!isWslSystemBash(candidate) && exists(candidate)) return candidate
   }
-  for (const candidate of PLAIN_BASH_CANDIDATES) {
+  for (const candidate of plainBashProbedLocations(path, env, exists)) {
     if (exists(candidate)) return candidate
   }
   return undefined
