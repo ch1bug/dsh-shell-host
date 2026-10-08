@@ -26,7 +26,7 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // injected/loud-failure cases here and keep their skipIf guards.
 const machineLane = ['tests/wsl-backend.spec.ts', 'tests/registry.spec.ts', 'tests/wsl-plugin-live.spec.ts']
 const specInclude = process.platform === 'win32'
-  ? ['tests/descriptor.spec.ts', 'tests/detect.spec.ts', 'tests/permission-presets.spec.ts', 'tests/pty-session.spec.ts', 'tests/built-artifact.spec.ts', 'tests/wsl-bridge.spec.ts', 'tests/ssh-backend.spec.ts', 'tests/remote-descriptor.spec.ts', 'tests/remote-executor.spec.ts', 'tests/remote-types.spec.ts', 'tests/remote-conformance.spec.ts', 'tests/wsl-plugin.spec.ts']
+  ? ['tests/descriptor.spec.ts', 'tests/detect.spec.ts', 'tests/permission-presets.spec.ts', 'tests/pty-session.spec.ts', 'tests/built-artifact.spec.ts', 'tests/wsl-bridge.spec.ts', 'tests/ssh-backend.spec.ts', 'tests/remote-descriptor.spec.ts', 'tests/remote-executor.spec.ts', 'tests/remote-types.spec.ts', 'tests/remote-conformance.spec.ts', 'tests/wsl-plugin.spec.ts', 'tests/subprocess-context-pin.spec.ts']
   : ['tests/**/*.spec.ts']
 
 const shared = {
