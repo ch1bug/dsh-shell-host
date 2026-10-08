@@ -236,27 +236,22 @@ describe('T4: the bundle patch (cordis.patch.yml) — host shell replacement + l
   const jsTag = { tag: 'tag:yaml.org,2002:js', resolve: (value: string): string => value }
   const doc = YAML.parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'), { customTags: [jsTag] }) as Array<Record<string, unknown>>
 
-  it('replaces the platform shell executors on the host plane (win32 guards; exactly one insert)', () => {
-    // platform executors disabled with their guards — pwsh yields the Windows
-    // shell role, bash-sandbox stays off (re-stated so a base flip cannot
-    // sneak the WSL stub back), and neither row is touched on POSIX.
-    const pwsh = doc.find((op) => op.id === 'pwsh-sandbox')
-    expect(pwsh?.name).toBe('@deepseek-ai/dsh-pwsh-sandbox')
-    expect(String(pwsh?.disabled)).toContain("process.platform === 'win32'")
-    const bashSandbox = doc.find((op) => op.id === 'bash-sandbox')
-    expect(bashSandbox?.name).toBe('@deepseek-ai/dsh-bash-sandbox')
-    expect(String(bashSandbox?.disabled)).toContain("process.platform === 'win32'")
-    // executor inserts: this bundle's executor, msys2 + UCRT64, dormant
-    // off-Windows. (#10 adds a second insert op for the permission fork —
-    // pinned in tests/permission-presets.spec.ts; this block stays scoped to
-    // the shell-replacement rows.)
+  it('inserts shell-host as a coexisting row, default disabled (issue #23, AC7)', () => {
+    // Coexistence (issue #23): the platform executors are NOT disabled here —
+    // pwsh-sandbox/bash-sandbox keep their DSH-native win32 posture, and the
+    // shell-host row joins them disabled by default; the user enables it on
+    // the Plugins page to take over ctx.shell.
+    const disabled = doc.filter((op) => typeof op.disabled !== 'undefined')
+    expect(disabled).toEqual([])
+    // executor insert: this bundle's executor, msys2 + UCRT64, default dormant
+    // on EVERY platform (enabled = takeover, disabled = platform shell).
     const inserts = doc.filter((op) => Array.isArray(op.insert))
     expect(inserts.length).toBeGreaterThanOrEqual(1)
     const executor = (inserts[0].insert as Array<Record<string, unknown>>)[0]
     expect(executor.id).toBe('shell-host')
     expect(executor.name).toBe('dsh-shell-host')
     expect(executor.config).toMatchObject({ backend: 'msys2', subsystem: 'UCRT64' })
-    expect(String(executor.disabled)).toContain("process.platform !== 'win32'")
+    expect(executor.disabled).toBe(true)
     // Never reconfigures the host registries from a bundle patch.
     for (const op of doc) expect(op.id).not.toBe('agent-preset-registry')
   })

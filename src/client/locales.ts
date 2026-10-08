@@ -8,7 +8,7 @@ export type ShellSettingsLocaleKey =
   | 'backend' | 'backendHint'
   | 'subsystem' | 'subsystemHint'
   | 'msysRoot' | 'msysRootHint'
-  | 'bashPath' | 'bashPathHint'
+  | 'bashPath' | 'bashPathHint' | 'sshHost' | 'sshHostHint'
   | 'timeoutMs' | 'timeoutMsHint' | 'maxOutputBytes' | 'maxOutputBytesHint'
   | 'overridden' | 'reset' | 'readOnly' | 'unavailable'
   | 'save' | 'saving' | 'saveFailed' | 'invalidNumber' | 'invalidText'
@@ -16,15 +16,17 @@ export type ShellSettingsLocaleKey =
 /** English copy. */
 export const en: Record<ShellSettingsLocaleKey, string> = {
   title: 'Shell Host',
-  description: 'The Windows platform shell behind the bash tool and the terminal — pluggable backends (MSYS2 default, plain bash, PowerShell). Configuration re-applies to new commands without a reload.',
+  description: 'The Windows platform shell behind the bash tool and the terminal — routed backends (MSYS2 default, plain bash, PowerShell, WSL, SSH). Configuration re-applies to new commands without a reload.',
   backend: 'Backend',
-  backendHint: "'msys2' injects the MSYSTEM environment and PATH surface; 'plain' runs a detected bash with no injection (Git Bash / Cygwin); 'pwsh' runs Windows PowerShell (PowerShell 7 preferred, no injection).",
+  backendHint: "'msys2' injects the MSYSTEM environment and PATH surface; 'plain' runs a detected bash with no injection (Git Bash / Cygwin); 'pwsh' runs Windows PowerShell (PowerShell 7 preferred, no injection); 'wsl' runs a local WSL distro through wsl.exe; 'ssh' runs a remote host's bash over system OpenSSH (requires the sshHost setting).",
   subsystem: 'Subsystem (MSYSTEM)',
   subsystemHint: "MSYS2 subsystem for PATH and toolchains: UCRT64 (default), MSYS, MINGW64, CLANG64…; 'none' disables injection.",
   msysRoot: 'MSYS2 install root',
   msysRootHint: "e.g. C:\\msys64. Empty auto-detects from common install locations.",
   bashPath: 'Bash executable',
   bashPathHint: 'Explicit bash inside the environment; empty resolves from the root or detection order.',
+  sshHost: 'SSH host',
+  sshHostHint: "Remote target for the 'ssh' backend — a ~/.ssh/config alias or [user@]host. Required when backend is 'ssh'.",
   timeoutMs: 'Command timeout (ms)',
   timeoutMsHint: 'How long one command may run before it is terminated.',
   maxOutputBytes: 'Output cap per stream (bytes)',
@@ -43,15 +45,17 @@ export const en: Record<ShellSettingsLocaleKey, string> = {
 /** Simplified Chinese copy. */
 export const zh: Record<ShellSettingsLocaleKey, string> = {
   title: 'Shell Host',
-  description: 'Windows 平台 shell:bash 工具与终端背后的宿主 shell,后端可插拔(MSYS2 默认、纯 bash、PowerShell)。配置保存后对新命令即时生效,无需重启。',
+  description: 'Windows 平台 shell:bash 工具与终端背后的宿主 shell,后端按配置路由(MSYS2 默认、纯 bash、PowerShell、WSL、SSH)。配置保存后对新命令即时生效,无需重启。',
   backend: '后端',
-  backendHint: "'msys2' 注入 MSYSTEM 环境与 PATH 表面;'plain' 直接运行探测到的 bash,不做注入(Git Bash / Cygwin);'pwsh' 运行 Windows PowerShell(优先 PowerShell 7,不做注入)。",
+  backendHint: "'msys2' 注入 MSYSTEM 环境与 PATH 表面;'plain' 直接运行探测到的 bash,不做注入(Git Bash / Cygwin);'pwsh' 运行 Windows PowerShell(优先 PowerShell 7,不做注入);'wsl' 通过 wsl.exe 运行本地 WSL 发行版;'ssh' 通过系统 OpenSSH 运行远程主机的 bash(需配置 sshHost)。",
   subsystem: '子系统(MSYSTEM)',
   subsystemHint: 'MSYS2 子系统决定 PATH 与工具链:UCRT64(默认)、MSYS、MINGW64、CLANG64…;none 表示不注入。',
   msysRoot: 'MSYS2 安装根',
   msysRootHint: '例如 C:\\msys64。留空则按常见安装位置自动探测。',
   bashPath: 'Bash 可执行文件',
   bashPathHint: '环境内显式指定的 bash;留空则从安装根推导或按探测顺序解析。',
+  sshHost: 'SSH 主机',
+  sshHostHint: "'ssh' 后端的远程目标 —— ~/.ssh/config 别名或 [user@]host。backend 为 'ssh' 时必填。",
   timeoutMs: '命令超时(毫秒)',
   timeoutMsHint: '单条命令允许运行多久,超时即终止。',
   maxOutputBytes: '单流输出上限(字节)',

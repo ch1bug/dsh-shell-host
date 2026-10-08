@@ -15,7 +15,7 @@ export const SHELL_NS = 'shell-host'
 
 /** The MSYS2 fields this page edits — a subset of the served schema by design. */
 export interface ShellSettings {
-  /** Backend selector: `'msys2'` (environment injection) or `'plain'` (detected bash). */
+  /** Backend selector: `'msys2' | 'plain' | 'pwsh' | 'wsl' | 'ssh'` (routed per resolution; AC6). */
   backend?: string
   /** MSYS2 subsystem injected as `MSYSTEM` (`UCRT64` default; `'none'` disables injection). */
   subsystem?: string
@@ -23,6 +23,8 @@ export interface ShellSettings {
   msysRoot?: string
   /** Explicit bash executable; empty resolves from the root or detection. */
   bashPath?: string
+  /** Remote target for the `ssh` backend (a `~/.ssh/config` alias or `[user@]host`). */
+  sshHost?: string
   /** Foreground command timeout in milliseconds. */
   timeoutMs?: number
   /** Per-stream in-memory output cap in bytes. */
@@ -39,6 +41,8 @@ export interface ShellCardState extends SettingsFormShell {
   msysRoot: SettingsFieldState
   /** Bash executable override. */
   bashPath: SettingsFieldState
+  /** Remote target for the `ssh` backend. */
+  sshHost: SettingsFieldState
   /** Command timeout in milliseconds. */
   timeoutMs: SettingsFieldState
   /** Per-stream output cap in bytes. */
@@ -65,6 +69,7 @@ export class ShellCardController {
       settingsTextField('subsystem'),
       settingsTextField('msysRoot'),
       settingsTextField('bashPath'),
+      settingsTextField('sshHost'),
       settingsNumberField('timeoutMs'),
       settingsNumberField('maxOutputBytes'),
     ])
@@ -78,6 +83,7 @@ export class ShellCardController {
       subsystem: this.form.field('subsystem'),
       msysRoot: this.form.field('msysRoot'),
       bashPath: this.form.field('bashPath'),
+      sshHost: this.form.field('sshHost'),
       timeoutMs: this.form.field('timeoutMs'),
       maxOutputBytes: this.form.field('maxOutputBytes'),
     }

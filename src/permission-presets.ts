@@ -29,7 +29,7 @@
 // source chain, which does not compile under this repo's relaxed single-
 // program flags (the runtime import is stripped; node_modules carries the
 // built face for consumers of our emitted d.ts).
-import type {} from '../../deepseek-harness/packages/settings/settings/lib/types/index.d.ts'
+import type {} from '@deepseek-ai/dsh-settings'
 
 import type { Volatile } from '@deepseek-ai/cordis'
 

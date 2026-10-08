@@ -1,35 +1,59 @@
 # dsh-shell-host
 
-DSH bundle: **the host-plane shell executor replacement layer for Windows** — a
-replacement of the built-in platform shell executors with pluggable backends
-(`msys2` default, `plain`, `pwsh`; `wsl` reserved), plus a Plugins-page
-settings card. MSYS2 is the default backend, not the bundle's identity.
+DSH bundle: **an independent shell executor for the DSH shell seam on Windows**
+— VS Code terminal-profile modeled, routed backends selectable per config
+(`msys2` default, `plain`, `pwsh`, `wsl`, `ssh`), coexisting with the
+platform shell executors, plus a Plugins-page settings card. MSYS2 is the
+default backend, not the bundle's identity.
 
 Positioning: MSYS2 is an ENVIRONMENT independent of any one shell — install
 root (`msysRoot`), subsystem (`MSYSTEM`), PATH surface, pacman/cygpath tooling
 are first-class; bash is just the environment's configurable shell binary.
-The executor inside is a fork/generalization of `@deepseek-ai/dsh-bash-local`
-(0.2.0-rc.2) with an **identical external interface** — same `bash` tool
-schema, jobs, spill files, exit markers, and configForms namespace shape — so
-every preset's tooling works over it unchanged.
+The executor implements the DSH `ctx.shell` seam (the `ShellExecutor`
+contract) with an interface-compatible surface — same `bash` tool schema,
+jobs, spill files, exit markers, and configForms namespace shape — so every
+preset's tooling works over it unchanged. It is NOT a fork of
+`@deepseek-ai/dsh-bash-local`: the implementation is independent, modeled on
+VS Code's terminal-profile declaration.
 
-## What the bundle does (host replacement)
+## What the bundle does (coexistence, issue #23)
 
 `cordis.patch.yml` operates on the HOST plane (applies to every preset):
 
-1. Disables the base bundle's platform executors on Windows: `pwsh-sandbox`
-   (yields the platform-shell role) and `bash-sandbox` (re-stated; its win32
-   `bash -c` would hit the `C:\Windows\System32\bash.exe` WSL stub anyway).
-2. Inserts this package's executor as `ctx.shell` (row id `shell-host`; backend configurable: `plain` / `msys2` / `pwsh`,
-   default `msys2` with subsystem `UCRT64` — pwsh landed in #3 / D7 phase 1.5, `wsl` reserved). Every preset's `tool-bash` resolves
-   the host seam — Matt 工作流, shipped presets, anything bash-dialect.
+1. Leaves the platform executors alone — `pwsh-sandbox`/`bash-sandbox` keep
+   their DSH-native posture.
+2. Inserts this package's executor as a coexisting `shell-host` row,
+   **disabled by default**; the user enables it on the Plugins page and its
+   row then takes over `ctx.shell` (one provider per composition — enabled =
+   this executor, disabled = the platform shell). Backend routing
+   (`config.backend`): `plain` / `msys2` / `pwsh` / `wsl` / `ssh`, default
+   `msys2` with subsystem `UCRT64`. Changing the backend applies to new
+   commands without a reload. The `permission` row (the #10 host-only fork)
+   is mounted UNCONDITIONALLY — it reads `ctx.sandboxPolicy`, never
+   `ctx.shell`, so `/permission`, the settings PermissionRow, and the input
+   permission picker stay alive in either posture.
 3. Overrides `terminal-controller` (the right-sidebar USER terminal): MSYS2
    bash `--login -i` becomes the default shell with a visible name, and the
    bare `bash` candidate is pruned (host PATH has no MSYS2, so it can only
    resolve to the WSL stub). Install-probed: no MSYS2 → upstream discovery
    stands.
 
-All rows carry win32 guards; on POSIX the bundle is dormant.
+## Decoupled build (issue #23)
+
+`pnpm install && pnpm build` needs no `deepseek-harness` checkout: the
+shell-seam types (`ShellExecRequest`/`ShellExecSpec`/`ShellRunResult`/
+`ShellProcess`/`ShellProcessRead`/`CollectedOutput`/`ShellSandboxInfo`) are
+inlined in `src/types.ts`, the timeout arithmetic in `src/timeout.ts`, and
+the `ShellExecutor` base in `src/core/executor.ts`. `peerDependencies` are
+only `@deepseek-ai/cordis` + `@deepseek-ai/schemastery`; everything else is a
+regular dependency resolved from npm, and `build` is `tsdown` alone. If a DSH
+upgrade does not change those shapes, this package republishes nothing
+(peer pins only the two vendor packages).
+
+The `ssh` backend (merged from dsh-shell-remote, issue #23 AC9) runs
+`ssh <host> -- bash -c <cmd>` through system OpenSSH — `~/.ssh/config` aliases,
+keys, agent, and jump hosts all apply. `sshHost` is required (loud failure
+when blank); all path semantics are remote paths, never mapped.
 
 ### Host MSYS2 prerequisites（宿主环境最低工具集，2026-10-02 实测补齐）
 
@@ -68,30 +92,21 @@ reload (all config fields are volatile). The bundle's `lib/client.js` is a
 closure-factory artifact over the platform module table (requires only
 `@deepseek-ai/dsh-client-ui-primitives` and `react/jsx-runtime`).
 
-## Provenance (fork baseline, T1)
+## Provenance (issue #23 status)
 
-- Forked from `@deepseek-ai/dsh-bash-local` **0.2.0-rc.2** (© DeepSeek AI,
-  MIT; see `LICENSE`). Source: upstream monorepo tag `dsh-v0.2.0-rc.2`,
-  commit `639ed01539` (`packages/shell/bash-local`). Between 0.1.7-rc.2 and
-  0.2.0-rc.2 this package's src/tests are byte-identical (only the version
-  field moved); baseline = what the local desktop (0.2.0-rc.2) runs.
-- **Functional deviations:** `src/index.ts` is upstream verbatim;
-  `src/backends.ts` / `src/detect.ts` are this repo's extensions (backend registry
-  plain/msys2/pwsh + wsl-reserved, pwsh probing — #3 / D7 phase 1.5), beyond upstream.
-  Ported-test deviations (mechanical only, both documented here):
-  - `tests/executor.spec.ts` imports `LocalBashExecutor` from `../src/index.ts`
-    instead of the upstream package name (the package here is `dsh-shell-host`).
-  - `tests/settings.spec.ts` imports `live-config.ts` from `./helpers/` —
-    the helper is ported verbatim from upstream
-    `packages/settings/settings/tests/live-config.ts`.
-- Dependencies: `@deepseek-ai/*` packages are **never fetched from npm**.
-  Typecheck/build/tests resolve them against the local upstream monorepo
-  checkout (`../deepseek-harness`, pinned to tag `dsh-v0.2.0-rc.2`):
-  `tsc` via the inherited `tsconfig.base.json` paths map, vitest via
-  explicit source aliases, `tsc -b`-built declarations for the declaration
-  emit, and pnpm `link:` overrides so the installer never touches the
-  registry for the scope. Tooling (typescript/vitest/tsdown) comes from npm.
+- History: started as a fork of `@deepseek-ai/dsh-bash-local` **0.2.0-rc.2**
+  (© DeepSeek AI, MIT; see `LICENSE`); since issue #23 the implementation is
+  independent (inlined seam types + local base class) while keeping the
+  external interface compatible. The VS Code terminal-profile modeling
+  (`src/backends.ts` / `src/detect.ts`) predates the decoupling and remains
+  the descriptor vocabulary.
+- Dependencies: `peerDependencies` are only `@deepseek-ai/cordis` +
+  `@deepseek-ai/schemastery`. All other `@deepseek-ai/*` specifiers resolve
+  from the npm registry (built packages); typecheck and vitest consume the
+  same npm artifacts. Tooling (typescript/vitest/tsdown) comes from npm.
 
-Status: v0.1.x — host-plane replacement + settings page + pwsh backend
-(505be8e, #3 phase 1.5; typecheck both facades, vitest 53 passed | 1 skipped, win32 live E2E green).
+Status: v0.2.0-rc.2-r1 + issue #23 route B: decoupled build (inlined types,
+tsdown-only, npm-resolved deps), backend routing (msys2/plain/pwsh/wsl/ssh),
+coexistence with the platform shell (default disabled), ssh backend merged
+from dsh-shell-remote, backend dropdown in the settings card.
 See `CONTEXT.md` and GitHub Issues for the plan.

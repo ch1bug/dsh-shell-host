@@ -30,7 +30,9 @@ export async function liveConfig(ctx: Context, plugin: Plugin, initial: object =
     resolveConfig(fiber.runtime!, fiber.ctx.waterfall(fiber, 'internal/config', next, () => next))
     await entry.update({ config: next })
     await entry.fiber!.await()
-    ctx.emit('app-boot/config-reload')
+    // dsh-app-boot declares this event; its types are not a dependency of this
+    // repo (issue #23 decoupling), so the emit casts through the generic key.
+    ;(ctx.emit as (event: string) => void)('app-boot/config-reload')
   }
   return {
     entry,
