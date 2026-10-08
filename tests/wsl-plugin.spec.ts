@@ -138,15 +138,35 @@ describe('win_* tool behavior through the fake shell seam', () => {
     expect(out.note).toContain('with code 1 on success')
   })
 
-  it('win_drives parses /mnt into drive rows', async () => {
-    const { ctx, registered } = fakeCtx(() => fakeRun('c\nd\n'))
+  it('win_drives parses /mnt into drive rows, filtering non-drive entries on the JS side (#32)', async () => {
+    // The shell side returns the RAW /mnt listing; drive filtering happens in
+    // JS, so the emitted command never embeds a pattern (see the quoting test
+    // below).
+    const { ctx, registered, calls } = fakeCtx(() => fakeRun('c\nDistro\nd\nsnap\n\n'))
     wslPlugin.apply(ctx as any)
     const tool = registered.find((t) => t.name === 'win_drives')!
     const out = await tool.execute({}, {})
+    expect(calls[0].command).toBe('ls -1 /mnt 2>/dev/null')
     expect(out.drives).toEqual([
       { drive: 'C', wslPath: '/mnt/c', winPath: 'C:\\' },
       { drive: 'D', wslPath: '/mnt/d', winPath: 'D:\\' },
     ])
+  })
+
+  it('win_drives never emits a `$` in its command — the quoting-collision class (#32)', async () => {
+    // Regression guard for the #32 bug construction: the executor launches
+    // `wsl.exe -d <distro> -e bash -c <command>` and wsl.exe rejoins argv into
+    // a parsed command line, so any `$'` inside the command (e.g. a grep
+    // pattern ending in `$`) opens ANSI-C quoting and unbalances the quotes —
+    // bash dies with "unexpected EOF" and the tool returned empty drives.
+    // A fake shell cannot observe that interaction; the machine lane asserts
+    // the mechanism on the real seam (tests/wsl-plugin-live.spec.ts). Here we
+    // pin the class itself: the command carries no `$` at all.
+    const { ctx, registered, calls } = fakeCtx(() => fakeRun(''))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_drives')!
+    await tool.execute({}, {})
+    expect(calls[0].command).not.toContain('$')
   })
 })
 
