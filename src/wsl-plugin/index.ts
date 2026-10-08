@@ -40,7 +40,9 @@ interface ShellRun {
   timedOut?: boolean
   aborted?: boolean
   stdout: { text: string; truncated?: boolean }
-  stderr: { text: string }
+  // #39: the seam (`CollectedOutput`) carries the truncation flag on BOTH
+  // streams symmetrically — the duck-type slice mirrors it.
+  stderr: { text: string; truncated?: boolean }
 }
 
 /** UTF-8-safe base64: Node's b64() rejects non-Latin-1 (Chinese file content
@@ -75,6 +77,18 @@ interface WslExec {
   signal?: AbortSignal
 }
 
+/** Collect only the defined fields of a candidate mapping — the shell request
+ * must carry absent keys, not undefined-valued ones (#39: one pass replaces
+ * the per-field `...(x !== undefined ? {x} : {})` clump; field set and
+ * semantics unchanged). */
+function pickDefined<T extends Record<string, unknown>>(mapping: T): Partial<T> {
+  const out: Partial<T> = {}
+  for (const key of Object.keys(mapping) as Array<keyof T>) {
+    if (mapping[key] !== undefined) out[key] = mapping[key]
+  }
+  return out
+}
+
 /** Execute through the host shell seam (foreground = await the handle's
  * result() projection; no run() on the alpha.1 seam, dsh-shell-host #17). */
 async function run(ctx: WslCtx, command: string, exec: WslExec, opts: { timeoutMs?: number; workdir?: string; stdoutMaxBytes?: number } = {}): Promise<ShellRun> {
@@ -85,14 +99,16 @@ async function run(ctx: WslCtx, command: string, exec: WslExec, opts: { timeoutM
   const shell = ctx.get('shell')
   const request = {
     command,
-    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-    ...(opts.workdir !== undefined ? { workdir: opts.workdir } : {}),
-    // #33: per-request stdout cap override — the seam applies its own default
-    // (64KB) when omitted; overflow keeps only the TAIL and sets
-    // `stdout.truncated` on the result.
-    ...(opts.stdoutMaxBytes !== undefined ? { stdoutMaxBytes: opts.stdoutMaxBytes } : {}),
-    ...(policy !== undefined ? { sandboxPolicy: policy } : {}),
-    ...(exec !== undefined && exec.signal !== undefined ? { signal: exec.signal } : {}),
+    ...pickDefined({
+      timeoutMs: opts.timeoutMs,
+      workdir: opts.workdir,
+      // #33: per-request stdout cap override — the seam applies its own default
+      // (64KB) when omitted; overflow keeps only the TAIL and sets
+      // `stdout.truncated` on the result.
+      stdoutMaxBytes: opts.stdoutMaxBytes,
+      sandboxPolicy: policy,
+      signal: exec.signal,
+    }),
   }
   const handle = await shell.execute(shell.resolve(request))
   return handle.result()
@@ -201,7 +217,7 @@ function registerTools(ctx: WslCtx): void {
     },
     {
       name: 'win_run',
-      description: 'Run a Windows program or command line and capture its output. shell="cmd" wraps with cmd.exe /c (UTF-8 codepage first); shell="powershell" writes a temp .ps1 (UTF-8 BOM, console output forced to UTF-8) and runs via powershell.exe -File; shell="direct" executes the string as-is in WSL bash (WSL interop for .exe). Windows paths for cwd converted automatically; cmd/powershell default to C:\\ when no cwd given.',
+      description: 'Run a Windows program or command line and capture its output. shell="cmd" wraps with cmd.exe /c (UTF-8 codepage first); shell="powershell" writes a temp .ps1 (UTF-8 BOM, console output forced to UTF-8) and runs via powershell.exe -File; shell="direct" executes the string as-is in WSL bash (WSL interop for .exe). Windows paths for cwd converted automatically; cmd/powershell default to C:\\ when no cwd given. Either stream past the executor cap is tail-kept: stdoutTruncated/stderrTruncated in the result mark it (#39).',
       parameters: {
         command: { type: 'string', required: true, description: 'Command line to run, e.g. "dir C:\\Users" (cmd), "Get-Process explorer" (powershell), or "/mnt/c/Windows/System32/ipconfig.exe /all" (direct)' },
         shell: { type: 'string', enum: ['cmd', 'powershell', 'direct'], description: 'How to execute: cmd (default) | powershell | direct' },
@@ -221,18 +237,23 @@ function registerTools(ctx: WslCtx): void {
           await run(ctx, `printf '%s' ${enc} | base64 -d > ${shq(ps1)}`, exec, { timeoutMs: 10000 })
           const r = await run(ctx, `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${shq(toWinPath(ps1))}`, exec, { timeoutMs, workdir })
           await run(ctx, `rm -f ${shq(ps1)}`, exec, { timeoutMs: 5000 }).catch(() => {})
-          return { shell: 'powershell', exitCode: r.exitCode, timedOut: r.timedOut, aborted: r.aborted, stdout: r.stdout.text, stderr: r.stderr.text }
+          return { shell: 'powershell', exitCode: r.exitCode, timedOut: r.timedOut, aborted: r.aborted, stdout: r.stdout.text, stderr: r.stderr.text,
+            // #39: both truncation signals caller-visible, symmetric with the
+            // #33 stdout semantics (executor keeps the TAIL past the cap).
+            stdoutTruncated: r.stdout.truncated === true, stderrTruncated: r.stderr.truncated === true }
         }
         if (args.shell === 'direct') {
           const r = await run(ctx, command, exec, { timeoutMs, workdir })
-          return { shell: 'direct', exitCode: r.exitCode, timedOut: r.timedOut, aborted: r.aborted, stdout: r.stdout.text, stderr: r.stderr.text }
+          return { shell: 'direct', exitCode: r.exitCode, timedOut: r.timedOut, aborted: r.aborted, stdout: r.stdout.text, stderr: r.stderr.text,
+            stdoutTruncated: r.stdout.truncated === true, stderrTruncated: r.stderr.truncated === true } // #39
         }
         const bat = `/mnt/c/Windows/Temp/dsh_${rand}.bat`
         const enc = b64('@echo off\r\nchcp 65001 >nul\r\n' + command + '\r\n')
         await run(ctx, `printf '%s' ${enc} | base64 -d > ${shq(bat)}`, exec, { timeoutMs: 10000 })
         const r = await run(ctx, `cmd.exe /c ${shq(toWinPath(bat))}`, exec, { timeoutMs, workdir })
         await run(ctx, `rm -f ${shq(bat)}`, exec, { timeoutMs: 5000 }).catch(() => {})
-        return { shell: 'cmd', exitCode: r.exitCode, timedOut: r.timedOut, aborted: r.aborted, stdout: r.stdout.text, stderr: r.stderr.text }
+        return { shell: 'cmd', exitCode: r.exitCode, timedOut: r.timedOut, aborted: r.aborted, stdout: r.stdout.text, stderr: r.stderr.text,
+          stdoutTruncated: r.stdout.truncated === true, stderrTruncated: r.stderr.truncated === true } // #39
       },
     },
     {
