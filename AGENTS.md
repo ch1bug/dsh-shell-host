@@ -32,7 +32,7 @@ grill-locked decisions (D1–D8) this repo is built on.
 ```bash
 pnpm typecheck   # two facades: tsconfig.json (host, source paths) + tsconfig.client.json (client, built d.ts paths)
 pnpm build       # tsc -p tsconfig.build.json (host declarations, lib/types/*.d.ts) → tsdown (lib/*.js)
-pnpm test        # vitest unit loop; MSYS-dependent cases skip when C:\msys64 is absent
+pnpm test        # typecheck (tests-inclusive, #43 pin enforcement) then vitest unit + machine; MSYS-dependent cases skip when C:\msys64 is absent
 pnpm test:e2e    # the T5 engine-side E2E checklist; needs a real MSYS2 (C:\msys64), DSH_MSYS_ROOT overrides
 
 No CI (maintainer decision 2026-09-30): verification is local (typecheck/test/test:e2e + issue evidence). Do not propose adding ci.yml.
