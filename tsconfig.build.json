@@ -16,7 +16,13 @@
     "incremental": false,
     "outDir": "lib/types",
     "rootDir": "src",
-    "paths": {}
+    "paths": {},
+    // Issue #36: keep pnpm's virtual-store symlinks unresolved so nested peer
+    // instances (schemastery/cosmokit alpha copies pulled in by
+    // @deepseek-ai/dsh-tools / dsh-subprocess) never enter the emit graph —
+    // without this, emitted types reference unnameable .pnpm duplicates
+    // (TS2883). Single resolution root, portable declarations.
+    "preserveSymlinks": true
   },
   "include": [
     "src"

@@ -31,7 +31,7 @@ grill-locked decisions (D1–D8) this repo is built on.
 
 ```bash
 pnpm typecheck   # two facades: tsconfig.json (host, source paths) + tsconfig.client.json (client, built d.ts paths)
-pnpm build       # tsc -b (upstream deps) → tsc -p tsconfig.build.json (host declarations) → tsdown (lib/index.js + lib/client.js)
+pnpm build       # tsc -p tsconfig.build.json (host declarations, lib/types/*.d.ts) → tsdown (lib/*.js)
 pnpm test        # vitest unit loop; MSYS-dependent cases skip when C:\msys64 is absent
 pnpm test:e2e    # the T5 engine-side E2E checklist; needs a real MSYS2 (C:\msys64), DSH_MSYS_ROOT overrides
 
