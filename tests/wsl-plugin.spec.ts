@@ -195,6 +195,23 @@ describe('win_* tool behavior through the fake shell seam', () => {
     expect(out.stderrTruncated).toBe(true)
   })
 
+  it('win_run forwards per-call stdout/stderr cap overrides and omits unset ones (#42)', async () => {
+    const { ctx, registered, calls } = fakeCtx(() => fakeRun(''))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_run')!
+    await tool.execute({ command: 'make', shell: 'direct', stdoutMaxBytes: 262144, stderrMaxBytes: 131072 }, {})
+    expect(calls[0].stdoutMaxBytes).toBe(262144)
+    expect(calls[0].stderrMaxBytes).toBe(131072)
+
+    // Default path: neither cap is forwarded — the seam's config default holds.
+    const minimal = fakeCtx(() => fakeRun(''))
+    wslPlugin.apply(minimal.ctx as any)
+    const bare = minimal.registered.find((t) => t.name === 'win_run')!
+    await bare.execute({ command: 'make', shell: 'direct' }, {})
+    expect(minimal.calls[0]).not.toHaveProperty('stdoutMaxBytes')
+    expect(minimal.calls[0]).not.toHaveProperty('stderrMaxBytes')
+  })
+
   it('run() maps every defined opt onto the request and omits undefined ones (#39)', async () => {
     // The opts→request mapping is one pass (no per-field conditional spread);
     // behavior pinned: defined fields land, absent fields stay absent.

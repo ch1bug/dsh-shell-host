@@ -172,12 +172,18 @@ export class ShellHostExecutor extends ShellExecutor {
     )
     const stdoutMaxBytes = request.stdoutMaxBytes ?? this.config.maxOutputBytes.get()
     assertPositiveFinite('request.stdoutMaxBytes', stdoutMaxBytes)
+    // #42: the stderr side of the per-call cap override, field-symmetric with
+    // stdoutMaxBytes — same default (the shared maxOutputBytes budget), same
+    // validation, same "per-side, not shared" semantics.
+    const stderrMaxBytes = request.stderrMaxBytes ?? this.config.maxOutputBytes.get()
+    assertPositiveFinite('request.stderrMaxBytes', stderrMaxBytes)
     return {
       command: request.command,
       workdir: request.workdir ?? this.config.cwd.get() ?? process.cwd(),
       timeoutMs,
       onExpiry: request.onExpiry ?? 'kill',
       stdoutMaxBytes,
+      stderrMaxBytes,
       ...request.signal ? { signal: request.signal } : {},
       // Carry stdin/ordinary env/trusted dshEnv through verbatim — optional,
       // no config default. The subprocess service owns the scrub and merge order.
@@ -198,6 +204,7 @@ export class ShellHostExecutor extends ShellExecutor {
     argv: readonly string[],
     stdoutMaxBytes: number,
     signal: AbortSignal | undefined,
+    stderrMaxBytes: number,
   ): SubprocessSpawnSpec {
     const collect = (maxBytes: number): SubprocessCollect =>
       ({ maxBytes, spill: { maxBytes: this.config.maxSpillBytes.get() } })
@@ -207,7 +214,7 @@ export class ShellHostExecutor extends ShellExecutor {
       stdio: {
         stdin: spec.stdin !== undefined ? { data: spec.stdin } : 'ignore',
         stdout: collect(stdoutMaxBytes),
-        stderr: collect(this.config.maxOutputBytes.get()),
+        stderr: collect(stderrMaxBytes),
       },
       graceMs: this.config.graceMs.get(),
       signal,
@@ -325,7 +332,7 @@ export class ShellHostExecutor extends ShellExecutor {
     let syncSpawnError: { error: unknown } | undefined
     try {
       if (!preparationTimedOut) {
-        running = this.ctx.subprocess.spawn(this.spawnSpec(spec, argv, spec.stdoutMaxBytes, spawnSignal))
+        running = this.ctx.subprocess.spawn(this.spawnSpec(spec, argv, spec.stdoutMaxBytes, spawnSignal, spec.stderrMaxBytes))
       }
     } catch (error) {
       syncSpawnError = { error }

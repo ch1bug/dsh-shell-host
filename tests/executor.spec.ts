@@ -114,6 +114,29 @@ describe('LocalBashExecutor.run', () => {
     expect(result.stderr.text.length).toBeLessThanOrEqual(100)
   })
 
+  it('defaults stderrMaxBytes to maxOutputBytes and applies a per-call stderr cap override (#42)', async () => {
+    const { bash } = await setup({ maxOutputBytes: 100 })
+    expect(bash.resolve({ command: 'true' }).stderrMaxBytes).toBe(100)
+
+    // Mirror of the stdout-only raise test above: stderr raised per call while
+    // stdout keeps the config cap — the override is per-side, not shared.
+    const result = await run(bash, bash.resolve({
+      command: 'printf "%.0sx" $(seq 1 500); printf "%.0se" $(seq 1 500) >&2',
+      stderrMaxBytes: 500,
+    }))
+
+    expect(result.stderr.truncated).toBe(false)
+    expect(result.stderr.text).toBe('e'.repeat(500))
+    expect(result.stdout.truncated).toBe(true)
+    expect(result.stdout.text.length).toBeLessThanOrEqual(100)
+  })
+
+  it('rejects invalid per-call stderr caps at resolve (#42)', async () => {
+    const { bash } = await setup()
+    expect(() => bash.resolve({ command: 'true', stderrMaxBytes: Number.NaN })).toThrow(/request\.stderrMaxBytes/)
+    expect(() => bash.resolve({ command: 'true', stderrMaxBytes: -1 })).toThrow(/request\.stderrMaxBytes/)
+  })
+
   it('per-call timeout takes precedence under the cap and kills on expiry', async () => {
     const { bash } = await setup({ timeoutMs: 60_000 })
     const result = await run(bash, bash.resolve({ command: 'sleep 60', timeoutMs: 100 }))
