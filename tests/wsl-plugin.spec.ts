@@ -13,12 +13,15 @@ function fakeRun(
   stdout = '',
   stderr = '',
   exitCode = 0,
-  opts: { truncated?: boolean } = {},
+  opts: { truncated?: boolean; stderrTruncated?: boolean } = {},
 ) {
   return {
     exitCode,
     stdout: { text: stdout, truncated: opts.truncated ?? false },
-    stderr: { text: stderr },
+    // #39: the seam layer (`CollectedOutput`) carries the truncation flag on
+    // BOTH streams symmetrically; the tool surface must not drop the stderr
+    // half.
+    stderr: { text: stderr, truncated: opts.stderrTruncated ?? false },
   }
 }
 
@@ -161,13 +164,58 @@ describe('win_* tool behavior through the fake shell seam', () => {
   })
 
   it('win_run (direct) executes as-is in WSL bash and forwards the seam result', async () => {
-    const { ctx, registered, calls } = fakeCtx(() => ({ exitCode: 3, timedOut: false, aborted: false, stdout: { text: 'out' }, stderr: { text: 'err' } }))
+    const { ctx, registered, calls } = fakeCtx(() => ({ exitCode: 3, timedOut: false, aborted: false, stdout: { text: 'out', truncated: false }, stderr: { text: 'err', truncated: false } }))
     wslPlugin.apply(ctx as any)
     const tool = registered.find((t) => t.name === 'win_run')!
     const out = await tool.execute({ command: '/mnt/c/Windows/System32/ipconfig.exe /all', shell: 'direct', cwd: 'C:\\Work' }, {})
     expect(calls[0].command).toBe('/mnt/c/Windows/System32/ipconfig.exe /all')
     expect(calls[0].workdir).toBe('/mnt/c/Work')
     expect(out).toMatchObject({ shell: 'direct', exitCode: 3, stdout: 'out', stderr: 'err' })
+    // #39: both truncation signals are part of the shape even when nothing
+    // was cut — field-identical to pre-#39 plus the explicit `false`s.
+    expect(out.stdoutTruncated).toBe(false)
+    expect(out.stderrTruncated).toBe(false)
+  })
+
+  it('win_run surfaces BOTH stream truncation signals symmetrically (#39)', async () => {
+    // The seam executor sets the truncated flag per stream; a large stderr
+    // (e.g. a chatty build log) must be caller-visible the same way a large
+    // stdout already is since #33 — same semantics, mirrored per side.
+    const { ctx, registered } = fakeCtx(() => ({
+      exitCode: 0,
+      timedOut: false,
+      aborted: false,
+      stdout: { text: 'ok', truncated: true },
+      stderr: { text: 'warn...', truncated: true },
+    }))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_run')!
+    const out = await tool.execute({ command: 'make', shell: 'direct' }, {})
+    expect(out.stdoutTruncated).toBe(true)
+    expect(out.stderrTruncated).toBe(true)
+  })
+
+  it('run() maps every defined opt onto the request and omits undefined ones (#39)', async () => {
+    // The opts→request mapping is one pass (no per-field conditional spread);
+    // behavior pinned: defined fields land, absent fields stay absent.
+    const { ctx, registered, calls } = fakeCtx(() => fakeRun(''))
+    wslPlugin.apply(ctx as any)
+    const tool = registered.find((t) => t.name === 'win_run')!
+    const signal = new AbortController().signal
+    await tool.execute({ command: 'x', shell: 'direct', timeoutMs: 5000, cwd: 'C:\\Work' }, { signal })
+    expect(calls[0].timeoutMs).toBe(5000)
+    expect(calls[0].workdir).toBe('/mnt/c/Work')
+    expect(calls[0].signal).toBe(signal)
+    expect(calls[0]).not.toHaveProperty('stdoutMaxBytes')
+    expect(calls[0]).not.toHaveProperty('sandboxPolicy')
+    // No opt-vs-policy confusion: an undefined opt never overwrites a resolved
+    // policy and vice versa — the pick is per-field, order-independent.
+    const minimal = fakeCtx(() => fakeRun(''))
+    wslPlugin.apply(minimal.ctx as any)
+    const bare = minimal.registered.find((t) => t.name === 'win_run')!
+    await bare.execute({ command: 'x', shell: 'direct' }, {})
+    expect(minimal.calls[0].timeoutMs).toBe(120000) // win_run's own default, always defined
+    expect(minimal.calls[0]).not.toHaveProperty('signal')
   })
 
   it('win_open reports the explorer exit-code-1 note and both path forms', async () => {
