@@ -9,10 +9,15 @@ import { describe, expect, it } from 'vitest'
 import * as wslPlugin from '../src/wsl-plugin/index.js'
 
 /** Fake shell-seam result the tools consume. */
-function fakeRun(stdout = '', stderr = '', exitCode = 0, truncated = false) {
+function fakeRun(
+  stdout = '',
+  stderr = '',
+  exitCode = 0,
+  opts: { truncated?: boolean } = {},
+) {
   return {
     exitCode,
-    stdout: { text: stdout, truncated },
+    stdout: { text: stdout, truncated: opts.truncated ?? false },
     stderr: { text: stderr },
   }
 }
@@ -97,7 +102,7 @@ describe('win_* tool behavior through the fake shell seam', () => {
     // must carry an explicit, caller-visible truncation signal.
     const head = 'total 4\n-rw-r--r-- 1 me me 12 2026-10-08 17:00 notes.txt\n'
     const tail = '-rw-r--r-- 1 me me 1 2026-10-08 17:00 last.txt\n'
-    const { ctx, registered } = fakeCtx(() => fakeRun(head + tail, '', 0, true))
+    const { ctx, registered } = fakeCtx(() => fakeRun(head + tail, '', 0, { truncated: true }))
     wslPlugin.apply(ctx as any)
     const tool = registered.find((t) => t.name === 'win_ls')!
     const out = await tool.execute({ path: 'C:\\Users\\me' }, {})
