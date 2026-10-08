@@ -19,6 +19,7 @@ import { expandOneShotArgv, resolveExecutable } from './backends.ts'
 import type { BackendDescriptor } from './backends.ts'
 import { clampTimeout, deadline, MAX_TIMER_DELAY_MS, timeoutOf } from './timeout.ts'
 import type { CollectedOutput, ShellExecRequest, ShellExecSpec, ShellExecution, ShellProcess, ShellProcessRead, ShellRunResult, SubprocessCollect, SubprocessHandle, SubprocessOutputReader, SubprocessSpawnSpec } from './types.ts'
+import './subprocess-context.ts'
 
 /**
  * Model-friendly environment overrides: disable colors, pagers, and

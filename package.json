@@ -69,9 +69,10 @@
     "lib/wsl-plugin/index.js"
   ],
   "scripts": {
-    "build": "tsdown",
-    "_build-note": "issue #23: tsdown only — no `tsc -b ../deepseek-harness/...` declaration pre-pass and no monorepo checkout needed; the shell-seam types are inlined in src/types.ts.",
+    "build": "tsc -p tsconfig.build.json && tsdown",
+    "_build-note": "issue #23: tsdown only — no `tsc -b ../deepseek-harness/...` declaration pre-pass and no monorepo checkout needed; the shell-seam types are inlined in src/types.ts. Issue #36 re-added a same-repo tsc declaration pre-pass (tsconfig.build.json; `preserveSymlinks` collapses pnpm peer copies so emit stays portable): lib/types/*.d.ts back the exports' `types` pointers.",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
+    "verify:pack": "node scripts/verify-pack.mjs",
     "test": "vitest run --project unit && vitest run --project machine",
     "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
