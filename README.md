@@ -118,6 +118,37 @@ PERSISTENT sessions (survive turns, incremental tail cursor) — for a
 long-running remote session, point `pty_open` at an ssh-capable backend
 type; do not route it through the one-shot registry backend.
 
+## The `./remote` entry (issue #29, ADR-0007)
+
+`src/remote/` is the absorbed dsh-shell-remote module (pure move, source
+anchored at `dsh-v0.2.1-alpha.1-r1` per ADR-0005): ONE-SHOT remote shell
+execution over system OpenSSH — `ssh <host> -- bash -c <cmd>`, with the user's
+`~/.ssh/config` aliases, keys, agent, and jump hosts applying for free. The
+`RemoteShellExecutor` resolves/validates the descriptor loudly, composes the
+remote payload (`cd -- <workdir> && eval <command>`, POSIX-quoted — the
+workdir is a REMOTE path, never mapped), caps both streams in memory with the
+tail retained (spill loudly rejects: host capability, no remote meaning), and
+settles a ShellResult field-identical to the seam's `ShellRunResult` (D8,
+runtime-locked by `tests/remote-conformance.spec.ts`).
+
+```js
+import * as remote from 'dsh-shell-host/remote'   // { RemoteShellExecutor, sshDescriptor, ... }
+```
+
+Two boundaries, per ADR-0007:
+
+- **`./remote` is NOT a registry backend.** The executor config's `backend`
+  single-select (ADR-0003/ADR-0006) never points at it — the remote one-shot
+  world and the local registry stay separate layers, each with its own seam
+  and settings namespace.
+- **Division of labor with the ADR-0006 `ssh` registry entry**: that backend
+  runs one-shot commands over a ControlMaster connection opened and torn down
+  per invocation, inside the local registry's routing; `./remote` has its own
+  standalone transport (bare system ssh, no ControlMaster) and its own
+  executor contract. ADR-0006 is unaffected by the absorption — only
+  ADR-0004's separate-repo half is superseded; the D8 field-identical contract
+  and the loud spill rejection carry over as-is.
+
 ## Provenance (issue #23 status)
 
 - History: started as a fork of `@deepseek-ai/dsh-bash-local` **0.2.0-rc.2**

@@ -29,7 +29,9 @@ const lib = defineConfig({
   // loader composes the fork under dsh-shell-host/permission-presets).
   // #28 (ADR-0007): the pty entry joins — lib/pty/index.js behind the
   // dsh-shell-host/pty export.
-  entry: ['src/index.ts', 'src/permission-presets.ts', 'src/pty/index.ts'],
+  // #29 (ADR-0007): the remote entry joins — lib/remote/index.js behind the
+  // dsh-shell-host/remote export (NOT a registry backend, ADR-0007).
+  entry: ['src/index.ts', 'src/permission-presets.ts', 'src/pty/index.ts', 'src/remote/index.ts'],
   outDir: 'lib',
   format: 'esm',
   platform: 'node',
