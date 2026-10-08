@@ -30,6 +30,7 @@
 
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { posixQuote } from '../posix-quote.ts'
 
 const name = 'dsh-pty-session'
 const inject = ['tools', 'terminals']
@@ -67,10 +68,7 @@ function resolveConfig(raw: unknown): PtyConfig {
 /** Shared render for structured tool output: one JSON text block. */
 const jsonRender = (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }]
 
-/** POSIX single-quote a value for `export` lines on shell-type backends. */
-function quotePosix(value: unknown) {
-  return `'${String(value).replaceAll("'", `'\\''`)}'`
-}
+/** Env `export` lines quote through the shared POSIX helper (issue #37). */
 
 /** The tool-execution context slice the plugin consumes (duck-typed seam). */
 interface PtyCtx {
@@ -175,7 +173,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
       // env is best-effort POSIX `export` lines: only meaningful on
       // shell-type backends (TerminalSpawnRequest has no env field).
       const envLines = spec.env === undefined ? [] : Object.entries(spec.env)
-        .map(([k, v]) => `export ${/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : quotePosix(k)}=${quotePosix(v)}`)
+        .map(([k, v]) => `export ${/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : posixQuote(k)}=${posixQuote(v)}`)
       for (const line of envLines) {
         await sendAndRead(owner, spawned.sessionId, { text: line, submit: true, signal })
       }
