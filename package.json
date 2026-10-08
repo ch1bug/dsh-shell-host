@@ -72,7 +72,7 @@
     "build": "tsdown",
     "_build-note": "issue #23: tsdown only — no `tsc -b ../deepseek-harness/...` declaration pre-pass and no monorepo checkout needed; the shell-seam types are inlined in src/types.ts.",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
-    "test": "vitest run",
+    "test": "vitest run --project unit && vitest run --project machine",
     "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "peerDependencies": {
