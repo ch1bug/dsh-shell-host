@@ -9,7 +9,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 ## 已验证事实(来源:代码调研 + 实测,2026-09-30)
 
 - **基线改道(2026-09-30 human 拍板)**:fork 目标从 0.1.7-rc.2 改为 **0.2.0-rc.2**(本地桌面端已是 0.2.0-rc.2)。两版本间 bash-local 的 src/tests 字节级一致(仅版本号),基线成本为零;上游 tag `dsh-v0.2.0-rc.2` = commit `639ed01539`
-- **依赖策略(2026-09-30 human 拍板)**:@deepseek-ai 包**一律不走 npm registry**(npm latest 标签陈旧);从本地源码库 `C:\Work\code\deepseek-harness`(已钉在 dsh-v0.2.0-rc.2 tag)解析:tsc 经 tsconfig.base.json paths、vitest 经显式 source alias、声明产物经 `tsc -b` 构建、pnpm overrides link: 兜底。工具链(typescript/vitest/tsdown)走 npm
+- **依赖策略(2026-09-30 human 拍板；#23 路 B 已修订 2026-10-08)**:原政策为「@deepseek-ai 包一律不走 npm registry，从本地源码库 `C:\Work\code\deepseek-harness` 解析」(npm latest 标签陈旧)。**#23 路 B 解耦构建后本条废止**：peerDependencies 只留 cordis + schemastery，其余 @deepseek-ai/* 一律作为普通依赖从 npm registry 解析(构建产物;无 source alias、无 tsc -b 前置)；工具链(typescript/vitest/tsdown)走 npm。#28 起新增依赖同样走此通道(如 `@deepseek-ai/dsh-tools` 钉源锚版本)
 - 上游 schema 仅 6 项 volatile 配置(cwd/timeoutMs/maxTimeoutMs/maxOutputBytes/maxSpillBytes/graceMs);bash 二进制硬编码 `'bash'` 沿 PATH 解析,无 bashPath、无 envOverrides 配置项;注册 `ctx.shell`;`static inject = ["subprocess"]`;one-shot = `['bash','-c',cmd]` 非 login 无 rc;env 层叠 ENV_OVERRIDES→caller env→dshEnv;后台作业/spill 输出/ctx.jobs 集成现成
 - 上游 vitest.config.ts 在 win32 排除 bash-local 套件("a real POSIX shell is unavailable on Windows")——T1 基线镜像该策略;实测探针(WSL bash):23/36 过,失败全部为 POSIX 环境假设(cwd 字面量/signal 语义),移植接线零缺陷
 - `dsh-terminal-bash` 的 shellPath/shellArgs 是其自有独立 Config(默认 `/bin/bash` + `--noprofile --norc -i`),不依赖 executor
