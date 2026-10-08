@@ -19,6 +19,9 @@
 /** Command-payload token inside the one-shot argv template (ADR-0001 vocabulary). */
 export const COMMAND_TOKEN = '{command}'
 
+/** Loud-failure prefix shared by every error this entry (descriptor + executor) throws. */
+export const ERROR_PREFIX = 'dsh-shell-remote'
+
 /**
  * Declarative remote backend description (the descriptor seam, R1 skeleton).
  * `executable` carries the ssh launcher candidates (default: bare `ssh`,
@@ -60,13 +63,13 @@ export function sshDescriptor(host: string): RemoteBackendDescriptor {
  */
 export function assertServiceableDescriptor(backend: RemoteBackendDescriptor): void {
   if (backend.executable.length === 0) {
-    throw new Error(`dsh-shell-remote: backend '${backend.id}' declares no executable candidates`)
+    throw new Error(`${ERROR_PREFIX}: backend '${backend.id}' declares no executable candidates`)
   }
   if (backend.host.trim().length === 0) {
-    throw new Error(`dsh-shell-remote: backend '${backend.id}' declares an empty host`)
+    throw new Error(`${ERROR_PREFIX}: backend '${backend.id}' declares an empty host`)
   }
   if (!backend.argv.oneShot.some(arg => arg.includes(COMMAND_TOKEN))) {
-    throw new Error(`dsh-shell-remote: backend '${backend.id}' oneShot argv template lacks a ${COMMAND_TOKEN} placeholder`)
+    throw new Error(`${ERROR_PREFIX}: backend '${backend.id}' oneShot argv template lacks a ${COMMAND_TOKEN} placeholder`)
   }
 }
 

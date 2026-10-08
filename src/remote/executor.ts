@@ -11,15 +11,24 @@
  */
 
 import { spawn } from 'node:child_process'
-import { assertServiceableDescriptor, expandOneShotArgv, sshDescriptor } from './descriptor.ts'
+import { assertServiceableDescriptor, sshDescriptor } from './descriptor.ts'
 import type { RemoteBackendDescriptor } from './descriptor.ts'
+import { COMMAND_TOKEN, ERROR_PREFIX } from './descriptor.ts'
+import { posixQuote } from '../posix-quote.ts'
 import type { CollectedOutput, ShellExecRequest, ShellResult } from './types.ts'
-
-/** Loud-failure prefix shared by every error this module throws. */
-const ERROR_PREFIX = 'dsh-shell-remote'
 
 /** Default per-stream in-memory cap when a request omits `stdoutMaxBytes`. */
 const DEFAULT_OUTPUT_MAX_BYTES = 1_048_576
+
+/**
+ * The remote payload for one request: `cd -- <q(workdir)> && eval
+ * <q(command)>` — the workdir is applied REMOTELY (no path mapping exists on
+ * the transport, D8) and `eval` re-enters the caller's command verbatim
+ * through one layer of quoting.
+ */
+function composeRemotePayload(workdir: string, command: string): string {
+  return `cd -- ${posixQuote(workdir)} && eval ${posixQuote(command)}`
+}
 
 /**
  * Resolved one-shot execution spec: the caller's request with the descriptor
@@ -38,23 +47,6 @@ export interface ShellExecSpec {
   outputMaxBytes: number
   /** Caller cancellation carried from the request. */
   signal?: AbortSignal | undefined
-}
-
-/**
- * POSIX single-quote a string for embedding inside the remote `bash -c`
- * payload (`'` → `'"'"'`). The payload is `cd -- <q(workdir)> && eval
- * <q(command)>`: the workdir is applied REMOTELY (no path mapping exists on
- * the transport, D8) and `eval` re-enters the caller's command verbatim
- * through one layer of quoting.
- */
-function shellQuote(value: string): string {
-  // POSIX single-quote escaping: close the quote, an escaped quote, reopen —
-  // the canonical '\'' form, also what the test fixture unwraps.
-  return `'${value.replaceAll("'", `'\\''`)}'`
-}
-
-function composeRemotePayload(workdir: string, command: string): string {
-  return `cd -- ${shellQuote(workdir)} && eval ${shellQuote(command)}`
 }
 
 /**
@@ -125,18 +117,21 @@ export class RemoteShellExecutor {
     if ('spill' in request) {
       throw new Error(`${ERROR_PREFIX}: spill is a host capability with no remote meaning and is loudly rejected`)
     }
-    const argv = expandOneShotArgv(this.descriptor, request.command)
-    const commandIndex = argv.findIndex(arg => arg === request.command)
-    if (commandIndex === -1) {
-      throw new Error(`${ERROR_PREFIX}: expanded argv lost the command payload`)
-    }
-    const composed = argv.slice()
+    // The composed payload substitutes DIRECTLY into every {command} entry of
+    // the one-shot template (assertServiceableDescriptor has already
+    // guaranteed at least one {command} entry exists), so the splice can
+    // never be misdirected by a command that equals another token.
     // ssh joins its argv with bare spaces and hands the joined string to the
     // REMOTE shell, which re-splits it — an unwrapped payload with spaces
     // would be torn apart (`bash -c cd -- ...` runs a bare `cd` and lands in
     // the home directory). One extra single-quote layer around the whole
     // payload makes it a single remote shell word.
-    composed[commandIndex] = shellQuote(composeRemotePayload(request.workdir, request.command))
+    const payload = posixQuote(composeRemotePayload(request.workdir, request.command))
+    const composed: readonly string[] = [
+      ...this.descriptor.executable,
+      this.descriptor.host,
+      ...this.descriptor.argv.oneShot.map(arg => arg.replaceAll(COMMAND_TOKEN, payload)),
+    ]
     const spec: ShellExecSpec = {
       command: request.command,
       workdir: request.workdir,
