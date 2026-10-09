@@ -379,10 +379,75 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
  * tool description, and the spec files all derive from these exports.
  * README cites the values and points here. Changing them changes behavior
  * everywhere at once; each default is individually suppressible via a
- * caller-supplied `options` entry with the same `Key=` prefix.
+ * caller-supplied `options` entry with the same key (#50: exact key match
+ * on the normalized {key, value} shape).
  */
 export const SSH_KEEPALIVE_INTERVAL_DEFAULT = 'ServerAliveInterval=15'
 export const SSH_KEEPALIVE_COUNT_DEFAULT = 'ServerAliveCountMax=4'
+
+/** Suppression keys (#50), derived from the #49 atoms so the source stays single. */
+const SSH_KEEPALIVE_INTERVAL_KEY: string = SSH_KEEPALIVE_INTERVAL_DEFAULT.split('=')[0]
+const SSH_KEEPALIVE_COUNT_KEY: string = SSH_KEEPALIVE_COUNT_DEFAULT.split('=')[0]
+
+/**
+ * One ssh `-o` option (#50 structured shape). `value` omitted = valueless
+ * option. The atomic-string form (`"Key=value"` / `"Key"`) is accepted as
+ * sugar and normalized into this shape.
+ */
+// A type LITERAL, not an interface: defineTool's schema inference maps an
+// unitems array parameter to JsonValue[], and only object-literal types get
+// the implicit index signature that makes them assignable to JsonValue.
+export type SshOption = {
+  key: string
+  value?: string
+}
+
+/** Tool-parameter shape: either form per entry (#50 additive dual shape). */
+export type SshOptionInput = string | SshOption
+
+/** Chars that force POSIX quoting of a structured value (one shell word). */
+const SHELL_UNSAFE = /[\s'"`$\\;&|<>(){}*?[\]#~!]/
+
+/**
+ * Normalize the dual-shape `options` input into `SshOption[]` (#50): the
+ * atomic string is split at its FIRST `=` (empty key rejected); a valueless
+ * atom becomes `{ key }`. Suppression then matches on the normalized KEY —
+ * exact, no prefix heuristics.
+ */
+const normalizeSshOptions = (options: SshOptionInput[] | undefined): SshOption[] => {
+  if (options === undefined) return []
+  return options.map((entry, i): SshOption => {
+    const at = `ssh_start options[${i}]`
+    if (typeof entry === 'string') {
+      if (entry === '' || /\s/.test(entry)) {
+        throw new Error(`${at} must be a single -o atom with no whitespace (spaced values: use the structured {key, value} form), got: ${JSON.stringify(entry)}`)
+      }
+      const eq = entry.indexOf('=')
+      if (eq < 0) return { key: entry }
+      if (eq === 0) throw new Error(`${at}: empty option key in ${JSON.stringify(entry)}`)
+      return { key: entry.slice(0, eq), value: entry.slice(eq + 1) }
+    }
+    if (entry === null || typeof entry !== 'object') {
+      throw new Error(`${at} must be a -o atom string or a {key, value} object, got: ${JSON.stringify(entry)}`)
+    }
+    const { key, value } = entry as { key?: unknown; value?: unknown }
+    if (typeof key !== 'string' || key === '' || /\s/.test(key) || key.includes('=')) {
+      throw new Error(`${at}.key must be a non-empty ssh option name with no whitespace or '=', got: ${JSON.stringify(key)}`)
+    }
+    if (value !== undefined && typeof value !== 'string') {
+      throw new Error(`${at}.value must be a string when present, got: ${JSON.stringify(value)}`)
+    }
+    return value === undefined ? { key } : { key, value }
+  })
+}
+
+/**
+ * Render one normalized option as the `-o` operand: valueless keys alone;
+ * values POSIX-quoted only when they carry whitespace/shell metacharacters
+ * (atom-shaped values keep their #21-era verbatim look).
+ */
+const renderSshOption = (option: SshOption): string =>
+  option.value === undefined ? option.key : `${option.key}=${SHELL_UNSAFE.test(option.value) ? posixQuote(option.value) : option.value}`
 
 /**
  * ssh 四工具（issue #24，承接 dsh-pty-session#3）: the interactive
@@ -423,7 +488,7 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
    * derive from — the tool description and README cite them.
    */
 
-  const composeSshCommand = (args: { host: string; jump?: string; port?: number; shell?: string; options?: string[] }) => {
+  const composeSshCommand = (args: { host: string; jump?: string; port?: number; shell?: string; options?: SshOptionInput[] }) => {
     // -tt: force remote TTY allocation even when the local side is a pipe —
     // the interactive full-duplex contract (banner, prompt, echo) depends on
     // the remote shell being interactive.
@@ -435,22 +500,21 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
       }
       parts.push('-p', String(args.port))
     }
-    const supplied = args.options ?? []
-    supplied.forEach((option, i) => {
-      if (typeof option !== 'string' || option.trim() === '' || /\s/.test(option)) {
-        throw new Error(`ssh_start options[${i}] must be a single -o atom with no whitespace (spaced values belong in ~/.ssh/config), got: ${JSON.stringify(option)}`)
-      }
-    })
+    const supplied = normalizeSshOptions(args.options)
     // Keepalive defaults first so an explicit caller option reads as the
-    // override; each default is suppressed individually when the caller
-    // supplies its own (last -o wins in ssh, but duplicates are noise).
-    if (!supplied.some((option) => option.startsWith('ServerAliveInterval='))) {
+    // override; each default is suppressed when the caller supplies an
+    // option with the same KEY AND a value — exact match on the normalized
+    // shape (#50), never a prefix heuristic. A valueless entry does not
+    // "set" the option (and would compose an invalid bare `Key` anyway),
+    // so it leaves the default in place.
+    const setsKey = (key: string) => supplied.some((option) => option.key === key && option.value !== undefined)
+    if (!setsKey(SSH_KEEPALIVE_INTERVAL_KEY)) {
       parts.push('-o', SSH_KEEPALIVE_INTERVAL_DEFAULT)
     }
-    if (!supplied.some((option) => option.startsWith('ServerAliveCountMax='))) {
+    if (!setsKey(SSH_KEEPALIVE_COUNT_KEY)) {
       parts.push('-o', SSH_KEEPALIVE_COUNT_DEFAULT)
     }
-    for (const option of supplied) parts.push('-o', option)
+    for (const option of supplied) parts.push('-o', renderSshOption(option))
     parts.push(atom('host', args.host))
     // `shell` is deliberately NOT an atom: it is remote SHELL TEXT appended
     // verbatim (e.g. "bash --login"). core.open delivers `command` as shell
@@ -474,9 +538,10 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
       options: {
         type: 'array',
         description:
-          'Extra ssh -o options, each a single atom with no whitespace (e.g. "IdentityFile=/home/me/key"); ' +
-          'spaced values belong in ~/.ssh/config. An option setting ServerAliveInterval or ServerAliveCountMax ' +
-          'suppresses its keepalive default individually.',
+          'Extra ssh -o options (#50, both shapes accepted). Atomic form: a single atom with no whitespace, ' +
+          '"Key=value" or a valueless "Key". Structured form: { key, value? } — value may carry spaces ' +
+          '(POSIX-quoted into one shell word, e.g. ProxyCommand). An option whose key is ServerAliveInterval ' +
+          'or ServerAliveCountMax suppresses its keepalive default (exact key match).',
       },
       shell: { type: 'string', description: 'Remote command/shell to run after connect (e.g. "bash --login"); omit for the login shell.' },
     },
@@ -493,9 +558,9 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
       },
       render: jsonRender as any,
     },
-    async execute(args: { host: string; jump?: string; port?: number; shell?: string; options?: string[] }, exec: { agent?: Owner; signal?: AbortSignal }) {
+    async execute(rawArgs: { host: string; jump?: string; port?: number; shell?: string; options?: SshOptionInput[] }, exec: { agent?: Owner; signal?: AbortSignal }) {
       const owner = requireAgent(exec)
-      const command = composeSshCommand(args)
+      const command = composeSshCommand(rawArgs)
       return core.open(owner, { command }, exec.signal)
     },
     presentCall: (args: { host: string }) => ({ card: 'terminal', title: `ssh ${args.host}` }),
