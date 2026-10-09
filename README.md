@@ -131,6 +131,18 @@ Division of labor: `backends/ssh.ts` (ControlMaster, one-shot) for single
 commands; `ssh_start` for sessions a human/agent converses with (long-lived
 remote shell, intermediate output via the tail cursor).
 
+Long-session hardening (#21 phase 1):
+
+- `ssh_start({ ..., port })` — non-standard remote port, passed as `-p`
+  (integer 1..65535; `user@host:port` is NOT valid ssh syntax).
+- Keepalive defaults ride on every start: `-o ServerAliveInterval=15 -o
+  ServerAliveCountMax=4` — without them, NAT/firewall idle drops kill
+  sessions silently.
+- `ssh_start({ ..., options })` — free `-o` passthrough for remote-workspace
+  capabilities building on this surface (each option a single atom, no
+  whitespace; spaced values belong in `~/.ssh/config`). An option setting
+  `ServerAliveInterval` / `ServerAliveCountMax` suppresses its default.
+
 Reconnect semantics: **RECONNECT-NO, explicit** — a dropped session (network
 cut, remote drop) surfaces `status.kind = "exited"` on the next send/tail;
 nothing auto-reconnects. Recovery = `ssh_start` again (new session id); the

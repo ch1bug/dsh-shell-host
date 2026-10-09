@@ -171,7 +171,11 @@ describe("ssh_start (#24)", () => {
     const agent = makeAgent("a");
     const opened = await h.tool("ssh_start").execute({ host: "example.com" }, { agent });
     expect(opened.sessionId).toBeDefined();
-    expect(opened.initialOutput).toContain("ssh -tt example.com");
+    // Keepalive defaults ride along (long-session contract, #21): options
+    // precede the host; the host atom terminates the option run.
+    expect(opened.initialOutput).toContain("-o ServerAliveInterval=15");
+    expect(opened.initialOutput).toContain("-o ServerAliveCountMax=4");
+    expect(opened.initialOutput!.trim().endsWith("example.com")).toBe(true);
   });
 
   it("threads jump host (-J) and remote shell", async () => {
@@ -192,6 +196,65 @@ describe("ssh_start (#24)", () => {
   });
 });
 
+describe("ssh_start long-session composition (#21 phase 1)", () => {
+  let h: ReturnType<typeof boot>;
+  beforeEach(() => {
+    h = boot();
+  });
+
+  it("threads a non-standard port as -p before the host atom", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute({ host: "box", port: 2222 }, { agent });
+    expect(opened.initialOutput).toContain("-p 2222");
+    expect(opened.initialOutput!.trim().endsWith("box")).toBe(true);
+  });
+
+  it("rejects out-of-range and non-numeric ports loudly before any network", async () => {
+    const agent = makeAgent("a");
+    await expect(h.tool("ssh_start").execute({ host: "box", port: 0 }, { agent })).rejects.toThrow(/port/);
+    await expect(h.tool("ssh_start").execute({ host: "box", port: 65536 }, { agent })).rejects.toThrow(/port/);
+    await expect(h.tool("ssh_start").execute({ host: "box", port: 22.5 as unknown as number }, { agent })).rejects.toThrow(/port/);
+  });
+
+  it("passes free -o options through verbatim after the keepalive defaults", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute(
+      { host: "box", options: ["IdentityFile=/home/me/id_ed25519", "Compression=yes"] },
+      { agent },
+    );
+    const out = opened.initialOutput;
+    expect(out).toContain("-o ServerAliveInterval=15"); // defaults still ride along
+    expect(out).toContain("-o IdentityFile=/home/me/id_ed25519");
+    expect(out).toContain("-o Compression=yes");
+    expect(out.indexOf("ServerAliveInterval")).toBeLessThan(out.indexOf("IdentityFile"));
+  });
+
+  it("suppresses the keepalive defaults when the caller supplies their own ServerAliveInterval", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute(
+      { host: "box", options: ["ServerAliveInterval=60"] },
+      { agent },
+    );
+    const out = opened.initialOutput;
+    expect(out).not.toContain("ServerAliveInterval=15");
+    expect(out).toContain("-o ServerAliveInterval=60");
+    expect(out).toContain("-o ServerAliveCountMax=4"); // count max still applies
+  });
+
+  it("rejects whitespace-bearing options loudly (single -o atoms; spaced values belong in ~/.ssh/config)", async () => {
+    const agent = makeAgent("a");
+    await expect(
+      h.tool("ssh_start").execute({ host: "box", options: ["RemoteCommand=bash -l"] }, { agent }),
+    ).rejects.toThrow(/options\[0\]/);
+  });
+
+  it("accepts an empty options array as no options", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute({ host: "box", options: [] }, { agent });
+    expect(opened.initialOutput).toContain("-o ServerAliveInterval=15");
+  });
+});
+
 describe("ssh_tail / ssh_send / ssh_close (#24 passthrough semantics)", () => {
   let h: ReturnType<typeof boot>;
   beforeEach(() => {
@@ -204,7 +267,7 @@ describe("ssh_tail / ssh_send / ssh_close (#24 passthrough semantics)", () => {
     const id = opened.sessionId;
 
     // The banner came back in initialOutput; the first tail is empty.
-    expect(opened.initialOutput).toContain("ssh -tt box");
+    expect(opened.initialOutput).toContain("-tt");
     const t0 = await h.tool("ssh_tail").execute({ id }, { agent });
     expect(t0.text).toBe("");
 

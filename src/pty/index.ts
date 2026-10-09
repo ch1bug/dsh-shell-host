@@ -388,6 +388,12 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
  * (network cut, remote drop) surfaces `status.kind = "exited"` on the next
  * send/tail; nothing auto-reconnects. Recovery = `ssh_start` again (new
  * session id); the dead id is reclaimed by `ssh_close` (idempotent).
+ *
+ * Long-session hardening (#21 phase 1): keepalive defaults
+ * (ServerAliveInterval=15 / ServerAliveCountMax=4) ride on every start —
+ * NAT/firewall idle drops otherwise kill sessions silently — plus `port`
+ * (-p) and free `-o` passthrough via `options` (survey decision: remote
+ * workspace capabilities build on this surface next).
  */
 function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
   /** argv ATOMS (host/jump) — never shell text; reject whitespace loudly. */
@@ -398,12 +404,42 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
     return value
   }
 
-  const composeSshCommand = (args: { host: string; jump?: string; shell?: string }) => {
+  /**
+   * Long-session defaults (#21 phase 1): keep the connection observable
+   * through NAT/firewall idle drops. Each is suppressed when the caller
+   * supplies its own counterpart via `options`.
+   */
+  const KEEPALIVE_INTERVAL_DEFAULT = 'ServerAliveInterval=15'
+  const KEEPALIVE_COUNT_DEFAULT = 'ServerAliveCountMax=4'
+
+  const composeSshCommand = (args: { host: string; jump?: string; port?: number; shell?: string; options?: string[] }) => {
     // -tt: force remote TTY allocation even when the local side is a pipe —
     // the interactive full-duplex contract (banner, prompt, echo) depends on
     // the remote shell being interactive.
     const parts = ['ssh', '-tt']
     if (args.jump !== undefined) parts.push('-J', atom('jump', args.jump))
+    if (args.port !== undefined) {
+      if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535) {
+        throw new Error(`ssh_start port must be an integer in 1..65535, got: ${args.port}`)
+      }
+      parts.push('-p', String(args.port))
+    }
+    const supplied = args.options ?? []
+    supplied.forEach((option, i) => {
+      if (typeof option !== 'string' || option.trim() === '' || /\s/.test(option)) {
+        throw new Error(`ssh_start options[${i}] must be a single -o atom with no whitespace (spaced values belong in ~/.ssh/config), got: ${JSON.stringify(option)}`)
+      }
+    })
+    // Keepalive defaults first so an explicit caller option reads as the
+    // override; each default is suppressed individually when the caller
+    // supplies its own (last -o wins in ssh, but duplicates are noise).
+    if (!supplied.some((option) => option.startsWith('ServerAliveInterval='))) {
+      parts.push('-o', KEEPALIVE_INTERVAL_DEFAULT)
+    }
+    if (!supplied.some((option) => option.startsWith('ServerAliveCountMax='))) {
+      parts.push('-o', KEEPALIVE_COUNT_DEFAULT)
+    }
+    for (const option of supplied) parts.push('-o', option)
     parts.push(atom('host', args.host))
     // `shell` is deliberately NOT an atom: it is remote SHELL TEXT appended
     // verbatim (e.g. "bash --login"). core.open delivers `command` as shell
@@ -417,11 +453,20 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
     name: 'ssh_start',
     description:
       'Open an interactive ssh session on a PTY (full duplex: long-lived remote shell, intermediate output visible). ' +
+      'Keepalive defaults (ServerAliveInterval=15/ServerAliveCountMax=4) are injected unless overridden via options. ' +
       'Returns a sessionId for ssh_tail / ssh_send / ssh_close. One-shot remote commands should use the ssh backend instead. ' +
       'No auto-reconnect: a dropped session reports status exited; recover by calling ssh_start again.',
     parameters: {
       host: { type: 'string', required: true, description: 'ssh destination ([user@]host), a single argv atom.' },
       jump: { type: 'string', description: 'Jump host passed as -J (single argv atom).' },
+      port: { type: 'number', description: 'Remote ssh port passed as -p (integer 1..65535; omit for the default 22).' },
+      options: {
+        type: 'array',
+        description:
+          'Extra ssh -o options, each a single atom with no whitespace (e.g. "IdentityFile=/home/me/key"); ' +
+          'spaced values belong in ~/.ssh/config. An option setting ServerAliveInterval or ServerAliveCountMax ' +
+          'suppresses its keepalive default individually.',
+      },
       shell: { type: 'string', description: 'Remote command/shell to run after connect (e.g. "bash --login"); omit for the login shell.' },
     },
     output: {
@@ -437,7 +482,7 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
       },
       render: jsonRender as any,
     },
-    async execute(args: { host: string; jump?: string; shell?: string }, exec: { agent?: Owner; signal?: AbortSignal }) {
+    async execute(args: { host: string; jump?: string; port?: number; shell?: string; options?: string[] }, exec: { agent?: Owner; signal?: AbortSignal }) {
       const owner = requireAgent(exec)
       const command = composeSshCommand(args)
       return core.open(owner, { command }, exec.signal)
