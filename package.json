@@ -57,6 +57,10 @@
     "./wsl": {
       "types": "./lib/types/wsl-plugin/index.d.ts",
       "default": "./lib/wsl-plugin/index.js"
+    },
+    "./terminal": {
+      "types": "./lib/types/terminal/index.d.ts",
+      "default": "./lib/terminal/index.js"
     }
   },
   "files": [
@@ -67,7 +71,9 @@
     "lib/pty/index.js",
     "lib/remote/index.js",
     "lib/wsl-plugin/index.js",
+    "lib/terminal/index.js",
     "lib/posix-quote-*.js",
+    "lib/backends-*.js",
     "cordis.patch.yml"
   ],
   "scripts": {
