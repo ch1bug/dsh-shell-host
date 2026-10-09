@@ -23,6 +23,25 @@ import type { Config } from './index.ts'
 export const COMMAND_TOKEN = '{command}'
 
 /**
+ * Interactive (PTY terminal) argv templates, exported as the SINGLE SOURCE
+ * both the backend descriptors and the launcher preset views (#54, ADR-0008
+ * decision 2) derive from — no second hardcoded argv table.
+ */
+export const MSYS2_INTERACTIVE_ARGV: readonly string[] = ['--login', '-i']
+export const PWSH_INTERACTIVE_ARGV: readonly string[] = ['-l', '-noexit']
+export const WSL_INTERACTIVE_ARGV = (distro: string): readonly string[] => ['-d', distro, '-e', 'bash', '--login', '-i']
+
+/**
+ * MSYS2 subsystem PATH prefix for a resolved install root (single source for
+ * the descriptor and the launcher views): the subsystem bin (except MSYS,
+ * which only adds /usr/bin) ahead of the msys-local/usr-bin/bin run.
+ */
+export function msys2PathPrefix(msysRoot: string, msystem: string): readonly string[] {
+  const subsystemBin = msystem === 'MSYS' ? [] : [join(msysRoot, msystem.toLowerCase(), 'bin')]
+  return [...subsystemBin, join(msysRoot, 'usr', 'local', 'bin'), join(msysRoot, 'usr', 'bin'), join(msysRoot, 'bin')]
+}
+
+/**
  * Backend-specific fields carried by the `wsl` descriptor (ADR-0003 decision
  * 4, ticket #13): like a VS Code terminal profile, the descriptor is the
  * single declaration place — no per-backend side config section, and no
@@ -169,14 +188,13 @@ function msys2Backend(config: Config): BackendDescriptor {
   }
   const msystem = config.subsystem.get() ?? 'UCRT64'
   // MSYSTEM login shells prepend their subsystem bin; MSYS itself only adds /usr/bin.
-  const subsystemBin = msystem === 'MSYS' ? [] : [join(msysRoot, msystem.toLowerCase(), 'bin')]
-  const prefix = [...subsystemBin, join(msysRoot, 'usr', 'local', 'bin'), join(msysRoot, 'usr', 'bin'), join(msysRoot, 'bin')]
+  const prefix = msys2PathPrefix(msysRoot, msystem)
   return {
     id: 'msys2',
     executable: [config.bashPath.get() ?? join(msysRoot, 'usr', 'bin', 'bash.exe')],
     // Login-interactive argv for the PTY terminal (D3; the VS Code `bash
     // (MSYS2)` profile). /etc/profile builds the MSYS environment.
-    argv: { oneShot: ['-c', COMMAND_TOKEN], interactive: ['--login', '-i'] },
+    argv: { oneShot: ['-c', COMMAND_TOKEN], interactive: MSYS2_INTERACTIVE_ARGV },
     env: { MSYSTEM: msystem, CHERE_INVOKING: '1' },
     pathPrefix: prefix,
     pathMapping: {
@@ -218,7 +236,7 @@ function pwshBackend(): BackendDescriptor {
     executable: [detected],
     argv: {
       oneShot: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', ENCODING_PREAMBLE + COMMAND_TOKEN],
-      interactive: ['-l', '-noexit'],
+      interactive: PWSH_INTERACTIVE_ARGV,
     },
     env: {},
     pathPrefix: [],
@@ -314,7 +332,7 @@ export function wslBackend(config: Config, deps: WslBackendDeps = {}): SpecificB
     executable: [wslExe],
     argv: {
       oneShot: ['-d', distro, '-e', 'bash', '-c', COMMAND_TOKEN],
-      interactive: ['-d', distro, '-e', 'bash', '--login', '-i'],
+      interactive: WSL_INTERACTIVE_ARGV(distro),
     },
     env: {},
     pathPrefix: [],
