@@ -67,6 +67,11 @@
 # 定型形状,CRUD UI 归后续票读写同一数据);内置预设表只读 —— 实时视图由
 # shell_open 未知 id 的响亮错误枚举(全部可服务预设 id)。预设解析走真实探测
 # (#54 launchers 层):未装的环境从解析结果缺席,选定才响亮报全部探测点。
+# shell_open 依赖 `pty` 服务(#53 session core)——./pty entry 必须与本行
+# 同挂,否则 terminal 组件「等待依赖」(桌面端安装流程 2026-10-09 实测发现)。
+- insert:
+    - id: pty
+      name: dsh-shell-host/pty
 - insert:
     - id: terminal
       name: dsh-shell-host/terminal
