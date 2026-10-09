@@ -35,7 +35,7 @@ export function asChildProcess(pty: IPty): ChildProcess {
   const child = new EventEmitter() as EventEmitter & {
     pid?: number;
     exitCode: number | null;
-    signalCode: number | null;
+    signalCode: string | null;
     stdout: unknown;
     stdin: { write: (d: string) => void };
     kill: () => boolean;
