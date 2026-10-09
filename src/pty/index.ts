@@ -374,6 +374,17 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
 }
 
 /**
+ * Keepalive defaults injected on every ssh_start (#21 phase 1) — the SINGLE
+ * SOURCE for these literals (#49): composeSshCommand below, the ssh_start
+ * tool description, and the spec files all derive from these exports.
+ * README cites the values and points here. Changing them changes behavior
+ * everywhere at once; each default is individually suppressible via a
+ * caller-supplied `options` entry with the same `Key=` prefix.
+ */
+export const SSH_KEEPALIVE_INTERVAL_DEFAULT = 'ServerAliveInterval=15'
+export const SSH_KEEPALIVE_COUNT_DEFAULT = 'ServerAliveCountMax=4'
+
+/**
  * ssh 四工具（issue #24，承接 dsh-pty-session#3）: the interactive
  * full-duplex ssh instance over the same core. `ssh_start` composes the ssh
  * command line and opens it on the core PTY (long-lived remote shell, sees
@@ -405,12 +416,12 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
   }
 
   /**
-   * Long-session defaults (#21 phase 1): keep the connection observable
-   * through NAT/firewall idle drops. Each is suppressed when the caller
-   * supplies its own counterpart via `options`.
+   * Long-session defaults (#21 phase 1, #49 single source): keep the
+   * connection observable through NAT/firewall idle drops. Each is
+   * suppressed when the caller supplies its own counterpart via `options`.
+   * Exported (below, module scope) as the one source both code and tests
+   * derive from — the tool description and README cite them.
    */
-  const KEEPALIVE_INTERVAL_DEFAULT = 'ServerAliveInterval=15'
-  const KEEPALIVE_COUNT_DEFAULT = 'ServerAliveCountMax=4'
 
   const composeSshCommand = (args: { host: string; jump?: string; port?: number; shell?: string; options?: string[] }) => {
     // -tt: force remote TTY allocation even when the local side is a pipe —
@@ -434,10 +445,10 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
     // override; each default is suppressed individually when the caller
     // supplies its own (last -o wins in ssh, but duplicates are noise).
     if (!supplied.some((option) => option.startsWith('ServerAliveInterval='))) {
-      parts.push('-o', KEEPALIVE_INTERVAL_DEFAULT)
+      parts.push('-o', SSH_KEEPALIVE_INTERVAL_DEFAULT)
     }
     if (!supplied.some((option) => option.startsWith('ServerAliveCountMax='))) {
-      parts.push('-o', KEEPALIVE_COUNT_DEFAULT)
+      parts.push('-o', SSH_KEEPALIVE_COUNT_DEFAULT)
     }
     for (const option of supplied) parts.push('-o', option)
     parts.push(atom('host', args.host))
@@ -453,7 +464,7 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
     name: 'ssh_start',
     description:
       'Open an interactive ssh session on a PTY (full duplex: long-lived remote shell, intermediate output visible). ' +
-      'Keepalive defaults (ServerAliveInterval=15/ServerAliveCountMax=4) are injected unless overridden via options. ' +
+      `Keepalive defaults (${SSH_KEEPALIVE_INTERVAL_DEFAULT}/${SSH_KEEPALIVE_COUNT_DEFAULT}) are injected unless overridden via options. ` +
       'Returns a sessionId for ssh_tail / ssh_send / ssh_close. One-shot remote commands should use the ssh backend instead. ' +
       'No auto-reconnect: a dropped session reports status exited; recover by calling ssh_start again.',
     parameters: {
