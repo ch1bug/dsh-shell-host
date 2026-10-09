@@ -81,7 +81,7 @@ class FakeSession {
         setTimeout(() => {
           clearInterval(poll);
           settle();
-        }, 500);
+        }, 2000);
       }),
     };
     this.active = op;
@@ -171,7 +171,7 @@ describe("ssh_start (#24)", () => {
     const agent = makeAgent("a");
     const opened = await h.tool("ssh_start").execute({ host: "example.com" }, { agent });
     expect(opened.sessionId).toBeDefined();
-    expect(opened.initialOutput).toContain("ssh example.com");
+    expect(opened.initialOutput).toContain("ssh -tt example.com");
   });
 
   it("threads jump host (-J) and remote shell", async () => {
@@ -204,7 +204,7 @@ describe("ssh_tail / ssh_send / ssh_close (#24 passthrough semantics)", () => {
     const id = opened.sessionId;
 
     // The banner came back in initialOutput; the first tail is empty.
-    expect(opened.initialOutput).toContain("ssh box");
+    expect(opened.initialOutput).toContain("ssh -tt box");
     const t0 = await h.tool("ssh_tail").execute({ id }, { agent });
     expect(t0.text).toBe("");
 

@@ -399,7 +399,10 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
   }
 
   const composeSshCommand = (args: { host: string; jump?: string; shell?: string }) => {
-    const parts = ['ssh']
+    // -tt: force remote TTY allocation even when the local side is a pipe —
+    // the interactive full-duplex contract (banner, prompt, echo) depends on
+    // the remote shell being interactive.
+    const parts = ['ssh', '-tt']
     if (args.jump !== undefined) parts.push('-J', atom('jump', args.jump))
     parts.push(atom('host', args.host))
     // `shell` is deliberately NOT an atom: it is remote SHELL TEXT appended

@@ -28,8 +28,12 @@ function boot() {
     nextId: 1,
     async spawn(owner: unknown, _spec: any) {
       const id = `live-${(this as any).nextId++}`;
-      const child = spawn("ssh", process.env.DSH_SSH_LIVE_JUMP ? ["-J", JUMP!, HOST!] : [HOST!], {
+      // The terminal provider spawns the LOCAL shell (the PTY session's
+      // home); ssh_start's composed `ssh -tt ...` command runs INSIDE it —
+      // same layering as the real harness (local PTY shell <- ssh text).
+      const child = spawn("cmd.exe", ["/Q", "/K"], {
         stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
       });
       const session: any = { id, owner, child, text: "", active: null, exitPromise: once(child, "exit") };
       session.exitPromise.catch(() => {});
@@ -93,7 +97,15 @@ function boot() {
     async kill(owner: unknown, id: string, _reason: string) {
       const s = (this as any).sessions.get(id);
       if (!s) throw Object.assign(new Error(`no session ${id}`), { code: "NO_SESSION" });
-      if (s.child.exitCode === null && s.child.signalCode === null) s.child.kill();
+      if (s.child.exitCode === null && s.child.signalCode === null) {
+        // win32: kill the whole tree (cmd <- ssh <- remote), not just cmd.
+        if (process.platform === "win32") {
+          const { execSync } = await import("node:child_process");
+          try { execSync(`taskkill /PID ${s.child.pid} /T /F`, { stdio: "ignore" }); } catch {}
+        } else {
+          s.child.kill();
+        }
+      }
       (this as any).sessions.delete(id);
       return true;
     },
@@ -127,14 +139,9 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
       onTestFinished(() => tool("ssh_close").execute({ id: opened.sessionId }, { agent }).catch(() => {}));
       expect(opened.sessionId).toBeDefined();
 
-      // Wait out the banner/auth (network latency — poll the tail).
-      let banner = "";
-      for (let i = 0; i < 150; i++) {
-        const t = await tool("ssh_tail").execute({ id: opened.sessionId }, { agent });
-        banner += t.text;
-        if (banner.includes("$") || banner.includes("#")) break;
-        await new Promise((r) => setTimeout(r, 500));
-      }
+      // The remote banner/prompt is captured by open() itself (everything up
+      // to the cursor at publication); the tail starts from there.
+      const banner = opened.initialOutput ?? "";
       expect(banner.length).toBeGreaterThan(0);
 
       // Interactive command → the tail cursor sees ONLY the new output.
