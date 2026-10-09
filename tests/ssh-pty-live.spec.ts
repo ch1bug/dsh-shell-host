@@ -9,122 +9,35 @@
 
 import { describe, it, expect, onTestFinished } from "vitest";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { apply } from "../src/pty/index.ts";
+import { FakeTerminals, bootSsh } from "./helpers/fake-terminals.ts";
 
 const HOST = process.env.DSH_SSH_LIVE_HOST;
 const JUMP = process.env.DSH_SSH_LIVE_JUMP;
 const hasLiveSsh = !!HOST;
 
 function boot() {
-  const terminals: any = {
-    // The live suite drives the plugin through the same fake-seam SHAPE as
-    // ssh-pty.spec.ts, but the spawned process IS the real ssh client (the
-    // "terminal provider" here wraps a real child PTY via node's spawn with
-    // shell pipes — sufficient for the full-duplex byte round-trip this AC
-    // pins; the real harness terminal provider adds viewport semantics the
-    // core does not depend on).
-    sessions: new Map<string, any>(),
-    nextId: 1,
-    async spawn(owner: unknown, _spec: any) {
-      const id = `live-${(this as any).nextId++}`;
-      // The terminal provider spawns the LOCAL shell (the PTY session's
-      // home); ssh_start's composed `ssh -tt ...` command runs INSIDE it —
-      // same layering as the real harness (local PTY shell <- ssh text).
-      const child = spawn("cmd.exe", ["/Q", "/K"], {
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      const session: any = { id, owner, child, text: "", active: null, exitPromise: once(child, "exit") };
-      session.exitPromise.catch(() => {});
-      child.stdout!.on("data", (d: Buffer) => {
-        session.text += d.toString();
-      });
-      (this as any).sessions.set(id, session);
-      return { sessionId: id, pid: child.pid };
-    },
-    read(owner: unknown, id: string, req: any) {
-      const s = (this as any).sessions.get(id);
-      if (!s) throw Object.assign(new Error(`no session ${id}`), { code: "NO_SESSION" });
-      const { offset = 0, count = 200 } = req ?? {};
-      const lines = s.text.split("\n");
-      if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-      const total = lines.length;
-      const start = Math.max(0, total - Math.min(offset, total));
-      const end = Math.min(total, start + count);
-      return {
-        text: lines.slice(start, end).join("\n") + (end > start ? "\n" : ""),
-        totalLines: total,
-        lineBegin: total - start,
-        lineEnd: total - start + (end - start),
-        truncated: end < total,
-      };
-    },
-    startSend(owner: unknown, id: string, request: any) {
-      const s = (this as any).sessions.get(id);
-      if (!s) throw Object.assign(new Error(`no session ${id}`), { code: "NO_SESSION" });
-      if (s.active) throw Object.assign(new Error("concurrent send"), { code: "SEND_ACTIVE" });
-      const baseLen = s.text.length;
-      if (s.child.exitCode === null && s.child.signalCode === null) {
-        s.child.stdin!.write(request.text + (request.submit ? "\n" : ""));
+  // The live suite drives the plugin through the SAME shared fake-seam shape
+  // as ssh-pty.spec.ts (#48); only the spawn/kill differences enter as
+  // parameters — the spawned process IS the real ssh client inside a local
+  // cmd.exe wrapper (sufficient for the full-duplex byte round-trip this AC
+  // pins; the real harness terminal provider adds viewport semantics the
+  // core does not depend on).
+  const terminals = new FakeTerminals({
+    idPrefix: "live",
+    spawnChild: () => spawn("cmd.exe", ["/Q", "/K"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }),
+    killChild: async (child) => {
+      // win32: kill the whole tree (cmd <- ssh <- remote), not just cmd.
+      if (process.platform === "win32") {
+        const { execSync } = await import("node:child_process");
+        try {
+          execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: "ignore" });
+        } catch {}
+      } else {
+        child.kill();
       }
-      let delta = "";
-      const op = {
-        readOutput: () => ({ delta, truncated: false }),
-        cancel: () => false,
-        done: new Promise((resolve) => {
-          const settle = () => {
-            s.active = null;
-            delta = s.text.slice(baseLen);
-            const kind = s.child.exitCode === null && s.child.signalCode === null ? "running" : "exited";
-            resolve({ viewport: "", waitReason: "inferred_idle", sessionStatus: { kind }, truncated: false });
-          };
-          const poll = setInterval(() => {
-            if (s.text.slice(baseLen).includes(request.text)) {
-              clearInterval(poll);
-              settle();
-            }
-          }, 20);
-          setTimeout(() => {
-            clearInterval(poll);
-            settle();
-          }, 2000);
-        }),
-      };
-      s.active = op;
-      return op;
     },
-    async kill(owner: unknown, id: string, _reason: string) {
-      const s = (this as any).sessions.get(id);
-      if (!s) throw Object.assign(new Error(`no session ${id}`), { code: "NO_SESSION" });
-      if (s.child.exitCode === null && s.child.signalCode === null) {
-        // win32: kill the whole tree (cmd <- ssh <- remote), not just cmd.
-        if (process.platform === "win32") {
-          const { execSync } = await import("node:child_process");
-          try { execSync(`taskkill /PID ${s.child.pid} /T /F`, { stdio: "ignore" }); } catch {}
-        } else {
-          s.child.kill();
-        }
-      }
-      (this as any).sessions.delete(id);
-      return true;
-    },
-  };
-  const registered: any[] = [];
-  apply(
-    {
-      provide: () => {},
-      effect: () => () => Promise.resolve(),
-      terminals,
-      tools: { register: (t: unknown) => registered.push(t) },
-    } as any,
-    {},
-  );
-  const tool = (name: string) => {
-    const t = registered.find((x) => x.name === name);
-    if (!t) throw new Error(`tool not registered: ${name}`);
-    return t;
-  };
+  });
+  const { tool } = bootSsh(terminals);
   return { terminals, tool };
 }
 

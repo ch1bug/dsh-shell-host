@@ -10,138 +10,18 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { spawn as cpSpawn, type ChildProcess } from "node:child_process";
-import { once } from "node:events";
+import { spawn as cpSpawn } from "node:child_process";
 import { apply, SSH_KEEPALIVE_INTERVAL_DEFAULT, SSH_KEEPALIVE_COUNT_DEFAULT } from "../src/pty/index.ts";
+import { FakeTerminals, bootSsh } from "./helpers/fake-terminals.ts";
 
 // #49: the keepalive defaults are single-sourced from the pty entry — the
 // assertions derive from the exported constants, so format drift (`-o `
 // prefix, ordering, suppression) is pinned even if the values change. The
 // literal values themselves are pinned only at the source.
 
-// ---------------------------------------------------------------------------
-// Fake owner-scoped PTY registry (compact re-statement of the pty-session
-// fake; same TerminalSessionService contract subset).
-// ---------------------------------------------------------------------------
-
-const terr = (code: string, message: string) => Object.assign(new Error(message), { code });
-
-class FakeSession {
-  id: string;
-  owner: unknown;
-  sentLog: string[] = [];
-  text: string;
-  child: ChildProcess;
-  active: { readOutput: () => { delta: string }; done: Promise<unknown> } | null = null;
-  pid?: number;
-  constructor(spec: any) {
-    this.id = spec.sessionId;
-    this.owner = spec.owner;
-    this.sentLog = [];
-    this.text = "";
-    this.child = cpSpawn(
-      process.execPath,
-      [
-        "-e",
-        // Echo every stdin line back with a marker (fake remote), no exit.
-        "process.stdin.setEncoding('utf8'); process.stdin.on('data', (d) => process.stdout.write('ECHO:' + d));",
-      ],
-      { stdio: ["pipe", "pipe", "pipe"] },
-    );
-    this.child.stdout!.on("data", (d) => {
-      this.text += d.toString();
-    });
-    once(this.child, "exit").catch(() => {});
-    this.active = null;
-  }
-  status() {
-    if (this.child.exitCode === null && this.child.signalCode === null) return { kind: "running" };
-    return { kind: "exited", exitCode: this.child.exitCode, signal: this.child.signalCode };
-  }
-  startSend(request: { text: string; submit?: boolean }) {
-    if (this.active) throw terr("SEND_ACTIVE", "concurrent send");
-    const baseLen = this.text.length;
-    this.sentLog.push(request.text + (request.submit ? "\n" : ""));
-    if (this.child.exitCode === null && this.child.signalCode === null) {
-      this.child.stdin!.write(request.text + (request.submit ? "\n" : ""));
-    }
-    let delta = "";
-    const op = {
-      readOutput: () => ({ delta, truncated: false }),
-      cancel: () => false,
-      done: new Promise((resolve) => {
-        const settle = () => {
-          this.active = null;
-          delta = this.text.slice(baseLen);
-          resolve({ viewport: "", waitReason: "inferred_idle", sessionStatus: this.status(), truncated: false });
-        };
-        // Settle once THIS send's echo is on record (a dead session never
-        // echoes — the fallback settles it with the exited status instead).
-        const poll = setInterval(() => {
-          if (this.text.slice(baseLen).includes(request.text)) {
-            clearInterval(poll);
-            settle();
-          }
-        }, 10);
-        setTimeout(() => {
-          clearInterval(poll);
-          settle();
-        }, 2000);
-      }),
-    };
-    this.active = op;
-    return op;
-  }
-  async kill() {
-    if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill();
-  }
-}
-
-class FakeTerminals {
-  sessions = new Map<string, FakeSession>();
-  nextId = 1;
-  killedWith: Array<{ owner: unknown; id: string; reason: string }> = [];
-  async spawn(owner: unknown, _spec: any) {
-    const id = `sess-${this.nextId++}`;
-    const s = new FakeSession({ sessionId: id, owner });
-    s.pid = 10000 + this.nextId;
-    this.sessions.set(id, s);
-    return { sessionId: id, pid: s.pid };
-  }
-  read(owner: unknown, id: string, req: any) {
-    const s = this.sessions.get(id);
-    if (!s) throw terr("NO_SESSION", `no session ${id}`);
-    // Same contract as the pty-session fake's read: `offset` counts back
-    // from the NEWEST retained line (0 = newest); lineBegin/lineEnd are
-    // absolute indices for the plugin's cursor bookkeeping.
-    const { offset = 0, count = 200 } = req ?? {};
-    const lines = s.text.split("\n");
-    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-    const total = lines.length;
-    const start = Math.max(0, total - Math.min(offset, total));
-    const end = Math.min(total, start + count);
-    return {
-      text: lines.slice(start, end).join("\n") + (end > start ? "\n" : ""),
-      totalLines: total,
-      lineBegin: total - start,
-      lineEnd: total - start + (end - start),
-      truncated: end < total,
-    };
-  }
-  startSend(owner: unknown, id: string, request: any) {
-    const s = this.sessions.get(id);
-    if (!s) throw terr("NO_SESSION", `no session ${id}`);
-    return s.startSend(request);
-  }
-  async kill(owner: unknown, id: string, reason: string) {
-    const s = this.sessions.get(id);
-    if (!s) throw terr("NO_SESSION", `no session ${id}`);
-    this.killedWith.push({ owner, id, reason });
-    await s.kill();
-    this.sessions.delete(id);
-    return true;
-  }
-}
+// The fake owner-scoped terminals seam is the shared helper (#48): the echo
+// child here (node script prefixing every stdin line with ECHO:) is just the
+// spawnChild parameter of the same fake pty-session.spec.ts references.
 
 // Harness: boot the plugin, surface the registered tools' execute fns.
 function makeAgent(name: string) {
@@ -149,20 +29,19 @@ function makeAgent(name: string) {
 }
 
 function boot() {
-  const terminals = new FakeTerminals();
-  const registered: any[] = [];
-  const ctx = {
-    provide: () => {},
-    effect: () => () => Promise.resolve(),
-    terminals,
-    tools: { register: (t: unknown) => registered.push(t) },
-  };
-  apply(ctx as any, {});
-  const tool = (name: string) => {
-    const t = registered.find((x) => x.name === name);
-    if (!t) throw new Error(`tool not registered: ${name}`);
-    return t;
-  };
+  const terminals = new FakeTerminals({
+    spawnChild: () =>
+      cpSpawn(
+        process.execPath,
+        [
+          "-e",
+          // Echo every stdin line back with a marker (fake remote), no exit.
+          "process.stdin.setEncoding('utf8'); process.stdin.on('data', (d) => process.stdout.write('ECHO:' + d));",
+        ],
+        { stdio: ["pipe", "pipe", "pipe"] },
+      ),
+  });
+  const { registered, tool } = bootSsh(terminals);
   return { terminals, registered, tool };
 }
 

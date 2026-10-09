@@ -7,97 +7,38 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { spawn as cpSpawn, type ChildProcess } from "node:child_process";
-import { once } from "node:events";
+import { spawn as cpSpawn } from "node:child_process";
 import { apply } from "../src/pty/index.ts";
+import { FakeSession, lineCursorRead, terr } from "./helpers/fake-terminals.ts";
 
 // ---------------------------------------------------------------------------
 // Fake owner-scoped PTY registry: implements the TerminalSessionService
 // contract subset the plugin consumes, backed by real child processes.
+// The session itself is the shared fake-seam helper (#48); what stays local
+// is the registry behavior under test here (backends, owner assertion,
+// disposal, listing).
 // ---------------------------------------------------------------------------
 
-const terr = (code, message) => Object.assign(new Error(message), { code });
-
-class FakeSession {
+class LocalFakeSession extends FakeSession {
   // TS 6 typecheck facade: constructor-assigned fields declared explicitly.
-  id: string;
-  owner: unknown;
   motd: string;
-  sentLog: string[] = [];
-  text: string;
-  child: ChildProcess;
-  exitPromise: Promise<{ signal: string | null }>;
-  active: { readOutput: () => { delta: string }; done: Promise<unknown> } | null = null;
-  pid?: number;
   constructor(spec, script, { motd = "" } = {}) {
-    this.id = spec.sessionId;
-    this.owner = spec.owner;
+    super(spec, {
+      spawnChild: () => cpSpawn(process.execPath, ["-e", script], { stdio: ["pipe", "pipe", "pipe"] }),
+      initialText: motd,
+    });
     this.motd = motd;
-    this.sentLog = [];
-    this.text = motd;
-    this.child = cpSpawn(process.execPath, ["-e", script], { stdio: ["pipe", "pipe", "pipe"] });
-    this.child.stdout!.on("data", (d) => { this.text += d.toString(); });
-    this.exitPromise = once(this.child, "exit").then(([, signal]) => ({ signal }));
-    this.exitPromise.catch(() => {});
-    this.active = null;
-  }
-  status() {
-    if (this.child.exitCode === null && this.child.signalCode === null) return { kind: "running" };
-    return { kind: "exited", exitCode: this.child.exitCode, signal: this.child.signalCode };
-  }
-  startSend(request) {
-    if (this.active) throw terr("SEND_ACTIVE", "concurrent send");
-    const baseLen = this.text.length;
-    this.sentLog.push(request.text + (request.submit ? "\\n" : ""));
-    this.child.stdin!.write(request.text + (request.submit ? "\n" : ""));
-    let delta = "";
-    const op = {
-      readOutput: () => ({ delta, truncated: false }),
-      cancel: () => false,
-      done: new Promise((resolve) => {
-        const settle = () => {
-          delta = this.text.slice(baseLen);
-          resolve({ viewport: "", waitReason: "inferred_idle", sessionStatus: this.status(), truncated: false });
-        };
-        // Settle when the child produced output (or after a grace period) —
-        // mirrors a real PTY send, whose wait returns once output flows.
-        const poll = setInterval(() => {
-          if (this.text.length > baseLen) { clearInterval(poll); setTimeout(() => { clearInterval(poll); settle(); }, 10); }
-        }, 10);
-        setTimeout(() => { clearInterval(poll); settle(); }, 500);
-      }),
-    };
-    this.active = op;
-    op.done.finally(() => { this.active = null; });
-    return op;
   }
   read({ offset = 0, count = 200 } = {}) {
-    const lines = this.text.split("\n");
-    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop(); // complete lines only
-    const total = lines.length;
-    const start = Math.max(0, total - Math.min(offset, total));
-    const end = Math.min(total, start + count);
-    return {
-      text: lines.slice(start, end).join("\n") + (end > start ? "\n" : ""),
-      totalLines: total,
-      lineBegin: total - start,
-      lineEnd: total - start + (end - start),
-      truncated: end < total,
-    };
-  }
-  async close() {
-    if (this.child.exitCode === null && this.child.signalCode === null) {
-      this.child.kill();
-      await this.exitPromise;
-    }
+    return lineCursorRead(this.text, { offset, count });
   }
 }
 
 class FakeTerminals {
   // TS 6 typecheck facade: constructor-assigned fields declared explicitly
   // (the source JS relied on inference this facade does not perform).
-  backends: Record<string, { type: string; spawn: (spec: any) => Promise<FakeSession> }> = {};
-  sessions: Map<string, FakeSession> = new Map();
+  backends: Record<string, { type: string; spawn: (spec: any) => Promise<LocalFakeSession> }> = {};
+  sessions: Map<string, LocalFakeSession> = new Map();
   nextId: number = 1;
   disposedOwners: Set<unknown> = new Set();
   constructor() {
@@ -147,7 +88,7 @@ const ECHO_SCRIPT = "process.stdin.on('data', d => process.stdout.write(d));";
 function echoBackend() {
   return {
     type: "test-echo",
-    async spawn(spec) { return new FakeSession(spec, ECHO_SCRIPT); },
+    async spawn(spec) { return new LocalFakeSession(spec, ECHO_SCRIPT); },
   };
 }
 
