@@ -468,59 +468,65 @@ const renderSshOption = (option: SshOption): string =>
  * (-p) and free `-o` passthrough via `options` (survey decision: remote
  * workspace capabilities build on this surface next).
  */
-function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
+/** The ssh launch argument clump, named once (#54) and shared by every caller. */
+export interface SshLaunchArgs {
+  host: string
+  jump?: string
+  port?: number
+  shell?: string
+  options?: SshOptionInput[]
+}
+
+/**
+ * The ssh composition, single source (#49/#54): the ssh_start tool and the
+ * launcher layer's ssh transport dimension (ADR-0008 decision 1) both derive
+ * from this one function — the launcher never re-hardcodes keepalive or -o
+ * semantics.
+ */
+export function composeSshCommand(args: SshLaunchArgs): string {
   /** argv ATOMS (host/jump) — never shell text; reject whitespace loudly. */
   const atom = (kind: string, value: string) => {
     if (!/^[\w.@:[\]-]+$/.test(value)) {
-      throw new Error(`ssh_start ${kind} must be a single argv atom (no whitespace/shell metacharacters), got: ${JSON.stringify(value)}`)
+      throw new Error(`ssh ${kind} must be a single argv atom (no whitespace/shell metacharacters), got: ${JSON.stringify(value)}`)
     }
     return value
   }
-
-  /**
-   * Long-session defaults (#21 phase 1, #49 single source): keep the
-   * connection observable through NAT/firewall idle drops. Each is
-   * suppressed when the caller supplies its own counterpart via `options`.
-   * Exported (below, module scope) as the one source both code and tests
-   * derive from — the tool description and README cite them.
-   */
-
-  const composeSshCommand = (args: { host: string; jump?: string; port?: number; shell?: string; options?: SshOptionInput[] }) => {
-    // -tt: force remote TTY allocation even when the local side is a pipe —
-    // the interactive full-duplex contract (banner, prompt, echo) depends on
-    // the remote shell being interactive.
-    const parts = ['ssh', '-tt']
-    if (args.jump !== undefined) parts.push('-J', atom('jump', args.jump))
-    if (args.port !== undefined) {
-      if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535) {
-        throw new Error(`ssh_start port must be an integer in 1..65535, got: ${args.port}`)
-      }
-      parts.push('-p', String(args.port))
+  // -tt: force remote TTY allocation even when the local side is a pipe —
+  // the interactive full-duplex contract (banner, prompt, echo) depends on
+  // the remote shell being interactive.
+  const parts = ['ssh', '-tt']
+  if (args.jump !== undefined) parts.push('-J', atom('jump', args.jump))
+  if (args.port !== undefined) {
+    if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535) {
+      throw new Error(`ssh port must be an integer in 1..65535, got: ${args.port}`)
     }
-    const supplied = normalizeSshOptions(args.options)
-    // Keepalive defaults first so an explicit caller option reads as the
-    // override; each default is suppressed when the caller supplies an
-    // option with the same KEY AND a value — exact match on the normalized
-    // shape (#50), never a prefix heuristic. A valueless entry does not
-    // "set" the option (and would compose an invalid bare `Key` anyway),
-    // so it leaves the default in place.
-    const setsKey = (key: string) => supplied.some((option) => option.key === key && option.value !== undefined)
-    if (!setsKey(SSH_KEEPALIVE_INTERVAL_KEY)) {
-      parts.push('-o', SSH_KEEPALIVE_INTERVAL_DEFAULT)
-    }
-    if (!setsKey(SSH_KEEPALIVE_COUNT_KEY)) {
-      parts.push('-o', SSH_KEEPALIVE_COUNT_DEFAULT)
-    }
-    for (const option of supplied) parts.push('-o', renderSshOption(option))
-    parts.push(atom('host', args.host))
-    // `shell` is deliberately NOT an atom: it is remote SHELL TEXT appended
-    // verbatim (e.g. "bash --login"). core.open delivers `command` as shell
-    // text into the PTY (the PTY model has no argv array), so only host/jump
-    // need atom validation — they are the pieces ssh itself parses.
-    if (args.shell !== undefined && args.shell.trim() !== '') parts.push(args.shell.trim())
-    return parts.join(' ')
+    parts.push('-p', String(args.port))
   }
+  const supplied = normalizeSshOptions(args.options)
+  // Keepalive defaults first so an explicit caller option reads as the
+  // override; each default is suppressed when the caller supplies an
+  // option with the same KEY AND a value — exact match on the normalized
+  // shape (#50), never a prefix heuristic. A valueless entry does not
+  // "set" the option (and would compose an invalid bare `Key` anyway),
+  // so it leaves the default in place.
+  const setsKey = (key: string) => supplied.some((option) => option.key === key && option.value !== undefined)
+  if (!setsKey(SSH_KEEPALIVE_INTERVAL_KEY)) {
+    parts.push('-o', SSH_KEEPALIVE_INTERVAL_DEFAULT)
+  }
+  if (!setsKey(SSH_KEEPALIVE_COUNT_KEY)) {
+    parts.push('-o', SSH_KEEPALIVE_COUNT_DEFAULT)
+  }
+  for (const option of supplied) parts.push('-o', renderSshOption(option))
+  parts.push(atom('host', args.host))
+  // `shell` is deliberately NOT an atom: it is remote SHELL TEXT appended
+  // verbatim (e.g. "bash --login"). core.open delivers `command` as shell
+  // text into the PTY (the PTY model has no argv array), so only host/jump
+  // need atom validation — they are the pieces ssh itself parses.
+  if (args.shell !== undefined && args.shell.trim() !== '') parts.push(args.shell.trim())
+  return parts.join(' ')
+}
 
+function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
   ctx.tools.register(defineTool({
     name: 'ssh_start',
     description:
