@@ -98,12 +98,22 @@ export function lineCursorRead(text: string, req?: { offset?: number; count?: nu
 export interface FakeSessionOptions {
   /** The seam difference: what "remote terminal" this fake session runs
    * (a node echo script, the real ssh client inside a local shell, ...). */
-  spawnChild: () => ChildProcess;
+  spawnChild: (spec: SpawnSpec) => ChildProcess;
   /** Text present before any send (banner / motd). */
   initialText?: string;
   /** A send's done() settles once THIS send's text is echoed back — a dead
    * session never echoes, so the fallback settles with the exited status. */
   settleTimeoutMs?: number;
+}
+
+/** The spawn spec the plugin hands to terminals.spawn (#53): backend type
+ * plus the additive cwd/env fields. The fake seam's spawnChild factory
+ * receives it so suites can assert env propagation and feed it to a real
+ * spawn (the live variant merges it into node-pty's env). */
+export interface SpawnSpec {
+  type: string;
+  cwd?: string;
+  env?: Record<string, string>;
 }
 
 export class FakeSession {
@@ -117,12 +127,12 @@ export class FakeSession {
   pid?: number;
   private opts: FakeSessionOptions;
 
-  constructor(spec: { sessionId: string; owner: unknown }, opts: FakeSessionOptions) {
+  constructor(spec: { sessionId: string; owner: unknown }, opts: FakeSessionOptions, spawnSpec?: SpawnSpec) {
     this.id = spec.sessionId;
     this.owner = spec.owner;
     this.opts = opts;
     this.text = opts.initialText ?? "";
-    this.child = opts.spawnChild();
+    this.child = opts.spawnChild(spawnSpec ?? { type: "fake" });
     this.child.stdout!.on("data", (d) => {
       this.text += d.toString();
     });
@@ -185,8 +195,9 @@ export class FakeSession {
 
 export interface FakeTerminalsOptions {
   idPrefix?: string;
-  /** Per-session child factory (the live variant's real spawn parameter). */
-  spawnChild: () => ChildProcess;
+  /** Per-session child factory (the live variant's real spawn parameter);
+   * since #53 it receives the spawn spec the plugin handed to spawn(). */
+  spawnChild: (spec: SpawnSpec) => ChildProcess;
   /** Extra per-session construction (initialText etc.). */
   session?: Partial<FakeSessionOptions>;
   /** How this fake kills a session's child — win32 tree-kill for the live
@@ -200,9 +211,9 @@ export class FakeTerminals {
   killedWith: Array<{ owner: unknown; id: string; reason: string }> = [];
   constructor(private opts: FakeTerminalsOptions) {}
 
-  async spawn(owner: unknown, _spec: any) {
+  async spawn(owner: unknown, spec: SpawnSpec) {
     const id = `${this.opts.idPrefix ?? "sess"}-${this.nextId++}`;
-    const s = new FakeSession({ sessionId: id, owner }, { spawnChild: this.opts.spawnChild, ...this.opts.session });
+    const s = new FakeSession({ sessionId: id, owner }, { spawnChild: this.opts.spawnChild, ...this.opts.session }, spec);
     // Real child pid when available (the live variant's process is real);
     // synthetic otherwise, mirroring the original ssh-pty fake.
     s.pid = s.child.pid ?? 10000 + this.nextId;

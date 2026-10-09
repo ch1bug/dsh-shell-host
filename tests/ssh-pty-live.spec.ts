@@ -31,13 +31,16 @@ function boot() {
   // shell <- ssh <- remote chain, which the adapter's kill() delegates to.
   const terminals = new FakeTerminals({
     idPrefix: "live",
-    spawnChild: () =>
+    // #53: the spawnChild factory receives the spawn spec and merges its env
+    // into the real pty's process environment — the machine-lane proof that
+    // env rides terminals.spawn into the actual terminal process.
+    spawnChild: (spec) =>
       asChildProcess(
         spawnPty("cmd.exe", ["/Q", "/K"], {
           name: "xterm-256color",
           cols: 120,
           rows: 40,
-          env: process.env as Record<string, string>,
+          env: { ...(process.env as Record<string, string>), ...(spec.env ?? {}) },
         }),
       ),
     killChild: (child) => {
@@ -90,6 +93,26 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
     const { tool } = boot();
     await expect(tool("ssh_start").execute({ host: "bad host" }, { agent })).rejects.toThrow(/host/);
   });
+
+  // #53 AC: env injected at spawn reaches the REAL terminal process — a
+  // pty_open with env runs `echo %VAR%` in the hosted cmd.exe and the value
+  // must come back without any export-style prelude being typed.
+  it.skipIf(!hasLiveSsh)(
+    "pty_open injects env into the spawned terminal process (#53)",
+    { timeout: 60_000 },
+    async () => {
+      const agent = { name: "live" };
+      const { tool } = boot();
+      const opened = await tool("pty_open").execute(
+        { command: "echo %LAUNCHER_ENV_PROBE%", env: { LAUNCHER_ENV_PROBE: "spawn-env-live-42" } },
+        { agent },
+      );
+      onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent }).catch(() => {}));
+      expect(opened.initialOutput).toContain("spawn-env-live-42");
+      const closed = await tool("pty_close").execute({ id: opened.sessionId }, { agent });
+      expect(closed.closed).toBe(true);
+    },
+  );
 
   // #21 phase 1 AC: a LONG session — a high-volume output stream keeps the
   // incremental-tail cursor honest (no resend, no skip) on a real host, with
