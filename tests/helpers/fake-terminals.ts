@@ -12,10 +12,69 @@
  */
 
 import { type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { once } from "node:events";
+import type { IPty } from "@lydell/node-pty";
 import { apply } from "../../src/pty/index.ts";
 
 export const terr = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+/**
+ * Present an IPty (the live suite's @lydell/node-pty spawn, #51) as the
+ * ChildProcess-shaped object the FakeSession contract expects — the helper's
+ * ChildProcess contract itself is unchanged. `stdout` is emulated from the
+ * pty's onData, `stdin.write` delegates to `write()`, `kill()` delegates to
+ * `kill()`, `pid` passes through, and `exitCode`/`signalCode` are backfilled
+ * from the pty exit event (null while running), so status()/close() and the
+ * echo-seen settle fallback see the same dead-session path a real child
+ * gives them.
+ */
+export function asChildProcess(pty: IPty): ChildProcess {
+  // ChildProcess's lifecycle fields are readonly in @types/node, so the
+  // mutable surface is typed locally and the finished object is cast once.
+  const child = new EventEmitter() as EventEmitter & {
+    pid?: number;
+    exitCode: number | null;
+    signalCode: number | null;
+    stdout: unknown;
+    stdin: { write: (d: string) => void };
+    kill: () => boolean;
+  };
+  child.pid = pty.pid;
+  child.exitCode = null;
+  child.signalCode = null;
+  const stdout = new EventEmitter();
+  child.stdout = stdout;
+  child.stdin = {
+    // conpty Enter semantics (#51): the fake seam submits with "\n"; a
+    // conpty-hosted shell only commits a line on "\r" (a bare "\n" echoes
+    // but never executes — verified by the pty-probe run).
+    write: (d: string) => pty.write(d.replace(/\n/g, "\r")),
+  };
+  child.kill = () => {
+    // Tolerate the already-dead pty: FakeTerminals.kill → close() may reach
+    // the pty twice (killChild then the re-kill), and node-pty's ConPTY close
+    // can throw on an exited session.
+    try {
+      pty.kill();
+    } catch {}
+    return true;
+  };
+  const SIGNAL_NAMES: Record<number, string> = { 1: "SIGHUP", 2: "SIGINT", 9: "SIGKILL", 15: "SIGTERM" };
+  pty.onData((d) => stdout.emit("data", Buffer.from(d)));
+  pty.onExit(({ exitCode, signal }) => {
+    child.exitCode = exitCode;
+    // ChildProcess.signalCode is a string ("SIGTERM" et al); node-pty's exit
+    // event carries the raw number.
+    const signalName = signal === undefined ? null : (SIGNAL_NAMES[signal] ?? `SIG${signal}`);
+    child.signalCode = signalName;
+    // Node's exit event is (code, signal) with BOTH filled from the pty's
+    // own accounting — a normal non-zero exit stays (exitCode, null) like a
+    // real child; only an actual signal fills the second slot.
+    child.emit("exit", exitCode, signalName);
+  });
+  return child as unknown as ChildProcess;
+}
 
 /** The read contract every fake shares: `offset` counts back from the NEWEST
  * retained line (0 = newest); lineBegin/lineEnd are absolute indices for the

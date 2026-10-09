@@ -8,9 +8,13 @@
  */
 
 import { describe, it, expect, onTestFinished } from "vitest";
-import { spawn } from "node:child_process";
-import { FakeTerminals, bootSsh } from "./helpers/fake-terminals.ts";
+import { spawn as spawnPty } from "@lydell/node-pty";
+import { FakeTerminals, bootSsh, asChildProcess } from "./helpers/fake-terminals.ts";
 
+// The host value may carry a user@ prefix — the composition passes it to
+// ssh verbatim, and key auth on the live host is provisioned per user
+// (#51 evidence: a bare IP resolves to the wrong local user and lands on a
+// password prompt, which the non-interactive suite can never answer).
 const HOST = process.env.DSH_SSH_LIVE_HOST;
 const JUMP = process.env.DSH_SSH_LIVE_JUMP;
 const hasLiveSsh = !!HOST;
@@ -18,23 +22,26 @@ const hasLiveSsh = !!HOST;
 function boot() {
   // The live suite drives the plugin through the SAME shared fake-seam shape
   // as ssh-pty.spec.ts (#48); only the spawn/kill differences enter as
-  // parameters — the spawned process IS the real ssh client inside a local
-  // cmd.exe wrapper (sufficient for the full-duplex byte round-trip this AC
-  // pins; the real harness terminal provider adds viewport semantics the
-  // core does not depend on).
+  // parameters. Since #51 the spawned "local shell" is a REAL pty
+  // (@lydell/node-pty) hosting cmd.exe with the ssh composition inside it —
+  // byte flow follows real PTY semantics (full duplex, echo by the pty line
+  // discipline) instead of cmd.exe pipes, so the round-trip no longer
+  // depends on any particular host's banner/prompt/echo habits. Kill is
+  // conpty close: terminating the pty takes down the whole
+  // shell <- ssh <- remote chain, which the adapter's kill() delegates to.
   const terminals = new FakeTerminals({
     idPrefix: "live",
-    spawnChild: () => spawn("cmd.exe", ["/Q", "/K"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true }),
-    killChild: async (child) => {
-      // win32: kill the whole tree (cmd <- ssh <- remote), not just cmd.
-      if (process.platform === "win32") {
-        const { execSync } = await import("node:child_process");
-        try {
-          execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: "ignore" });
-        } catch {}
-      } else {
-        child.kill();
-      }
+    spawnChild: () =>
+      asChildProcess(
+        spawnPty("cmd.exe", ["/Q", "/K"], {
+          name: "xterm-256color",
+          cols: 120,
+          rows: 40,
+          env: process.env as Record<string, string>,
+        }),
+      ),
+    killChild: (child) => {
+      child.kill();
     },
   });
   const { tool } = bootSsh(terminals);
