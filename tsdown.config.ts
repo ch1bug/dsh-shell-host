@@ -36,7 +36,10 @@ const lib = defineConfig({
   // registers model tools, not execution backends (ADR-0007 "Entry form
   // differences"; named wsl-plugin to avoid src/wsl-bridge.ts, ADR-0003
   // decision 5's in-backend mapping layer — two layers, not one).
-  entry: ['src/index.ts', 'src/permission-presets.ts', 'src/pty/index.ts', 'src/remote/index.ts', 'src/wsl-plugin/index.ts'],
+  // #55 (ADR-0008): the terminal entry joins — lib/terminal/index.js behind
+  // the dsh-shell-host/terminal export. Plugin-LAYER entry: the launcher
+  // preset surface (shell_open) over the pty session core.
+  entry: ['src/index.ts', 'src/permission-presets.ts', 'src/pty/index.ts', 'src/remote/index.ts', 'src/wsl-plugin/index.ts', 'src/terminal/index.ts'],
   outDir: 'lib',
   format: 'esm',
   platform: 'node',

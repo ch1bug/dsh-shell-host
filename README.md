@@ -224,6 +224,46 @@ the `wsl` backend's strict cross-VM mapping layer (relative paths throw
 loudly, `\\wsl$` UNC handled, exercised by `tests/wsl-bridge.spec.ts`). They
 answer different layers of one domain and are kept separate on purpose.
 
+## The `./terminal` entry (issue #55, ADR-0008)
+
+`src/terminal/` is the launcher layer's plugin entry: ONE tool,
+`shell_open(preset, cwd?, env?)`. It resolves a launcher preset through the
+#54 layer (`src/launchers.ts` — descriptor-reuse views + detect scans +
+custom presets from its settings namespace) and opens it on the `./pty`
+entry's session core. The returned sessionId IS a PTY seam session id:
+everything afterwards goes through the existing `pty_send` / `pty_tail` /
+`pty_close` — no second tool family (ADR-0008 decision 5, no Middle Man).
+Unknown ids fail loudly listing every serviceable preset; uninstalled
+environments fail loudly naming every probe point. The entry's settings
+namespace (`terminal`) carries the custom-preset data channel (the #54
+shape; the CRUD UI is a later ticket reading the same data); the built-in
+preset table is read-only, surfaced live by the unknown-id error.
+
+```js
+import * as terminal from 'dsh-shell-host/terminal' // { name, inject, apply }
+```
+
+Mount it via the bundle patch (`cordis.patch.yml`, row id `terminal`, name
+`dsh-shell-host/terminal`). It needs the `pty` service — mount `./pty`
+alongside (the patch order does not matter; both rows are plugin-layer).
+
+### 两种模式 — which one am I choosing?
+
+dsh-shell-host ships two independent capabilities; installing the bundle
+gives you both, and they never fight:
+
+| | 单例执行器（路 B, #23/D8） | 多实例终端（launcher 层, #52/#55） |
+|---|---|---|
+| 缝 | 替换 `ctx.shell`（同 key 单注册，启用即接管） | PTY terminals 缝（owner-scoped，多实例） |
+| 形态 | 一次性 `bash`/`pwsh` 命令的执行器，backend 单选热切 | VS Code 终端面板式持久会话：随开随关、状态独立 |
+| 工具面 | 既有 bash 工具（无新工具） | `shell_open` + 复用 `pty_*` |
+| 默认状态 | disabled —— 用户在 Plugins 页启用后才接管 `ctx.shell` | 插件层行，启用不影响任何执行器 |
+| 与平台 shell | 启用即取代、禁用即回平台 shell（选择权在用户） | 并存 —— 平台 shell 与 `ctx.shell` 照常工作（真机验证见 `tests/terminal-machine.spec.ts`） |
+
+不 disable 平台 shell 是本包的一贯立场（issue #23 AC7）：启用 shell-host 的
+执行器行替换 `ctx.shell`，launcher 层则完全走另一条缝 —— 两者与平台 shell
+三者可同时在场。
+
 ## Provenance (issue #23 status)
 
 - History: started as a fork of `@deepseek-ai/dsh-bash-local` **0.2.0-rc.2**

@@ -30,7 +30,7 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // reason. `machineLane` below stays an explicit list on purpose: it selects
 // the suites that run SERIALLY (fileParallelism off, live WSL spawns), so
 // membership there is a deliberate per-suite choice, not collection gating.
-const machineLane = ['tests/wsl-backend.spec.ts', 'tests/registry.spec.ts', 'tests/wsl-plugin-live.spec.ts', 'tests/ssh-pty-live.spec.ts']
+const machineLane = ['tests/wsl-backend.spec.ts', 'tests/registry.spec.ts', 'tests/wsl-plugin-live.spec.ts', 'tests/ssh-pty-live.spec.ts', 'tests/terminal-machine.spec.ts']
 // Explicit exclusion outlet: a spec listed here is exempt from the unit lane,
 // each with its reason. machineLane files are excluded because the serial
 // machine project owns them; _e2e-smoke is excluded because the EXPLICIT e2e

@@ -59,6 +59,20 @@
             sandbox: danger-full-access
             approval: never
 
+# #55(ADR-0008):./terminal entry —— launcher 层插件行(插件层 entry,与路 B
+# 的执行器行完全解耦:不接管 ctx.shell、不 disable 平台 shell,可与两者并存)。
+# 挂载后模型获得单工具 shell_open(preset):按预设开出持久终端,sessionId 即
+# PTY 缝会话 id,后续操作复用既有 pty_send/pty_tail/pty_close(不加转发工具)。
+# 独立 settings namespace(id: terminal):custom = 自定义预设数据通道(#54
+# 定型形状,CRUD UI 归后续票读写同一数据);内置预设表只读 —— 实时视图由
+# shell_open 未知 id 的响亮错误枚举(全部可服务预设 id)。预设解析走真实探测
+# (#54 launchers 层):未装的环境从解析结果缺席,选定才响亮报全部探测点。
+- insert:
+    - id: terminal
+      name: dsh-shell-host/terminal
+      config:
+        custom: []
+
 # 用户侧边栏终端(api-terminal-controller)是宿主级 user terminal,与 preset
 # 无关:发现走宿主 PATH。本机 Windows PATH 不含 MSYS2,裸 `bash` 只会命中
 # C:\Windows\System32\bash.exe(WSL 启动器 stub)。这里把 MSYS2 bash 显式设为
