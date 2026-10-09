@@ -81,6 +81,26 @@ interface PtyCtx {
 /** Owner (Agent) identity passed to every seam call. */
 type Owner = unknown
 
+/** Every pty/ssh tool requires an owning agent session (owner-scoped seam). */
+function requireAgent(exec: { agent?: Owner }): Owner {
+  const owner = exec?.agent
+  if (owner === undefined) {
+    throw Object.assign(new Error('pty_* tools require an owning agent session'), { code: 'NO_AGENT' })
+  }
+  return owner
+}
+
+/** The programmatic facade surface ssh tools consume (duck-typed by tests). */
+interface PtyCore {
+  // Return shapes are the core's own structural outputs (session record /
+  // delta-status / tail page / close flag); pinned `any` here keeps the
+  // defineTool output schemas as the single typed contract for callers.
+  open(owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string> }, signal?: AbortSignal): Promise<any>
+  send(owner: Owner, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>
+  tail(owner: Owner, id: string, lines?: number): any
+  close(owner: Owner, id: string): Promise<{ closed: boolean }>
+}
+
 /** Register the four pty_* tools against the owner-scoped terminals seam. */
 function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
   /** owner (Agent) -> Map<sessionId, absolute consumed line cursor>. */
@@ -144,13 +164,6 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
     return { text: '', lines: 0, truncated: true }
   }
 
-  const requireAgent = (exec: { agent?: Owner }) => {
-    const owner = exec?.agent
-    if (owner === undefined) {
-      throw Object.assign(new Error('pty_* tools require an owning agent session'), { code: 'NO_AGENT' })
-    }
-    return owner
-  }
 
   /**
    * Programmatic facade: the four pty_* tool semantics as callable functions
@@ -339,6 +352,154 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
     description: 'Terminate a PTY session via the seam\'s awaited cleanup and reclaim it. Idempotent per close.',
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from pty_open.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          closed: { type: 'boolean', required: true, description: 'Whether this call newly closed the session.' },
+        },
+      },
+      render: jsonRender as any,
+    },
+    async execute(args: { id: string }, exec: { agent?: Owner }) {
+      const owner = requireAgent(exec)
+      return core.close(owner, args.id)
+    },
+    presentCall: (args: { id: string }) => ({ card: 'terminal', title: `close ${args.id}` }),
+  }))
+
+  registerSshTools(ctx, core, config)
+}
+
+/**
+ * ssh 四工具（issue #24，承接 dsh-pty-session#3）: the interactive
+ * full-duplex ssh instance over the same core. `ssh_start` composes the ssh
+ * command line and opens it on the core PTY (long-lived remote shell, sees
+ * intermediate output); tail/send/close are thin passthroughs with their own
+ * tool names so agent-facing surfaces read coherently.
+ *
+ * Division of labor (README-documented): one-shot remote commands belong to
+ * the ssh BACKEND (#23 `backends/ssh.ts`, ControlMaster) — this instance is
+ * for sessions a human/agent converses with.
+ *
+ * Reconnect semantics (issue AC): explicit RECONNECT-NO — a dead session
+ * (network cut, remote drop) surfaces `status.kind = "exited"` on the next
+ * send/tail; nothing auto-reconnects. Recovery = `ssh_start` again (new
+ * session id); the dead id is reclaimed by `ssh_close` (idempotent).
+ */
+function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
+  /** argv ATOMS (host/jump) — never shell text; reject whitespace loudly. */
+  const atom = (kind: string, value: string) => {
+    if (!/^[\w.@:[\]-]+$/.test(value)) {
+      throw new Error(`ssh_start ${kind} must be a single argv atom (no whitespace/shell metacharacters), got: ${JSON.stringify(value)}`)
+    }
+    return value
+  }
+
+  const composeSshCommand = (args: { host: string; jump?: string; shell?: string }) => {
+    const parts = ['ssh']
+    if (args.jump !== undefined) parts.push('-J', atom('jump', args.jump))
+    parts.push(atom('host', args.host))
+    // `shell` is deliberately NOT an atom: it is remote SHELL TEXT appended
+    // verbatim (e.g. "bash --login"). core.open delivers `command` as shell
+    // text into the PTY (the PTY model has no argv array), so only host/jump
+    // need atom validation — they are the pieces ssh itself parses.
+    if (args.shell !== undefined && args.shell.trim() !== '') parts.push(args.shell.trim())
+    return parts.join(' ')
+  }
+
+  ctx.tools.register(defineTool({
+    name: 'ssh_start',
+    description:
+      'Open an interactive ssh session on a PTY (full duplex: long-lived remote shell, intermediate output visible). ' +
+      'Returns a sessionId for ssh_tail / ssh_send / ssh_close. One-shot remote commands should use the ssh backend instead. ' +
+      'No auto-reconnect: a dropped session reports status exited; recover by calling ssh_start again.',
+    parameters: {
+      host: { type: 'string', required: true, description: 'ssh destination ([user@]host), a single argv atom.' },
+      jump: { type: 'string', description: 'Jump host passed as -J (single argv atom).' },
+      shell: { type: 'string', description: 'Remote command/shell to run after connect (e.g. "bash --login"); omit for the login shell.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          sessionId: { type: 'string', required: true, description: 'Opaque session id for ssh_tail/ssh_send/ssh_close.' },
+          pid: { type: 'number', description: 'Local ssh process id when the backend exposes one.' },
+          status: { type: 'object', additionalProperties: true, description: 'Session status at publication.' },
+          initialOutput: { type: 'string', description: 'Banner/auth output captured during connect.' },
+        },
+      },
+      render: jsonRender as any,
+    },
+    async execute(args: { host: string; jump?: string; shell?: string }, exec: { agent?: Owner; signal?: AbortSignal }) {
+      const owner = requireAgent(exec)
+      const command = composeSshCommand(args)
+      return core.open(owner, { command }, exec.signal)
+    },
+    presentCall: (args: { host: string }) => ({ card: 'terminal', title: `ssh ${args.host}` }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'ssh_send',
+    description: 'Write bytes into the live ssh session and return the output read while the write settled. Core passthrough.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
+      data: { type: 'string', required: true, description: 'Text to write into the session.' },
+      submit: { type: 'boolean', description: 'Whether to write the backend\'s Enter sequence after data (default true).' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          delta: { type: 'string', description: 'Output produced since the previous read.' },
+          status: { type: 'object', additionalProperties: true, description: 'Session status at settlement — kind "exited" means the session dropped (no auto-reconnect).' },
+        },
+      },
+      render: jsonRender as any,
+    },
+    async execute(args: { id: string; data: string; submit?: boolean }, exec: { agent?: Owner; signal?: AbortSignal }) {
+      const owner = requireAgent(exec)
+      return core.send(owner, args.id, { data: args.data, submit: args.submit, signal: exec.signal })
+    },
+    presentCall: (args: { data: string }) => ({ card: 'terminal', title: args.data }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'ssh_tail',
+    description:
+      'Incrementally read the ssh session\'s new output since the last tail (per-session cursor; repeated tails do not resend old lines). Core passthrough.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
+      lines: { type: 'number', description: 'Max lines to return this call (default from config; excess is marked truncated).' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          text: { type: 'string', description: 'New output since the cursor, chronological.' },
+          lines: { type: 'number', description: 'Number of new lines returned.' },
+          truncated: { type: 'boolean', description: 'True when older backlog exceeded the budget and was dropped.' },
+        },
+      },
+      render: (_args: unknown, value: { text?: string }) => [{ type: 'text' as const, text: value.text || '(no new output)' }],
+    },
+    async execute(args: { id: string; lines?: number }, exec: { agent?: Owner }) {
+      const owner = requireAgent(exec)
+      return core.tail(owner, args.id, args.lines)
+    },
+    presentCall: (args: { id: string }) => ({ card: 'terminal', title: `tail ${args.id}` }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'ssh_close',
+    description: 'Terminate the ssh session via the seam\'s awaited cleanup and reclaim it. Idempotent per close. Core passthrough.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
     },
     output: {
       schema: {
