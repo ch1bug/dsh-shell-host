@@ -140,7 +140,7 @@ function registerTools(ctx: WslCtx): void {
         const p = toWslPath(args.path)
         const long = args.long !== false
         const cmd = (long ? 'ls -la --time-style=long-iso ' : 'ls -1 ') + shq(p)
-        const r = await run(ctx, cmd, exec, { timeoutMs: 20000, stdoutMaxBytes: args.stdoutMaxBytes })
+        const r = await run(ctx, cmd, exec, { timeoutMs: 60000, stdoutMaxBytes: args.stdoutMaxBytes })
         const entries: Array<Record<string, unknown>> = []
         if (long) {
           for (const line of r.stdout.text.split('\n')) {
