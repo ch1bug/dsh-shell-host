@@ -89,6 +89,12 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **拆票**(Q9=A):R1 脚手架+descriptor 骨架 → R2 one-shot 执行+D8 一致性测试+spill 拒绝
 - **#16 转移**(Q8=C):shell-remote 开镜像票后 #16 关闭留指针
 
+## #21 remote dev survey(2026-10-09,票面前置已完成)
+
+- **现状勘察**:VS Code Remote-SSH = 专有 remote server(编辑器 UX 层,非 agent 工具面);zcode/DSH 平台无内置 ssh 长会话工具;其他 DSH 插件(dsh-terminal-*)均本地。结论:agent 可用的 long-session remote PTY 无现成工作,#24 的 ssh 四工具即 phase 1 机制层。
+- **phase 1 落地(human 拍板 C)**:`ssh_start` 增 `port`(-p)+ keepalive 默认(ServerAliveInterval=15/ServerAliveCountMax=4,可被同名 options 覆盖)+ 自由 `-o` options 透传——options 面为后续远程工作区能力(远程文件系统/runtime,后续票)预留。
+- 证据:unit `ssh-pty.spec.ts`(#21 组合块)+ machine live `ssh-pty-live.spec.ts` 长流 500 行无跳读/无重发(真机 bh4gxf)。
+
 ## 术语表(惰性)
 
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。
