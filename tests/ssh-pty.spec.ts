@@ -12,7 +12,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { spawn as cpSpawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { apply } from "../src/pty/index.ts";
+import { apply, SSH_KEEPALIVE_INTERVAL_DEFAULT, SSH_KEEPALIVE_COUNT_DEFAULT } from "../src/pty/index.ts";
+
+// #49: the keepalive defaults are single-sourced from the pty entry — the
+// assertions derive from the exported constants, so format drift (`-o `
+// prefix, ordering, suppression) is pinned even if the values change. The
+// literal values themselves are pinned only at the source.
 
 // ---------------------------------------------------------------------------
 // Fake owner-scoped PTY registry (compact re-statement of the pty-session
@@ -173,8 +178,8 @@ describe("ssh_start (#24)", () => {
     expect(opened.sessionId).toBeDefined();
     // Keepalive defaults ride along (long-session contract, #21): options
     // precede the host; the host atom terminates the option run.
-    expect(opened.initialOutput).toContain("-o ServerAliveInterval=15");
-    expect(opened.initialOutput).toContain("-o ServerAliveCountMax=4");
+    expect(opened.initialOutput).toContain(`-o ${SSH_KEEPALIVE_INTERVAL_DEFAULT}`);
+    expect(opened.initialOutput).toContain(`-o ${SSH_KEEPALIVE_COUNT_DEFAULT}`);
     expect(opened.initialOutput!.trim().endsWith("example.com")).toBe(true);
   });
 
@@ -223,10 +228,10 @@ describe("ssh_start long-session composition (#21 phase 1)", () => {
       { agent },
     );
     const out = opened.initialOutput;
-    expect(out).toContain("-o ServerAliveInterval=15"); // defaults still ride along
+    expect(out).toContain(`-o ${SSH_KEEPALIVE_INTERVAL_DEFAULT}`); // defaults still ride along
     expect(out).toContain("-o IdentityFile=/home/me/id_ed25519");
     expect(out).toContain("-o Compression=yes");
-    expect(out.indexOf("ServerAliveInterval")).toBeLessThan(out.indexOf("IdentityFile"));
+    expect(out.indexOf(SSH_KEEPALIVE_INTERVAL_DEFAULT)).toBeLessThan(out.indexOf("IdentityFile"));
   });
 
   it("suppresses the keepalive defaults when the caller supplies their own ServerAliveInterval", async () => {
@@ -236,9 +241,9 @@ describe("ssh_start long-session composition (#21 phase 1)", () => {
       { agent },
     );
     const out = opened.initialOutput;
-    expect(out).not.toContain("ServerAliveInterval=15");
+    expect(out).not.toContain(SSH_KEEPALIVE_INTERVAL_DEFAULT);
     expect(out).toContain("-o ServerAliveInterval=60");
-    expect(out).toContain("-o ServerAliveCountMax=4"); // count max still applies
+    expect(out).toContain(`-o ${SSH_KEEPALIVE_COUNT_DEFAULT}`); // count max still applies
   });
 
   it("rejects whitespace-bearing options loudly (single -o atoms; spaced values belong in ~/.ssh/config)", async () => {
@@ -251,7 +256,7 @@ describe("ssh_start long-session composition (#21 phase 1)", () => {
   it("accepts an empty options array as no options", async () => {
     const agent = makeAgent("a");
     const opened = await h.tool("ssh_start").execute({ host: "box", options: [] }, { agent });
-    expect(opened.initialOutput).toContain("-o ServerAliveInterval=15");
+    expect(opened.initialOutput).toContain(`-o ${SSH_KEEPALIVE_INTERVAL_DEFAULT}`);
   });
 });
 

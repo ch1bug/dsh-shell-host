@@ -137,7 +137,9 @@ Long-session hardening (#21 phase 1):
   (integer 1..65535; `user@host:port` is NOT valid ssh syntax).
 - Keepalive defaults ride on every start: `-o ServerAliveInterval=15 -o
   ServerAliveCountMax=4` — without them, NAT/firewall idle drops kill
-  sessions silently.
+  sessions silently. (Single source #49: exported as
+  `SSH_KEEPALIVE_INTERVAL_DEFAULT` / `SSH_KEEPALIVE_COUNT_DEFAULT` from
+  `src/pty/index.ts` — code, tool description, and tests derive from there.)
 - `ssh_start({ ..., options })` — free `-o` passthrough for remote-workspace
   capabilities building on this surface (each option a single atom, no
   whitespace; spaced values belong in `~/.ssh/config`). An option setting
