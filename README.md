@@ -118,6 +118,29 @@ PERSISTENT sessions (survive turns, incremental tail cursor) — for a
 long-running remote session, point `pty_open` at an ssh-capable backend
 type; do not route it through the one-shot registry backend.
 
+### ssh 四工具（issue #24，承接 dsh-pty-session#3）
+
+The `./pty` entry additionally registers `ssh_start` / `ssh_tail` /
+`ssh_send` / `ssh_close` — the INTERACTIVE full-duplex ssh instance over the
+same core. `ssh_start({ host, jump?, shell? })` composes the ssh command
+line (`host`/`jump` are argv atoms — no whitespace/shell metacharacters) and
+opens it on the core PTY; the three passthroughs reuse the core's cursors
+and seam reads verbatim.
+
+Division of labor: `backends/ssh.ts` (ControlMaster, one-shot) for single
+commands; `ssh_start` for sessions a human/agent converses with (long-lived
+remote shell, intermediate output via the tail cursor).
+
+Reconnect semantics: **RECONNECT-NO, explicit** — a dropped session (network
+cut, remote drop) surfaces `status.kind = "exited"` on the next send/tail;
+nothing auto-reconnects. Recovery = `ssh_start` again (new session id); the
+dead id is reclaimed by `ssh_close` (idempotent).
+
+Live verification (machine lane): `tests/ssh-pty-live.spec.ts` runs the full
+start → interactive → incremental tail → close round-trip against a real
+host; it is gated on `DSH_SSH_LIVE_HOST` (optionally `DSH_SSH_LIVE_JUMP`)
+and skips loudly when unset — no network in the default test lanes.
+
 ## The `./remote` entry (issue #29, ADR-0007)
 
 `src/remote/` is the absorbed dsh-shell-remote module (pure move, source
