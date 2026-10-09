@@ -67,16 +67,11 @@
 # 定型形状,CRUD UI 归后续票读写同一数据);内置预设表只读 —— 实时视图由
 # shell_open 未知 id 的响亮错误枚举(全部可服务预设 id)。预设解析走真实探测
 # (#54 launchers 层):未装的环境从解析结果缺席,选定才响亮报全部探测点。
-# shell_open 依赖 `pty` 服务(#53 session core)——./pty entry 必须与本行
-# 同挂,否则 terminal 组件「等待依赖」(桌面端安装流程 2026-10-09 实测发现)。
-- insert:
-    - id: pty
-      name: dsh-shell-host/pty
-- insert:
-    - id: terminal
-      name: dsh-shell-host/terminal
-      config:
-        custom: []
+# 【2026-10-10 撤下】pty/terminal 两行不再随 bundle 自动挂载:rc.2 的
+# terminals 缝是 agent 执行世界级服务,profile 组合层无 provide —— 桌面端
+# 实测两组件「等待依赖」(桌面安装流程验证发现,详见 issue)。需要 shell_open
+# 的组合显式挂 dsh-shell-host/pty + dsh-shell-host/terminal 两行;world 级
+# 挂载机制归上游跟进票。
 
 # 用户侧边栏终端(api-terminal-controller)是宿主级 user terminal,与 preset
 # 无关:发现走宿主 PATH。本机 Windows PATH 不含 MSYS2,裸 `bash` 只会命中
