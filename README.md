@@ -141,9 +141,12 @@ Long-session hardening (#21 phase 1):
   `SSH_KEEPALIVE_INTERVAL_DEFAULT` / `SSH_KEEPALIVE_COUNT_DEFAULT` from
   `src/pty/index.ts` — code, tool description, and tests derive from there.)
 - `ssh_start({ ..., options })` — free `-o` passthrough for remote-workspace
-  capabilities building on this surface (each option a single atom, no
-  whitespace; spaced values belong in `~/.ssh/config`). An option setting
-  `ServerAliveInterval` / `ServerAliveCountMax` suppresses its default.
+  capabilities building on this surface (#50, additive dual shape per entry:
+  an atomic string — `"Key=value"` or a valueless `"Key"`, no whitespace —
+  or a structured `{ key, value? }` whose value may carry spaces and is
+  POSIX-quoted into one shell word, e.g. `ProxyCommand`). An option whose
+  key is `ServerAliveInterval` / `ServerAliveCountMax` suppresses its
+  default (exact key match).
 
 Reconnect semantics: **RECONNECT-NO, explicit** — a dropped session (network
 cut, remote drop) surfaces `status.kind = "exited"` on the next send/tail;

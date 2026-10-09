@@ -260,6 +260,93 @@ describe("ssh_start long-session composition (#21 phase 1)", () => {
   });
 });
 
+describe("ssh_start structured options (#50, additive dual shape)", () => {
+  let h: ReturnType<typeof boot>;
+  beforeEach(() => {
+    h = boot();
+  });
+
+  it("accepts structured {key,value} entries and composes -o key=value", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute(
+      { host: "box", options: [{ key: "IdentityFile", value: "/home/me/id_ed25519" }, { key: "Compression", value: "yes" }] },
+      { agent },
+    );
+    const out = opened.initialOutput;
+    expect(out).toContain(`-o ${SSH_KEEPALIVE_INTERVAL_DEFAULT}`); // defaults still ride along
+    expect(out).toContain("-o IdentityFile=/home/me/id_ed25519");
+    expect(out).toContain("-o Compression=yes");
+  });
+
+  it("suppresses a keepalive default when a structured entry sets the same key (exact key match)", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute(
+      { host: "box", options: [{ key: "ServerAliveInterval", value: "60" }] },
+      { agent },
+    );
+    const out = opened.initialOutput;
+    expect(out).not.toContain(SSH_KEEPALIVE_INTERVAL_DEFAULT);
+    expect(out).toContain("-o ServerAliveInterval=60");
+    expect(out).toContain(`-o ${SSH_KEEPALIVE_COUNT_DEFAULT}`); // count max still applies
+  });
+
+  it("suppresses a keepalive default from the legacy atomic-string shape too (additive parity, #50)", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute(
+      { host: "box", options: ["ServerAliveInterval=60"] },
+      { agent },
+    );
+    const out = opened.initialOutput;
+    expect(out).not.toContain(SSH_KEEPALIVE_INTERVAL_DEFAULT);
+    expect(out).toContain("-o ServerAliveInterval=60");
+  });
+
+  it("does not suppress a keepalive default for a valueless entry (a bare key does not set the option)", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute(
+      { host: "box", options: [{ key: "ServerAliveInterval" }] },
+      { agent },
+    );
+    expect(opened.initialOutput).toContain(`-o ${SSH_KEEPALIVE_INTERVAL_DEFAULT}`);
+    expect(opened.initialOutput).toContain("-o ServerAliveInterval");
+  });
+
+  it("composes a structured spaced value as one POSIX-quoted shell word (space form now representable)", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute(
+      { host: "box", options: [{ key: "ProxyCommand", value: "nc -x proxy:1080 %h %p" }] },
+      { agent },
+    );
+    const out = opened.initialOutput;
+    expect(out).toContain("-o ProxyCommand='nc -x proxy:1080 %h %p'");
+  });
+
+  it("treats an atomic string without '=' as a key-only option (sugar for {key})", async () => {
+    const agent = makeAgent("a");
+    const opened = await h.tool("ssh_start").execute(
+      { host: "box", options: ["RequestTTY"] },
+      { agent },
+    );
+    expect(opened.initialOutput).toContain("-o RequestTTY");
+  });
+
+  it("rejects malformed entries loudly: structured key with whitespace, key containing '=', non-string value, atomic string with whitespace", async () => {
+    const agent = makeAgent("a");
+    await expect(
+      h.tool("ssh_start").execute({ host: "box", options: [{ key: "Proxy Command", value: "x" }] }, { agent }),
+    ).rejects.toThrow(/options\[0\]/);
+    await expect(
+      h.tool("ssh_start").execute({ host: "box", options: [{ key: "Key=Value", value: "x" }] }, { agent }),
+    ).rejects.toThrow(/options\[0\]/);
+    await expect(
+      h.tool("ssh_start").execute({ host: "box", options: [{ key: "Compression", value: 42 as unknown as string }] }, { agent }),
+    ).rejects.toThrow(/options\[0\]/);
+    await expect(
+      h.tool("ssh_start").execute({ host: "box", options: [{ key: "Compression" }, "RemoteCommand=bash -l"] }, { agent }),
+    ).rejects.toThrow(/options\[1\]/);
+  });
+});
+
 describe("ssh_tail / ssh_send / ssh_close (#24 passthrough semantics)", () => {
   let h: ReturnType<typeof boot>;
   beforeEach(() => {
