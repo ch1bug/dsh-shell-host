@@ -103,3 +103,10 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **远程执行器(Remote executor)**:`dsh-shell-remote` 仓的 one-shot 远程执行世界(ADR-0004)——薄 ssh 传输、契约与 bash-local 字段一致、路径语义全为远端。#23(路B)后该传输合并为 shell-host 的 `ssh` 后端(ADR-0006),原仓归档或留薄壳;**持久会话仍不入册**。
 - **持久会话(Persistent session)**:交互式/长生命周期 shell 语义,归 `dsh-pty-session` 仓(本地或 ssh 实例);shell-host 与 shell-remote 都不承载(ADR-0004 决策 5)。ADR-0007 后迁入 shell-host 包的 `./pty` entry,所有权结论不变。
 - **Entry(包入口)**:dsh-shell-host 单包多入口的导出单元(ADR-0007)——`./host` 执行器(现状)、`./pty` 持久会话、`./remote` 远程 one-shot、`./wsl` 插件层桥。executor entries(`./host`/`./pty`/`./remote`)产出执行语义;`./wsl` 是插件层 entry(defineTool + ctx.tools,依赖 @deepseek-ai/dsh-tools),注册工具而非执行后端,与其内嵌的 `src/wsl-bridge.ts` 纯路径映射是两层、不合并。各 entry 独立 settings namespace,共享包不合并配置面。
+
+## #52 grill 共识(2026-10-09,进行中)
+
+- **启动器预设(Launcher preset)**:`(transport × shell-env)` 的声明式启动单元——本机预设 = local transport × shell 环境;ssh 是下层传输维度(配 host + 远端 shell 环境,复用 ssh 组合器语义,不另起 ssh 工具面孔)。预设表是 descriptor 的复用视图 + detect 常见位置运行时扫描,非独立硬编码表;自定义预设持久在 config(settings 页可增删改查,UI 归后续票)。
+- **env 注入 = VS Code profile 语义**:env 属于 preset(profile 字段),spawn 时进程级注入(terminals seam spawn spec 加性扩 env 传递),不做 shell export 行渲染;缝的对外契约不变。
+- **工具面**:单工具 `shell_open`(新插件层 entry `./terminal`,独立 settings namespace);send/tail/close 复用 `pty_*`(sessionId 即缝会话 id),不加转发工具。
+- **与路 B 的关系**:D8 的单例执行器替换实现保留;`shell_open` 走 terminals 缝,与 `ctx.shell` 完全解耦共存。
