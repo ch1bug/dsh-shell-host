@@ -22,12 +22,16 @@ import { FakeSession, lineCursorRead, terr } from "./helpers/fake-terminals.ts";
 class LocalFakeSession extends FakeSession {
   // TS 6 typecheck facade: constructor-assigned fields declared explicitly.
   motd: string;
+  /** The spawn request this backend received (#53: env must ride the spec).
+   * The local registry hands the whole terminals.spawn request through. */
+  spawnRequest: Record<string, any>;
   constructor(spec, script, { motd = "" } = {}) {
     super(spec, {
       spawnChild: () => cpSpawn(process.execPath, ["-e", script], { stdio: ["pipe", "pipe", "pipe"] }),
       initialText: motd,
     });
     this.motd = motd;
+    this.spawnRequest = spec;
   }
   read({ offset = 0, count = 200 } = {}) {
     return lineCursorRead(this.text, { offset, count });
@@ -261,16 +265,24 @@ describe("owner scoping", () => {
 // ---------------------------------------------------------------------------
 
 describe("pty_open options", () => {
-  it("exports env vars with POSIX quoting before the command", async () => {
+  it("delivers env via the spawn spec (process-env semantics, not export lines) (#53)", async () => {
     const agent = makeAgent("a");
     const s = await tool("pty_open").execute({
       command: "run-cmd",
       env: { FOO: "bar baz", WEIRD: "it's" },
     }, exec(agent));
-    const log = ctx.terminals.sessions.get(s.sessionId).sentLog;
-    expect(log[0]).toContain("export FOO='bar baz'");
-    expect(log[1]).toContain(`export WEIRD='it'\\''s'`);
-    expect(log.at(-1)).toContain("run-cmd");
+    const rec = ctx.terminals.sessions.get(s.sessionId);
+    // env rides terminals.spawn's request (additive field), so the backend
+    // receives it for process-level injection. The local registry passes
+    // the whole request ({type, cwd?, env?, sessionId, owner}) to the
+    // backend, so the constructor spec carries env.
+    expect(rec.spawnRequest.env).toEqual({ FOO: "bar baz", WEIRD: "it's" });
+    // Nothing is typed into the terminal as `export` lines anymore: the
+    // first send is the command itself.
+    const log = rec.sentLog;
+    expect(log).toHaveLength(1);
+    expect(log[0]).toContain("run-cmd");
+    expect(log[0]).not.toContain("export");
   });
 
   it("rejects an empty command", async () => {

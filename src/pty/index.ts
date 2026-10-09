@@ -9,7 +9,7 @@
  * uses). Four tools, no protocol knowledge:
  *
  *   pty_open({ command, cwd?, env? }) → { sessionId, ... }  spawn on a PTY,
- *       optionally export env vars then run the command; survives turns;
+ *       spawn on a PTY with process-level env injection, run the command; survives turns;
  *   pty_send({ id, data, submit? })  → write bytes, return the delta read;
  *   pty_tail({ id, lines? })         → incremental read from a per-session
  *       cursor — repeated tails never resend old lines;
@@ -68,7 +68,7 @@ function resolveConfig(raw: unknown): PtyConfig {
 /** Shared render for structured tool output: one JSON text block. */
 const jsonRender = (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }]
 
-/** Env `export` lines quote through the shared POSIX helper (issue #37). */
+/** ssh option values quote through the shared POSIX helper (issue #37). */
 
 /** The tool-execution context slice the plugin consumes (duck-typed seam). */
 interface PtyCtx {
@@ -173,7 +173,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
    * they must never touch another agent's sessions (the seam enforces this).
    */
   const core = {
-    /** Spawn on a PTY, export env (best-effort POSIX), run the command. */
+    /** Spawn on a PTY with env injected into the process, run the command. */
     async open(owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string> }, signal?: AbortSignal) {
       const command = spec?.command
       if (typeof command !== 'string' || command.trim().length === 0) {
@@ -182,14 +182,11 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
       const spawned = await ctx.terminals.spawn(owner, {
         type: config.backendType,
         ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
+        // env rides the spawn spec (#53, VS Code profile semantics): the
+        // terminal process is born with these entries — process-level
+        // injection, not shell `export` lines typed into the session.
+        ...(spec.env === undefined ? {} : { env: spec.env }),
       }, signal)
-      // env is best-effort POSIX `export` lines: only meaningful on
-      // shell-type backends (TerminalSpawnRequest has no env field).
-      const envLines = spec.env === undefined ? [] : Object.entries(spec.env)
-        .map(([k, v]) => `export ${/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : posixQuote(k)}=${posixQuote(v)}`)
-      for (const line of envLines) {
-        await sendAndRead(owner, spawned.sessionId, { text: line, submit: true, signal })
-      }
       const { delta, result } = await sendAndRead(owner, spawned.sessionId, {
         text: command,
         submit: true,
@@ -262,7 +259,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
       command: {
         type: 'string',
         required: true,
-        description: 'Command to run on the PTY after spawn (env vars, if any, are exported first).',
+        description: 'Command to run on the PTY after spawn (env vars, if any, are injected into the spawned process).',
       },
       cwd: {
         type: 'string',
@@ -271,7 +268,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
       env: {
         type: 'object',
         additionalProperties: true,
-        description: 'Optional env vars to export before the command (shell-type backends; POSIX quoting applied).',
+        description: 'Optional env vars injected into the spawned terminal process (VS Code profile semantics, #53).',
       },
     },
     output: {
