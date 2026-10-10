@@ -160,3 +160,76 @@ describe("self-managed session core (#61 ADR-0010)", () => {
     core.dispose().catch(() => {});
   });
 });
+
+describe("autoClose one-shot mode (#64)", () => {
+  it("reclaims an autoClose session automatically after the process exits", async () => {
+    const h = bootFast();
+    const opened = await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    expect(h.core.active(agent)).toContain(opened.sessionId);
+    h.spawned[0].emitData("work output\r\n");
+    await new Promise((r) => setTimeout(r, 10));
+    h.spawned[0].emitExit({ exitCode: 0 });
+    // Settle window first (output lands), then the single close path reclaims.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(h.core.active(agent)).not.toContain(opened.sessionId);
+    expect(h.spawned[0].killed).toBe(0); // already exited — no kill needed
+  });
+
+  it("frees the soft-cap slot: a new open succeeds immediately after auto-reclaim", async () => {
+    const h = bootFast({ config: { maxSessions: 1 } });
+    await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    // Cap is full while the session lives.
+    await expect(h.tool("pty_open").execute({ command: "second" }, { agent })).rejects.toThrow(/limit/);
+    h.spawned[0].emitExit({ exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 100));
+    await expect(h.tool("pty_open").execute({ command: "fits-now" }, { agent })).resolves.toBeTruthy();
+  });
+
+  it("tail after auto-reclaim reports NO_SESSION (same dead-session semantics as pty_close)", async () => {
+    const h = bootFast();
+    const opened = await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    h.spawned[0].emitExit({ exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 100));
+    await expect(h.tool("pty_tail").execute({ id: opened.sessionId }, { agent })).rejects.toMatchObject({ code: "NO_SESSION" });
+  });
+
+  it("default semantics are byte-identical: no autoClose = session survives exit until pty_close", async () => {
+    const h = bootFast();
+    const opened = await h.tool("pty_open").execute({ command: "persist" }, { agent });
+    h.spawned[0].emitData("before\r\n");
+    h.spawned[0].emitExit({ exitCode: 3 });
+    await new Promise((r) => setTimeout(r, 100));
+    // Still registered, tail still readable, no kill, status carries the code.
+    expect(h.core.active(agent)).toContain(opened.sessionId);
+    const page = await h.tool("pty_tail").execute({ id: opened.sessionId }, { agent });
+    expect(page.text).toContain("before");
+    expect(h.spawned[0].killed).toBe(0);
+  });
+
+  it("settle-before-reclaim: autoClose waits out the quiet window AFTER exit, and post-exit output resets the clock (#64)", async () => {
+    // settleQuietMs=60: the regression this pins is reclaiming on the first
+    // tick after exit (settleFor short-circuits on s.exited); the fixed
+    // core holds the session until output has been quiet for the window.
+    const h = bootFast({ config: { settleQuietMs: 60, settleTickMs: 5, settleTimeoutMs: 2000 } });
+    const opened = await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    h.spawned[0].emitExit({ exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 20));
+    // Still inside the quiet window: not yet reclaimed.
+    expect(h.core.active(agent)).toContain(opened.sessionId);
+    // Post-exit flush (buffered output racing the exit event) lands and
+    // resets the settle clock.
+    h.spawned[0].emitData("final flush\r\n");
+    await new Promise((r) => setTimeout(r, 45));
+    // 65ms since exit but only ~45ms of quiet: still held.
+    expect(h.core.active(agent)).toContain(opened.sessionId);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(h.core.active(agent)).not.toContain(opened.sessionId);
+  });
+
+  it("rejects a non-boolean autoClose loudly", async () => {
+    const h = bootFast();
+    await expect(
+      h.tool("pty_open").execute({ command: "x", autoClose: "yes" } as never, { agent }),
+    ).rejects.toThrow(/autoClose/);
+  });
+});

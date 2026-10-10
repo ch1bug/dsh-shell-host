@@ -195,6 +195,16 @@ describe("pty_open options", () => {
     await expect(tool("pty_open").execute({ command: "  " }, exec(makeAgent("a"))))
       .rejects.toThrow(/non-empty/);
   });
+
+  it("autoClose: true rides the tool surface — the session self-reclaims on exit (#64)", async () => {
+    const a = makeAgent("a");
+    const opened = await tool("pty_open").execute({ command: "one-shot", autoClose: true }, exec(a));
+    expect(pty().active(a)).toContain(opened.sessionId);
+    const handle = handles.find((h) => h.pty.pid === opened.pid)!;
+    handle.emitExit({ exitCode: 0 });
+    await new Promise((r) => setTimeout(r, 250));
+    expect(pty().active(a)).not.toContain(opened.sessionId);
+  });
 });
 
 // ---------------------------------------------------------------------------
