@@ -21,6 +21,7 @@
  */
 
 import { spawn as nodePtySpawn } from '@lydell/node-pty'
+import { resolveExecutable } from '../detect.ts'
 
 /** Default concurrent-session soft cap (#56 ruling 3, migrated onto the
  * core: the registry is the single source of truth, so an entry remount
@@ -246,19 +247,31 @@ export function parseCommandLine(command: string): string[] {
   return argv
 }
 
+/** Test-injection seams for the default spawner: the real node-pty spawn,
+ * the executable resolver (#67), and the platform guard. */
+export interface DefaultSpawnDeps {
+  spawn?: typeof nodePtySpawn
+  resolveExecutable?: typeof resolveExecutable
+  platform?: NodeJS.Platform
+}
+
 /** The default spawner. Windows: the command line is tokenized with the
  * OS argv rules (parseCommandLine above) and spawned DIRECTLY — argv[0] is
  * the executable, so quoted paths with spaces ride the spawn's argv, not
  * shell quoting. Consequence: the command IS the spawned process (#61
  * semantic, ADR-0010) — shell metacharacters and cmd builtins are NOT
  * interpreted; a shell (`cmd.exe /d /c ...`) must be named explicitly.
+ * argv[0] is resolved through {@link resolveExecutable} first (#67): ConPTY
+ * CreateProcess needs the `.exe` extension on a bare name like `ssh`.
  * POSIX keeps the `/bin/sh -c` wrapper (real shell semantics). */
-function defaultSpawnPty(spec: CoreSpawnSpec): PtyLike {
-  const win32 = process.platform === 'win32'
+export function defaultSpawnPty(spec: CoreSpawnSpec, deps: DefaultSpawnDeps = {}): PtyLike {
+  const spawn = deps.spawn ?? nodePtySpawn
+  const resolve = deps.resolveExecutable ?? resolveExecutable
+  const win32 = (deps.platform ?? process.platform) === 'win32'
   if (win32) {
     const argv = parseCommandLine(spec.command)
     if (argv.length === 0) throw new Error('pty: empty command line')
-    return nodePtySpawn(argv[0], argv.slice(1), {
+    return spawn(resolve(argv[0]), argv.slice(1), {
       name: 'xterm-256color',
       cols: 120,
       rows: 40,
@@ -266,7 +279,7 @@ function defaultSpawnPty(spec: CoreSpawnSpec): PtyLike {
       ...(spec.env === undefined ? {} : { env: { ...(process.env as Record<string, string>), ...spec.env } }),
     })
   }
-  return nodePtySpawn('/bin/sh', ['-c', spec.command], {
+  return spawn('/bin/sh', ['-c', spec.command], {
     name: 'xterm-256color',
     cols: 120,
     rows: 40,

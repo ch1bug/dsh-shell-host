@@ -153,6 +153,34 @@ export function detectPlainBash(
 }
 
 /**
+ * Resolve a bare executable name to a spawnable path on win32 (#67):
+ * the direct-spawn seam (#61, parseCommandLine argv[0]) hands argv[0] to
+ * ConPTY CreateProcess, which fails with `File not found` when the command
+ * text starts with a bare `ssh` — the extension must ride argv[0]. Names
+ * that already carry an extension or a path separator pass through
+ * unchanged (CreateProcess handles both); anything else is searched as
+ * `<name>.exe` along the caller PATH in order (the same probe posture as
+ * `detectPlainBash` / `detectPwsh`). An unresolvable name returns
+ * unchanged so the spawn fails loudly at the same place it did before.
+ * @param name - the argv[0] token to resolve.
+ * @param path - the PATH to probe; defaults to the process PATH.
+ * @param exists - injectable existence predicate (tests use fake paths).
+ */
+export function resolveExecutable(
+  name: string,
+  path: string | undefined = process.env.PATH,
+  exists: (candidate: string) => boolean = spawnableExists,
+): string {
+  if (/[\\/]/.test(name) || /\.[^\\/.]+$/.test(name)) return name
+  for (const dir of (path ?? '').split(delimiter)) {
+    if (dir === '') continue
+    const candidate = join(dir, `${name}.exe`)
+    if (exists(candidate)) return candidate
+  }
+  return name
+}
+
+/**
  * Whether a candidate path can be spawned. lstat opens the entry itself
  * instead of following reparse points, so it sees the Microsoft Store app
  * execution alias where stat-based `existsSync` hits the target's ACL

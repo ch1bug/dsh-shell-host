@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { bootPlugin, fakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
-import { DEFAULT_MAX_SESSIONS } from "../src/pty/session-core.ts";
+import { DEFAULT_MAX_SESSIONS, defaultSpawnPty } from "../src/pty/session-core.ts";
 
 /** Fast settle tuning: the core polls for output quiescence; these values
  * keep every await in the spec under ~100ms without weakening the
@@ -231,5 +231,45 @@ describe("autoClose one-shot mode (#64)", () => {
     await expect(
       h.tool("pty_open").execute({ command: "x", autoClose: "yes" } as never, { agent }),
     ).rejects.toThrow(/autoClose/);
+  });
+});
+
+// #67 regression pin: on win32 the spawn is DIRECT (parseCommandLine argv[0],
+// #61 semantic), so a composed command starting with a bare `ssh` (no .exe)
+// dies in ConPTY CreateProcess with `File not found`. defaultSpawnPty must
+// route argv[0] through the executable resolver before the spawn.
+describe("defaultSpawnPty argv[0] resolution (#67)", () => {
+  it("resolves the argv[0] through resolveExecutable before spawning (win32)", async () => {
+    const spawned: string[] = [];
+    defaultSpawnPty(
+      { command: "ssh -tt -o ServerAliveInterval=15 example.com", cwd: undefined, env: undefined },
+      {
+        platform: "win32",
+        resolveExecutable: (name: string) => `${name}.exe`,
+        spawn: ((argv0: string) => {
+          spawned.push(argv0);
+          return fakePty(1).pty;
+        }) as never,
+      },
+    );
+    // ConPTY needs the extension: argv[0] must end in .exe.
+    expect(spawned[0]).toMatch(/\.exe$/);
+    expect(spawned[0]).toBe("ssh.exe");
+  });
+
+  it("keeps the POSIX /bin/sh -c wrapper untouched", async () => {
+    const calls: string[][] = [];
+    defaultSpawnPty(
+      { command: "ssh -tt example.com", cwd: undefined, env: undefined },
+      {
+        platform: "linux",
+        spawn: ((argv0: string, args: string[]) => {
+          calls.push([argv0, ...args]);
+          return fakePty(1).pty;
+        }) as never,
+      },
+    );
+    expect(calls[0]![0]).toBe("/bin/sh");
+    expect(calls[0]![1]).toBe("-c");
   });
 });
