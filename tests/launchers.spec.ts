@@ -13,7 +13,9 @@ import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import {
   resolveLauncher,
+  resolveLauncherDetailed,
   resolveLaunchers,
+  type CustomLauncherConfig,
   type LocalLauncherPreset,
   type ResolvedLauncher,
 } from "../src/launchers.ts";
@@ -250,5 +252,47 @@ describe("ssh transport dimension (#54, ADR-0008 decision 1)", () => {
     expect(prod.transport).toBe("ssh");
     expect(prod.command).toContain("ssh -tt");
     expect(prod.command).toContain("prod.example.com zsh");
+  });
+});
+
+describe("resolveLauncherDetailed (#56 source/overrode)", () => {
+  it("a built-in view reports source builtin, overrode false", () => {
+    const detail = resolveLauncherDetailed("pwsh", fullDeps());
+    expect(detail.source).toBe("builtin");
+    expect(detail.overrode).toBe(false);
+    expect(detail.launcher.id).toBe("pwsh");
+  });
+
+  it("a custom id over a built-in view reports source custom + overrode true", () => {
+    const custom: CustomLauncherConfig[] = [
+      { id: "pwsh", transport: "local", executable: ["X:\\pwsh.exe"], argv: [] },
+    ];
+    const detail = resolveLauncherDetailed("pwsh", fullDeps(), custom);
+    expect(detail.source).toBe("custom");
+    expect(detail.overrode).toBe(true);
+  });
+
+  it("a custom-only id reports source custom + overrode false (nothing was overridden)", () => {
+    const custom: CustomLauncherConfig[] = [
+      { id: "dev", transport: "local", executable: ["X:\\pwsh.exe"], argv: [] },
+    ];
+    const detail = resolveLauncherDetailed("dev", fullDeps(), custom);
+    expect(detail.source).toBe("custom");
+    expect(detail.overrode).toBe(false);
+  });
+
+  it("a custom id shadowing an ABSENT built-in is NOT an override (no built-in view existed)", () => {
+    const custom: CustomLauncherConfig[] = [
+      { id: "msys2-ucrt", transport: "local", executable: ["X:\\bash.exe"], argv: [] },
+    ];
+    const detail = resolveLauncherDetailed("msys2-ucrt", noShellDeps, custom);
+    expect(detail.source).toBe("custom");
+    expect(detail.overrode).toBe(false);
+  });
+
+  it("loud postures are inherited: unknown id and absent built-in throw exactly as resolveLauncher", () => {
+    expect(() => resolveLauncherDetailed("no-such-shell", fullDeps())).toThrow(/unknown preset/);
+    expect(() => resolveLauncherDetailed("pwsh", { exists: () => false, env: FULL_ENV, path: "", listDistros: () => [] }))
+      .toThrow(/not serviceable/);
   });
 });

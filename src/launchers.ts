@@ -173,6 +173,11 @@ function pythonCandidates(path: string | undefined): { candidates: readonly stri
 export function resolveLaunchers(deps: LauncherDeps = {}, custom: readonly CustomLauncherConfig[] = []): {
   presets: ResolvedLauncher[]
   absent: AbsentLauncher[]
+  /** The ids that carried a BUILT-IN view before the custom merge — the
+   * overrode determination's evidence (#56): a custom id in this set really
+   * replaced a built-in view; a custom id outside it shadows only an absent
+   * built-in (or nothing at all). */
+  builtInViewIds: ReadonlySet<string>
 } {
   const exists = deps.exists ?? spawnableExists
   const env = deps.env ?? process.env
@@ -282,13 +287,15 @@ export function resolveLaunchers(deps: LauncherDeps = {}, custom: readonly Custo
 
   // Custom presets merge over the built-ins: same id REPLACES the built-in
   // view (user customization wins); `base` inherits a resolved built-in.
+  // Snapshot BEFORE the merge: the ids that carried a real built-in view.
+  const builtInViewIds: ReadonlySet<string> = new Set(presets.map(p => p.id))
   for (const entry of custom) {
     const index = presets.findIndex(p => p.id === entry.id)
     const resolvedLauncher = resolveCustom(entry, presets, absent)
     if (index >= 0) presets[index] = resolvedLauncher
     else presets.push(resolvedLauncher)
   }
-  return { presets, absent }
+  return { presets, absent, builtInViewIds }
 }
 
 function resolveCustom(entry: CustomLauncherConfig, resolved: ResolvedLauncher[], absent: readonly AbsentLauncher[]): ResolvedLauncher {
@@ -336,18 +343,37 @@ function resolveCustom(entry: CustomLauncherConfig, resolved: ResolvedLauncher[]
 }
 
 /**
- * Resolve ONE launcher by id. Unknown ids and absent built-ins both fail
- * loudly: the error names the id, the resolved preset ids (unknown case) or
- * every probe point (absent case) — the pwsh/wsl descriptor posture, never
- * a silent fallback.
+ * Resolve ONE launcher by id WITH its provenance (#56): `source` says whether
+ * the hit view is the built-in table or the user's custom config; `overrode`
+ * is true only when a custom id REPLACED an existing built-in view (a custom
+ * id shadowing an absent built-in, or a custom-only id, is not an override).
+ * Unknown ids and absent built-ins both fail loudly — the same postures
+ * `resolveLauncher` pins.
  */
-export function resolveLauncher(id: string, deps: LauncherDeps = {}, custom: readonly CustomLauncherConfig[] = []): ResolvedLauncher {
-  const { presets, absent } = resolveLaunchers(deps, custom)
+export function resolveLauncherDetailed(id: string, deps: LauncherDeps = {}, custom: readonly CustomLauncherConfig[] = []): {
+  launcher: ResolvedLauncher
+  source: 'builtin' | 'custom'
+  overrode: boolean
+} {
+  const isCustom = custom.some(entry => entry.id === id)
+  const { presets, absent, builtInViewIds } = resolveLaunchers(deps, custom)
   const hit = presets.find(p => p.id === id)
-  if (hit !== undefined) return hit
+  if (hit !== undefined) {
+    return { launcher: hit, source: isCustom ? 'custom' : 'builtin', overrode: isCustom && builtInViewIds.has(id) }
+  }
   const miss = absent.find(a => a.id === id)
   if (miss !== undefined) {
     throw new Error(`launcher: preset '${id}' is not serviceable on this machine. Probed: ${miss.probed.join(', ')}`)
   }
   throw new Error(`launcher: unknown preset '${id}'; resolved presets: ${presets.map(p => p.id).join(', ')}`)
+}
+
+/**
+ * Resolve ONE launcher by id. Unknown ids and absent built-ins both fail
+ * loudly: the error names the id, the resolved preset ids (unknown case) or
+ * every probe point (absent case) — the pwsh/wsl descriptor posture, never
+ * a silent fallback. Provenance-aware callers use `resolveLauncherDetailed`.
+ */
+export function resolveLauncher(id: string, deps: LauncherDeps = {}, custom: readonly CustomLauncherConfig[] = []): ResolvedLauncher {
+  return resolveLauncherDetailed(id, deps, custom).launcher
 }

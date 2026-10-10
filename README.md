@@ -239,6 +239,25 @@ namespace (`terminal`) carries the custom-preset data channel (the #54
 shape; the CRUD UI is a later ticket reading the same data); the built-in
 preset table is read-only, surfaced live by the unknown-id error.
 
+### 覆盖规则 / 并发上限 / 空闲超时（#56 裁决）
+
+- **预设覆盖**：custom 同 id 覆盖 built-in 视图（用户显式配置优先），**不报错** ——
+  但 `shell_open` 结果带响亮字段 `source: 'builtin'|'custom'` 和
+  `overrode: true|false`（仅当 custom 真正替换了一个存在的 built-in 视图时为
+  true；shadow 一个未安装的 built-in 不算覆盖）。结果同时含
+  `executable`（命中候选）/ `probed`（全部候选点）/ `cwd`（实际生效值）；
+  不返回完整 env（合并后即整条 PATH，无增量），argv 不重复返回（`command`
+  已含）。判定单源在 `resolveLauncherDetailed`（`src/launchers.ts`）。
+- **并发软上限**：terminal entry 统计**本 entry 打开**、按 owner 归属的活跃
+  会话数（`pty_close` 即释放；owner dispose 由 pty 层全杀回收）。默认上限
+  8，settings namespace `terminal.maxSessions` 可配；超限时 `shell_open`
+  响亮报错，列出当前会话数与各 session id。无默认空闲超时 —— 持久终端
+  （长驻 watcher/REPL）是本层卖点。
+- **逐会话空闲超时**：`shell_open(preset, idleTimeoutMs)` 可选参数 ——
+  调用者显式 opt-in 时，该会话**无新输出**持续 `idleTimeoutMs` 毫秒后自动
+  `pty_close`（空闲判据 = 输出行数不再增长；新输出会重置计时）。不带该
+  参数的会话永不被空闲回收。
+
 ```js
 import * as terminal from 'dsh-shell-host/terminal' // { name, inject, apply }
 ```
