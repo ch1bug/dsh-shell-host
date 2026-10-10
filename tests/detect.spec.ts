@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectMsysRoot, detectPlainBash, detectPwsh, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, plainBashProbedLocations, pwshProbedLocations } from '../src/detect.ts'
+import { detectMsysRoot, detectPlainBash, detectPwsh, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, plainBashProbedLocations, pwshProbedLocations, resolveExecutable } from '../src/detect.ts'
 
 /**
  * T3 detection tests, fully injected (fake `exists` predicates and PATH
@@ -191,3 +191,35 @@ describe('detectPwsh (#3: PowerShell 7 preferred over Windows PowerShell 5.1)', 
     expect(locations.at(-1)).toBe(winPs)
   })
 })
+
+describe('resolveExecutable (#67 ssh_start ConPTY File not found)', () => {
+  const path = ['C:\\Windows\\System32\\OpenSSH', 'C:\\Program Files\\Git\\usr\\bin'].join(';')
+
+  it('resolves a bare name to the first PATH hit, as an absolute .exe', () => {
+    const exists = existsFor(['C:\\Windows\\System32\\OpenSSH\\ssh.exe'])
+    expect(resolveExecutable('ssh', path, exists)).toBe('C:\\Windows\\System32\\OpenSSH\\ssh.exe')
+  })
+
+  it('walks PATH in order (first hit wins)', () => {
+    const exists = existsFor(['C:\\Windows\\System32\\OpenSSH\\ssh.exe', 'C:\\Program Files\\Git\\usr\\bin\\ssh.exe'])
+    expect(resolveExecutable('ssh', path, exists)).toBe('C:\\Windows\\System32\\OpenSSH\\ssh.exe')
+    const later = existsFor(['C:\\Program Files\\Git\\usr\\bin\\ssh.exe'])
+    expect(resolveExecutable('ssh', path, later)).toBe('C:\\Program Files\\Git\\usr\\bin\\ssh.exe')
+  })
+
+  it('keeps a name that already carries an extension (ConPTY handles ssh.exe)', () => {
+    expect(resolveExecutable('ssh.exe', path, existsFor([]))).toBe('ssh.exe')
+  })
+
+  it('passes a dotted non-path name through unsearched (CreateProcess contract)', () => {
+    expect(resolveExecutable('my.tool', path, existsFor([]))).toBe('my.tool')
+  })
+  it('keeps a command that already carries a path separator', () => {
+    expect(resolveExecutable('C:\\tools\\ssh', path, existsFor([]))).toBe('C:\\tools\\ssh')
+  })
+
+  it('returns the bare name unchanged when nothing resolves (loud failure at spawn)', () => {
+    expect(resolveExecutable('ssh', path, existsFor([]))).toBe('ssh')
+  })
+})
+
