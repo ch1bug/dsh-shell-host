@@ -9,7 +9,7 @@
 
 import { describe, it, expect, onTestFinished } from "vitest";
 import { spawn as spawnPty } from "@lydell/node-pty";
-import { FakeTerminals, bootSsh, asChildProcess } from "./helpers/fake-terminals.ts";
+import { apply as applyPty } from "../src/pty/index.ts";
 
 // The host value may carry a user@ prefix — the composition passes it to
 // ssh verbatim, and key auth on the live host is provisioned per user
@@ -20,35 +20,27 @@ const JUMP = process.env.DSH_SSH_LIVE_JUMP;
 const hasLiveSsh = !!HOST;
 
 function boot() {
-  // The live suite drives the plugin through the SAME shared fake-seam shape
-  // as ssh-pty.spec.ts (#48); only the spawn/kill differences enter as
-  // parameters. Since #51 the spawned "local shell" is a REAL pty
-  // (@lydell/node-pty) hosting cmd.exe with the ssh composition inside it —
-  // byte flow follows real PTY semantics (full duplex, echo by the pty line
-  // discipline) instead of cmd.exe pipes, so the round-trip no longer
-  // depends on any particular host's banner/prompt/echo habits. Kill is
-  // conpty close: terminating the pty takes down the whole
-  // shell <- ssh <- remote chain, which the adapter's kill() delegates to.
-  const terminals = new FakeTerminals({
-    idPrefix: "live",
-    // #53: the spawnChild factory receives the spawn spec and merges its env
-    // into the real pty's process environment — the machine-lane proof that
-    // env rides terminals.spawn into the actual terminal process.
-    spawnChild: (spec) =>
-      asChildProcess(
-        spawnPty("cmd.exe", ["/Q", "/K"], {
-          name: "xterm-256color",
-          cols: 120,
-          rows: 40,
-          env: { ...(process.env as Record<string, string>), ...(spec.env ?? {}) },
-        }),
-      ),
-    killChild: (child) => {
-      child.kill();
-    },
-  });
-  const { tool } = bootSsh(terminals);
-  return { terminals, tool };
+  // #61 (ADR-0010): the live suite drives the REAL self-managed core — the
+  // default spawner IS @lydell/node-pty (ConPTY) running the ssh composition
+  // directly as the spawned process. Byte flow follows real PTY semantics
+  // (full duplex, echo by the pty line discipline); kill is conpty close,
+  // taking down the whole local ssh <- remote chain.
+  const registered: any[] = [];
+  const provided = new Map<string, unknown>();
+  const ctx = {
+    provide: (name: string, value: unknown) => provided.set(name, value),
+    effect: () => () => Promise.resolve(),
+    tools: { register: (t: unknown) => registered.push(t) },
+    get: (name: string) => provided.get(name),
+  };
+  applyPty(ctx as any, {});
+  const tool = (name: string) => {
+    const t = registered.find((x) => x.name === name);
+    if (!t) throw new Error(`tool not registered: ${name}`);
+    return t;
+  };
+  const core = provided.get("pty") as { active(owner: unknown): string[] };
+  return { tool, core };
 }
 
 describe("ssh 四工具 live round-trip (#24 AC)", () => {
@@ -57,7 +49,7 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
     { timeout: 90_000 },
     async () => {
       const agent = { name: "live" };
-      const { terminals, tool } = boot();
+      const { tool, core } = boot();
       const opened = await tool("ssh_start").execute({ host: HOST!, ...(JUMP ? { jump: JUMP } : {}), shell: "bash --login" }, { agent });
       onTestFinished(() => tool("ssh_close").execute({ id: opened.sessionId }, { agent }).catch(() => {}));
       expect(opened.sessionId).toBeDefined();
@@ -84,7 +76,7 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
 
       const closed = await tool("ssh_close").execute({ id: opened.sessionId }, { agent });
       expect(closed.closed).toBe(true);
-      expect(terminals.sessions.size).toBe(0);
+      expect(core.active(agent)).toHaveLength(0);
     },
   );
 
@@ -104,7 +96,7 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
       const agent = { name: "live" };
       const { tool } = boot();
       const opened = await tool("pty_open").execute(
-        { command: "echo %LAUNCHER_ENV_PROBE%", env: { LAUNCHER_ENV_PROBE: "spawn-env-live-42" } },
+        { command: "cmd.exe /d /c echo %LAUNCHER_ENV_PROBE%", env: { LAUNCHER_ENV_PROBE: "spawn-env-live-42" } },
         { agent },
       );
       onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent }).catch(() => {}));

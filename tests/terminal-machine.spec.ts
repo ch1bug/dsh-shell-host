@@ -17,42 +17,25 @@ import { describe, expect, it, onTestFinished } from "vitest";
 import { execFileSync } from "node:child_process";
 import { Context } from "@deepseek-ai/cordis";
 import LocalSubprocessRuntime from "@deepseek-ai/dsh-subprocess-local";
-import { spawn as spawnPty } from "@lydell/node-pty";
-import { FakeTerminals, asChildProcess } from "./helpers/fake-terminals.ts";
 import { liveConfig } from "./helpers/live-config.ts";
 import { LocalBashExecutor } from "../src/index.ts";
 import { apply as applyPty } from "../src/pty/index.ts";
 import { apply as applyTerminal } from "../src/terminal/index.ts";
 import { resolveLaunchers } from "../src/launchers.ts";
-import type { SpawnSpec } from "./helpers/fake-terminals.ts";
 
 const AGENT = { name: "terminal-machine" };
 
-/** Boot the pty + terminal entries (REAL launcher probes) over a real-PTY
- * fake seam: cmd.exe is the hosted default terminal; the entry's launch
- * command runs inside it. Config is the terminal entry's settings namespace. */
+/** Boot the pty + terminal entries on the REAL self-managed core (#61,
+ * ADR-0010): the default spawner IS real @lydell/node-pty (Windows ConPTY)
+ * running each launch command under the platform-shell wrapper — the
+ * production shape, no fake in the loop. Config is the terminal entry's
+ * settings namespace. */
 function boot(config: { custom?: unknown[] } = {}) {
-  const terminals = new FakeTerminals({
-    idPrefix: "machine",
-    spawnChild: (spec: SpawnSpec) =>
-      asChildProcess(
-        spawnPty("cmd.exe", ["/Q", "/K"], {
-          name: "xterm-256color",
-          cols: 120,
-          rows: 40,
-          env: { ...(process.env as Record<string, string>), ...(spec.env ?? {}) },
-        }),
-      ),
-    killChild: (child) => {
-      child.kill();
-    },
-  });
   const registered: any[] = [];
   const provided = new Map<string, unknown>();
   const ctx = {
     provide: (name: string, value: unknown) => provided.set(name, value),
     effect: () => () => Promise.resolve(),
-    terminals,
     tools: { register: (t: unknown) => registered.push(t) },
     get: (name: string) => provided.get(name),
   };
@@ -63,17 +46,19 @@ function boot(config: { custom?: unknown[] } = {}) {
     if (!t) throw new Error(`tool not registered: ${name}`);
     return t;
   };
-  return { terminals, tool };
+  return { tool };
 }
 
-/** Poll pty_tail until `needle` shows up (or the budget expires). */
-async function waitFor(tool: (name: string) => any, id: string, needle: string, budgetMs = 45_000): Promise<string> {
+/** Poll pty_tail until `needle` (string or RegExp) shows up (or the budget
+ * expires). */
+async function waitFor(tool: (name: string) => any, id: string, needle: string | RegExp, budgetMs = 45_000): Promise<string> {
   const deadline = Date.now() + budgetMs;
   let text = "";
+  const hit = () => (typeof needle === "string" ? text.includes(needle) : needle.test(text));
   while (Date.now() < deadline) {
     const page = await tool("pty_tail").execute({ id }, { agent: AGENT });
     text += page.text;
-    if (text.includes(needle)) return text;
+    if (hit()) return text;
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error(`timed out waiting for ${JSON.stringify(needle)}; saw:\n${text.slice(-2000)}`);
@@ -92,12 +77,13 @@ describe("terminal entry machine lane (#55 AC)", () => {
     onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent: AGENT }).catch(() => {}));
     expect(opened.transport).toBe("local");
     await tool("pty_send").execute({ id: opened.sessionId, data: "echo PROBE-$MSYSTEM && uname -a" }, { agent: AGENT });
-    // Needle is the EXPANDED value — the terminal echoes the literal command
-    // (which contains "PROBE-"), so matching on the bare prefix would hit
-    // the echo, not the output.
-    const text = await waitFor(tool, opened.sessionId, "PROBE-UCRT64");
+    // One combined needle: the EXPANDED echo (the literal command contains
+    // "PROBE-$MSYSTEM", so the bare prefix would hit the echo) followed by
+    // the uname OUTPUT line — proves the probe landed in an MSYS-family
+    // environment rather than the echo alone.
+    const text = await waitFor(tool, opened.sessionId, /PROBE-UCRT64[\s\S]*\b(MSYS|MINGW|UCRT)/i);
     expect(text).toContain("PROBE-UCRT64");
-    expect(/\b(?:MSYS|MINGW|UCRT)/i.test(text.split("PROBE-UCRT64").pop()!)).toBe(true);
+    expect(/\b(?:MSYS|MINGW|UCRT)/i.test(text)).toBe(true);
   });
 
   it.skipIf(!hasPwsh)("shell_open('pwsh'): the probe reports a PowerShell version table", { timeout: 120_000 }, async () => {
@@ -113,9 +99,21 @@ describe("terminal entry machine lane (#55 AC)", () => {
     const { tool } = boot();
     const opened = await tool("shell_open").execute({ preset: "cmd" }, { agent: AGENT });
     onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent: AGENT }).catch(() => {}));
-    await tool("pty_send").execute({ id: opened.sessionId, data: "ver" }, { agent: AGENT });
-    const text = await waitFor(tool, opened.sessionId, "Microsoft");
-    expect(text).toMatch(/Microsoft \[Version|Microsoft Windows/);
+    // A CR typed into a just-booted interactive cmd can be swallowed by the
+    // console's startup input handling (observed flake) — retry the probe
+    // until the banner version line lands.
+    for (let attempt = 0; ; attempt++) {
+      await tool("pty_send").execute({ id: opened.sessionId, data: "ver" }, { agent: AGENT });
+      const matched = await waitFor(tool, opened.sessionId, /\[Version|版本/, 10_000).then(
+        (text) => text,
+        () => null,
+      );
+      if (matched !== null) {
+        expect(matched).toMatch(/Microsoft \[Version|Microsoft Windows|Microsoft \[版本/);
+        break;
+      }
+      if (attempt >= 4) throw new Error("ver banner never landed after 5 probe attempts");
+    }
   });
 
   it.skipIf(!hasWsl)("shell_open('wsl'): the probe lands in the Linux VM (uname -a)", { timeout: 180_000 }, async () => {

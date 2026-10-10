@@ -1,132 +1,52 @@
 /**
  * Tests are the reference implementation: every test drives the real plugin
- * surface (defineTool execute) against a fake `terminals` service whose
- * backend runs REAL interactive child processes (node echo / node REPL
- * style) — no protocol parsing, byte-stream round-trips only, matching the
- * issue's "测试即参考实现" requirement.
+ * surface (defineTool execute) over the SELF-MANAGED session core (#61,
+ * ADR-0010) with an injected fake spawner — an in-process echo "PTY" (any
+ * write is echoed back as a line). No ConPTY needed; the real node-pty
+ * spawn is the machine lane's business (#51 precedent).
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { spawn as cpSpawn } from "node:child_process";
 import { apply } from "../src/pty/index.ts";
-import { FakeSession, lineCursorRead, terr } from "./helpers/fake-terminals.ts";
+import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
 
 // ---------------------------------------------------------------------------
-// Fake owner-scoped PTY registry: implements the TerminalSessionService
-// contract subset the plugin consumes, backed by real child processes.
-// The session itself is the shared fake-seam helper (#48); what stays local
-// is the registry behavior under test here (backends, owner assertion,
-// disposal, listing).
+// Echo spawner: every write is echoed back as a complete line — the fake
+// stands in for the pty line discipline the real ConPTY provides.
 // ---------------------------------------------------------------------------
 
-class LocalFakeSession extends FakeSession {
-  // TS 6 typecheck facade: constructor-assigned fields declared explicitly.
-  motd: string;
-  /** The spawn request this backend received (#53: env must ride the spec).
-   * The local registry hands the whole terminals.spawn request through. */
-  spawnRequest: Record<string, any>;
-  constructor(spec, script, { motd = "" } = {}) {
-    super(spec, {
-      spawnChild: () => cpSpawn(process.execPath, ["-e", script], { stdio: ["pipe", "pipe", "pipe"] }),
-      initialText: motd,
-    });
-    this.motd = motd;
-    this.spawnRequest = spec;
-  }
-  read({ offset = 0, count = 200 } = {}) {
-    return lineCursorRead(this.text, { offset, count });
-  }
-}
+const handles: FakePtyHandle[] = [];
+const specs: CoreSpawnSpec[] = [];
 
-class FakeTerminals {
-  // TS 6 typecheck facade: constructor-assigned fields declared explicitly
-  // (the source JS relied on inference this facade does not perform).
-  backends: Record<string, { type: string; spawn: (spec: any) => Promise<LocalFakeSession> }> = {};
-  sessions: Map<string, LocalFakeSession> = new Map();
-  nextId: number = 1;
-  disposedOwners: Set<unknown> = new Set();
-  constructor() {
-    this.backends = {};
-    this.sessions = new Map();
-    this.nextId = 1;
-    this.disposedOwners = new Set();
-  }
-  registerBackend(b) { this.backends[b.type] = b; }
-  assertOwner(owner, id) {
-    const rec = this.sessions.get(id);
-    if (!rec) throw terr("NO_SESSION", `no session ${id}`);
-    if (rec.owner !== owner) throw terr("FOREIGN_SESSION", `session ${id} belongs to another owner`);
-    if (this.disposedOwners.has(owner)) throw terr("OWNER_NOT_LIVE", "owner disposed");
-    return rec;
-  }
-  async spawn(owner, request) {
-    const sessionId = `pty-${this.nextId++}`;
-    const session = await this.backends[request.type].spawn({ ...request, sessionId, owner });
-    this.sessions.set(sessionId, session);
-    return { sessionId, pid: session.pid, status: session.status(), motd: session.motd };
-  }
-  startSend(owner, id, request) { return this.assertOwner(owner, id).startSend(request); }
-  read(owner, id, request) { return this.assertOwner(owner, id).read(request); }
-  async kill(owner, id, reason) {
-    const rec = this.assertOwner(owner, id);
-    this.sessions.delete(id);
-    await rec.close();
-    return true;
-  }
-  list(owner) {
-    return [...this.sessions.entries()]
-      .filter(([, r]) => r.owner === owner)
-      .map(([sessionId, r]) => ({ sessionId, status: r.status() }));
-  }
-  /** Registry behavior under test: owner disposal reclaims all its sessions. */
-  async disposeOwner(owner) {
-    this.disposedOwners.add(owner);
-    for (const [id, rec] of [...this.sessions.entries()]) {
-      if (rec.owner === owner) { this.sessions.delete(id); await rec.close(); }
-    }
-  }
-}
-
-/** Backend whose "PTY" is a real interactive echo child process. */
-const ECHO_SCRIPT = "process.stdin.on('data', d => process.stdout.write(d));";
-function echoBackend() {
-  return {
-    type: "test-echo",
-    async spawn(spec) { return new LocalFakeSession(spec, ECHO_SCRIPT); },
-  };
+function echoSpawner(spec: CoreSpawnSpec) {
+  specs.push(spec);
+  const h = echoFakePty();
+  handles.push(h);
+  return h.pty;
 }
 
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
 
-function makeAgent(name) { return { agentName: name }; }
-const exec = (agent) => ({ agent, signal: new AbortController().signal });
+function makeAgent(name: string) { return { agentName: name }; }
+const exec = (agent: unknown) => ({ agent, signal: new AbortController().signal });
 
-let ctx;
+let ctx: any;
 function setup() {
+  handles.length = 0;
+  specs.length = 0;
   ctx = {
     provided: {},
-    provide(name, value) { this.provided[name] = value; },
-    tools: { registered: [], register(t) { this.registered.push(t); } },
-    effects: [],
-    effect(fn, label) { this.effects.push({ fn, label }); },
-    terminals: new FakeTerminals(),
+    provide(name: string, value: unknown) { this.provided[name] = value; },
+    tools: { registered: [] as any[], register(t: unknown) { this.registered.push(t); } },
+    effects: [] as Array<{ fn: () => () => Promise<void>; label: string }>,
+    effect(fn: () => () => Promise<void>, label: string) { this.effects.push({ fn, label }); },
   };
-  ctx.terminals.registerBackend(echoBackend());
-  apply(ctx, { backendType: "test-echo", tailLines: 200 });
+  apply(ctx, { tailLines: 200, maxSessions: 8 }, { spawnPty: echoSpawner });
 }
-const tool = (n) => ctx.tools.registered.find((t) => t.name === n);
+const tool = (n: string) => ctx.tools.registered.find((t: any) => t.name === n);
 const pty = () => ctx.provided.pty;
-
-async function settled(fn, timeoutMs = 2000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try { const v = await fn(); if (v) return v; } catch { /* retry */ }
-    if (Date.now() > deadline) throw new Error("settled: timed out");
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
 
 beforeEach(setup);
 
@@ -135,7 +55,7 @@ beforeEach(setup);
 // ---------------------------------------------------------------------------
 
 describe("pty lifecycle round-trip", () => {
-  it("opens a session on a real child, sends, tails the echo, closes", async () => {
+  it("opens a session, sends, tails the echo, closes", async () => {
     const agent = makeAgent("a");
     const opened = await tool("pty_open").execute({ command: "hello-open" }, exec(agent));
     expect(opened.sessionId).toMatch(/^pty-\d+$/);
@@ -153,10 +73,12 @@ describe("pty lifecycle round-trip", () => {
       .rejects.toMatchObject({ code: "NO_SESSION" });
   });
 
-  it("runs the command at open: its output is visible without a send", async () => {
+  it("runs the command at spawn: the command text reaches the spawner verbatim", async () => {
     const agent = makeAgent("a");
-    const opened = await tool("pty_open").execute({ command: "auto-run-line" }, exec(agent));
-    expect(opened.initialOutput).toContain("auto-run-line");
+    await tool("pty_open").execute({ command: "auto-run-line" }, exec(agent));
+    // #61: the command IS the spawned process (under the platform-shell
+    // wrapper in production) — no typed-in command line anymore.
+    expect(specs[0].command).toBe("auto-run-line");
   });
 });
 
@@ -170,27 +92,19 @@ describe("lifetime and disposal", () => {
     const s1 = await tool("pty_open").execute({ command: "one" }, exec(agent));
     const s2 = await tool("pty_open").execute({ command: "two" }, exec(agent));
     // "next turn": a fresh exec token for the same agent still sees both.
-    expect(ctx.terminals.list(agent).map((s) => s.sessionId).sort())
+    expect(pty().active(agent).sort())
       .toEqual([s1.sessionId, s2.sessionId].sort());
   });
 
-  it("plugin dispose effect closes every session it opened", async () => {
-    const agent = makeAgent("a");
-    await tool("pty_open").execute({ command: "one" }, exec(agent));
-    await tool("pty_open").execute({ command: "two" }, exec(agent));
-    expect(ctx.effects).toHaveLength(1);
-    await ctx.effects[0].fn()();
-    expect(ctx.terminals.list(agent)).toHaveLength(0);
-  });
-
-  it("owner agent disposal closes all of that owner's sessions (registry guarantee)", async () => {
+  it("plugin dispose effect closes every session it opened (all owners)", async () => {
     const agent = makeAgent("a");
     const other = makeAgent("b");
-    await tool("pty_open").execute({ command: "mine" }, exec(agent));
-    await tool("pty_open").execute({ command: "theirs" }, exec(other));
-    await ctx.terminals.disposeOwner(agent);
-    expect(ctx.terminals.list(agent)).toHaveLength(0);
-    expect(ctx.terminals.list(other)).toHaveLength(1);
+    await tool("pty_open").execute({ command: "one" }, exec(agent));
+    await tool("pty_open").execute({ command: "two" }, exec(other));
+    expect(ctx.effects).toHaveLength(1);
+    await ctx.effects[0].fn()();
+    expect(pty().active(agent)).toHaveLength(0);
+    expect(pty().active(other)).toHaveLength(0);
   });
 });
 
@@ -221,10 +135,9 @@ describe("incremental tail cursor", () => {
   it("backlog beyond the budget returns the newest lines and marks truncated", async () => {
     const agent = makeAgent("a");
     const s = await tool("pty_open").execute({ command: "boot" }, exec(agent));
-    for (const n of [1, 2, 3]) {
-      await tool("pty_send").execute({ id: s.sessionId, data: `n${n}` }, exec(agent));
+    for (const n of ["n1", "n2", "n3"]) {
+      await tool("pty_send").execute({ id: s.sessionId, data: n }, exec(agent));
     }
-    await settled(() => ctx.terminals.read(agent, s.sessionId, { offset: 0, count: 1 }).totalLines >= 4 ? true : null);
     const t = await tool("pty_tail").execute({ id: s.sessionId, lines: 2 }, exec(agent));
     expect(t.lines).toBe(2);
     expect(t.truncated).toBe(true);
@@ -243,13 +156,12 @@ describe("owner scoping", () => {
     const a = makeAgent("a");
     const b = makeAgent("b");
     const s = await tool("pty_open").execute({ command: "secret" }, exec(a));
-    for (const [t, args] of [
-      ["pty_send", { id: s.sessionId, data: "x" }],
-      ["pty_tail", { id: s.sessionId }],
-      ["pty_close", { id: s.sessionId }],
-    ]) {
-      await expect(tool(t).execute(args, exec(b))).rejects.toMatchObject({ code: "FOREIGN_SESSION" });
-    }
+    await expect(tool("pty_send").execute({ id: s.sessionId, data: "x" }, exec(b)))
+      .rejects.toMatchObject({ code: "NO_SESSION" });
+    await expect(tool("pty_tail").execute({ id: s.sessionId }, exec(b)))
+      .rejects.toMatchObject({ code: "NO_SESSION" });
+    await expect(tool("pty_close").execute({ id: s.sessionId }, exec(b)))
+      .rejects.toMatchObject({ code: "SESSION_OWNED" });
     // The real owner still can.
     await expect(tool("pty_tail").execute({ id: s.sessionId }, exec(a))).resolves.toBeTruthy();
   });
@@ -267,22 +179,16 @@ describe("owner scoping", () => {
 describe("pty_open options", () => {
   it("delivers env via the spawn spec (process-env semantics, not export lines) (#53)", async () => {
     const agent = makeAgent("a");
-    const s = await tool("pty_open").execute({
+    await tool("pty_open").execute({
       command: "run-cmd",
       env: { FOO: "bar baz", WEIRD: "it's" },
     }, exec(agent));
-    const rec = ctx.terminals.sessions.get(s.sessionId);
-    // env rides terminals.spawn's request (additive field), so the backend
-    // receives it for process-level injection. The local registry passes
-    // the whole request ({type, cwd?, env?, sessionId, owner}) to the
-    // backend, so the constructor spec carries env.
-    expect(rec.spawnRequest.env).toEqual({ FOO: "bar baz", WEIRD: "it's" });
-    // Nothing is typed into the terminal as `export` lines anymore: the
-    // first send is the command itself.
-    const log = rec.sentLog;
-    expect(log).toHaveLength(1);
-    expect(log[0]).toContain("run-cmd");
-    expect(log[0]).not.toContain("export");
+    // env rides the spawn spec (#61: the core's spawn request): the process
+    // is born with these entries.
+    expect(specs[0].env).toEqual({ FOO: "bar baz", WEIRD: "it's" });
+    // Nothing is typed into the terminal as `export` lines: nothing is
+    // written into the pty at all — the command is the spawned process.
+    expect(handles[0].writes).toHaveLength(0);
   });
 
   it("rejects an empty command", async () => {
@@ -327,9 +233,9 @@ describe("pty facade service (consumer plugins)", () => {
 
   it("dispose effect still closes facade-opened sessions", async () => {
     const agent = makeAgent("a");
-    const s = await pty().open(agent, { command: "bye" }, new AbortController().signal);
+    await pty().open(agent, { command: "bye" }, new AbortController().signal);
     expect(ctx.effects).toHaveLength(1);
     await ctx.effects[0].fn()();
-    expect(ctx.terminals.sessions.has(s.sessionId)).toBe(false);
+    expect(pty().active(agent)).toHaveLength(0);
   });
 });
