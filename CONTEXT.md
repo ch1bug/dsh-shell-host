@@ -99,6 +99,13 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 
 - **pwsh 工具 host-only fork(只 fork 不提上游)**:平台 `dsh-tool-pwsh` 执行器裸查 `pwsh`,缺 PS7 静默回落 bash(#63 现象)。fork = 本包 `./pwsh` entry 注册同名 `pwsh` 工具,cordis.patch.yml 以同 id `tool-pwsh` 接管 loader 行(permission 行先例);唯一语义差 = executable 解析(`pwsh.exe → powershell.exe` 有序探测,双缺响亮报全部探测点)。一次性执行走 `ctx.subprocess`(非 PTY 世界);backends pwsh descriptor 是执行器维度另一层,红线不动。POSIX 门控镜像基座行逐字。
 
+## #69 POSIX PTY 实机事实(2026-10-11)
+
+- **@lydell/node-pty = platform prebuilt optionalDependencies**(`@lydell/node-pty-linux-x64` 等,pnpm-lock 可见)——上游 node-pty 需 node-gyp 编译的前提对本 fork **不成立**:npm 11 默认屏蔽 install scripts 下安装即用(#69 容器 lane 实测)。#26 带走的「full 工具链镜像」要求仍满足(lane 用 node:24-bookworm),但构建能力是富余而非必需;dsh-subprocess-local 的上游 node-pty 依赖如仍需 node-gyp 属上游事实,不适用于本包。
+- **POSIX 交互式 PTY 实机绿**:podman node:24-bookworm lane(.scratch/issue69-posix-pty-verify.mjs,一条命令见脚本头)17 项 PASS——prebuilt require+裸 spawn、defaultSpawnPty `/bin/sh -c` 包装、createSessionCore 全回环(open/login 旗标/send-tail 增量不重发/exited/autoClose 回收/close 幂等/owner 边界)、detect getpwuid 复验。
+- **lane 布局事实**:容器内不可在 /repo 挂载点直接 npm install(Windows pnpm node_modules 污染解析)——把 src/ + 脚本拷进容器内干净目录再装依赖。
+- **mac 实机节 PENDING**(无 mac 机器;#26 待实测项 ① 留待有机器时并入 lane)。
+
 ## 术语表(惰性)
 
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。
