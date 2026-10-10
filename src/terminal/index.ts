@@ -138,7 +138,7 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
   ctx.tools.register(defineTool({
     name: 'shell_open',
     description:
-      'Open a persistent terminal for a launcher preset (e.g. msys2-ucrt, pwsh, powershell, wsl, cmd, git-bash, python-repl, or a configured custom preset). ' +
+      'Open a persistent terminal for a launcher preset (e.g. msys2-ucrt, pwsh, powershell, wsl, cmd, git-bash, python-repl, zsh, bash, fish — POSIX rows on POSIX platforms — or a configured custom preset). ' +
       'Returns a sessionId that is a PTY session: operate it with pty_send / pty_tail / pty_close — no second tool family. ' +
       'Unknown ids fail loudly listing the available presets; uninstalled environments fail loudly naming every probe point. ' +
       'A per-agent concurrent-session cap applies; idleTimeoutMs opts ONE session into auto-close when it produces no new output for that long.',

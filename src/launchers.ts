@@ -19,7 +19,7 @@
  * @module dsh-shell-host/launchers
  */
 
-import { delimiter, join } from 'node:path'
+import { basename, delimiter, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import {
   MSYS2_INTERACTIVE_ARGV,
@@ -31,7 +31,10 @@ import {
 import {
   MSYS2_ROOT_CANDIDATES,
   detectMsysRoot,
+  detectPosixShell,
   plainBashProbedLocations,
+  posixInteractiveArgv,
+  posixShellProbedLocations,
   pwshProbedLocations,
   spawnableExists,
   wslProbedLocations,
@@ -44,6 +47,12 @@ export interface LauncherDeps {
   env?: NodeJS.ProcessEnv
   path?: string
   listDistros?: (wslExe: string) => readonly string[]
+  /** Host platform gate for the POSIX preset rows (#68); defaults to `process.platform`. */
+  platform?: NodeJS.Platform
+  /** `/etc/shells` reader for the POSIX rows (detect seam #26); defaults to the real read. */
+  readEtcShells?: () => string | undefined
+  /** The passwd shell (getpwuid analog, #26 seam); defaults to `os.userInfo().shell`. */
+  userInfoShell?: () => string | undefined
 }
 
 /** A resolved local preset: descriptor-view shell-env fields + cwd. */
@@ -109,6 +118,9 @@ const MSYS2_SUBSYSTEMS = ['UCRT64', 'MINGW64', 'MSYS'] as const
 /** Preset id per subsystem (grill story: `shell_open(preset: 'msys2-ucrt')`). */
 const MSYS2_ID = (subsystem: string): string => (subsystem === 'UCRT64' ? 'msys2-ucrt' : `msys2-${subsystem.toLowerCase()}`)
 
+/** The POSIX preset rows (#68), gated to non-win32 platforms. */
+const POSIX_PRESET_SHELLS = ['zsh', 'bash', 'fish'] as const
+
 /** The built-in local preset ids, in table order (the loud unknown-id error enumerates these). */
 export function builtInLauncherIds(deps: LauncherDeps = {}): readonly string[] {
   const env = deps.env ?? process.env
@@ -121,6 +133,9 @@ export function builtInLauncherIds(deps: LauncherDeps = {}): readonly string[] {
     ...distros.map((d, i) => (i === 0 ? 'wsl' : `wsl-${d}`)),
     'cmd',
     'python-repl',
+    // POSIX rows only exist on POSIX platforms (#68): win32 keeps them fully
+    // dormant — no id, not even an absent entry.
+    ...((deps.platform ?? process.platform) !== 'win32' ? POSIX_PRESET_SHELLS : []),
   ]
 }
 
@@ -284,6 +299,41 @@ export function resolveLaunchers(deps: LauncherDeps = {}, custom: readonly Custo
       : null,
     { id: 'python-repl', probed: python.probed },
   )
+
+  // POSIX preset rows (#68): one row per login shell (zsh/bash/fish), gated
+  // to non-win32 platforms. Executable candidates consume the #26 seams —
+  // `posixShellProbedLocations()` (/etc/shells lines whose basename matches,
+  // existence-filtered, order preserved) plus `detectPosixShell()` (the
+  // passwd shell prepended when it matches the row name and exists — the
+  // file is the candidate surface, not a whitelist over the passwd default).
+  // Interactive argv is the single-sourced `posixInteractiveArgv` (macOS zsh
+  // [-l] / bash [--login]; Linux and fish carry no flags). No candidate on
+  // disk → ABSENT with the matched lines as the probe points (posture, never
+  // loud at resolution time).
+  if ((deps.platform ?? process.platform) !== 'win32') {
+    const posixDeps = { exists, readEtcShells: deps.readEtcShells, userInfoShell: deps.userInfoShell }
+    const shellLines = posixShellProbedLocations(posixDeps)
+    const detected = detectPosixShell({ platform: deps.platform, exists, userInfoShell: deps.userInfoShell })
+    for (const name of POSIX_PRESET_SHELLS) {
+      const lineMatches = shellLines.filter(line => basename(line) === name)
+      const passwdMatch = detected !== undefined && basename(detected) === name && exists(detected) ? [detected] : []
+      const candidates = [...new Set([...passwdMatch, ...lineMatches.filter(c => exists(c))])]
+      const probed = [...new Set([...passwdMatch, ...lineMatches])]
+      if (candidates.length === 0) {
+        absent.push({ id: name, probed })
+      } else {
+        presets.push({
+          id: name,
+          transport: 'local',
+          executable: candidates,
+          argv: posixInteractiveArgv(candidates[0]!, deps.platform ?? process.platform),
+          env: {},
+          pathPrefix: [],
+          probed: candidates,
+        })
+      }
+    }
+  }
 
   // Custom presets merge over the built-ins: same id REPLACES the built-in
   // view (user customization wins); `base` inherits a resolved built-in.
