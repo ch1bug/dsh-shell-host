@@ -125,6 +125,7 @@ const POSIX_PRESET_SHELLS = ['zsh', 'bash', 'fish'] as const
 export function builtInLauncherIds(deps: LauncherDeps = {}): readonly string[] {
   const env = deps.env ?? process.env
   const distros = wslDistros(deps, env)
+  const platform = deps.platform ?? process.platform
   return [
     ...MSYS2_SUBSYSTEMS.map(MSYS2_ID),
     'git-bash',
@@ -135,7 +136,7 @@ export function builtInLauncherIds(deps: LauncherDeps = {}): readonly string[] {
     'python-repl',
     // POSIX rows only exist on POSIX platforms (#68): win32 keeps them fully
     // dormant — no id, not even an absent entry.
-    ...((deps.platform ?? process.platform) !== 'win32' ? POSIX_PRESET_SHELLS : []),
+    ...(platform !== 'win32' ? POSIX_PRESET_SHELLS : []),
   ]
 }
 
@@ -311,14 +312,16 @@ export function resolveLaunchers(deps: LauncherDeps = {}, custom: readonly Custo
   // disk → ABSENT with the matched lines as the probe points (posture, never
   // loud at resolution time).
   if ((deps.platform ?? process.platform) !== 'win32') {
-    const posixDeps = { exists, readEtcShells: deps.readEtcShells, userInfoShell: deps.userInfoShell }
-    const shellLines = posixShellProbedLocations(posixDeps)
+    const platform = deps.platform ?? process.platform
+    const shellLines = posixShellProbedLocations({ readEtcShells: deps.readEtcShells })
     const detected = detectPosixShell({ platform: deps.platform, exists, userInfoShell: deps.userInfoShell })
     for (const name of POSIX_PRESET_SHELLS) {
       const lineMatches = shellLines.filter(line => basename(line) === name)
       const passwdMatch = detected !== undefined && basename(detected) === name && exists(detected) ? [detected] : []
-      const candidates = [...new Set([...passwdMatch, ...lineMatches.filter(c => exists(c))])]
+      // Probed = every probe match (passwd shell + /etc/shells lines), the
+      // pwsh-row semantics — not just the candidates that exist on disk.
       const probed = [...new Set([...passwdMatch, ...lineMatches])]
+      const candidates = probed.filter(c => exists(c))
       if (candidates.length === 0) {
         absent.push({ id: name, probed })
       } else {
@@ -326,10 +329,10 @@ export function resolveLaunchers(deps: LauncherDeps = {}, custom: readonly Custo
           id: name,
           transport: 'local',
           executable: candidates,
-          argv: posixInteractiveArgv(candidates[0]!, deps.platform ?? process.platform),
+          argv: posixInteractiveArgv(candidates[0]!, platform),
           env: {},
           pathPrefix: [],
-          probed: candidates,
+          probed,
         })
       }
     }
