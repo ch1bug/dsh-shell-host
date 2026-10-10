@@ -10,8 +10,9 @@
  * @module dsh-shell-host/detect
  */
 
-import { existsSync, lstatSync } from 'node:fs'
-import { delimiter, join, resolve } from 'node:path'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
+import { userInfo } from 'node:os'
+import { basename, delimiter, join, resolve } from 'node:path'
 
 /**
  * MSYS2 install-root probes: the installer's default drive root first (a
@@ -249,4 +250,105 @@ function pathEntries(path: string | undefined): string[] {
     .map(entry => entry.trim().replace(/^"|"$/g, ''))
     .filter(entry => entry.length > 0)
     .map(entry => join(entry, 'pwsh.exe'))
+}
+
+/**
+ * Injectable dependencies of the POSIX detection surface (#26): platform
+ * gate, existence predicate, /etc/shells reader, and the getpwuid analog
+ * (`os.userInfo().shell`). All default to the live environment; tests on the
+ * win32 dev host inject fakes.
+ */
+export interface PosixShellDeps {
+  /** The host platform; `win32` keeps every POSIX surface dormant. */
+  platform?: NodeJS.Platform
+  /** Existence predicate for absolute shell paths; defaults to {@link spawnableExists}. */
+  exists?: (path: string) => boolean
+  /** Reads `/etc/shells` verbatim, or undefined when unreadable; defaults to a readFileSync. */
+  readEtcShells?: () => string | undefined
+  /** The user's passwd shell (getpwuid analog, `os.userInfo().shell`), or undefined/unset; empty string = no shell recorded. */
+  userInfoShell?: () => string | undefined
+}
+
+/**
+ * The passwd shells that are not real login shells (VS Code 1:1 — it filters
+ * nologin/false; both FHS spellings are covered). Detected as the user's
+ * shell, they fall through to the `sh` fallback instead of spawning.
+ */
+const NO_USER_SHELLS = new Set(['/usr/sbin/nologin', '/sbin/nologin', '/bin/false', '/usr/bin/false'])
+
+/**
+ * The POSIX login-shell candidates (#26, VS Code fact chain): `/etc/shells`
+ * line-by-line — comments and blank lines dropped, order preserved, no
+ * existence filter (the file IS the system's whitelist of valid login
+ * shells). VS Code reads the same file for its POSIX profile candidates;
+ * the Homebrew shells a user appended ride the same lines.
+ */
+export function posixShellProbedLocations(deps: PosixShellDeps = {}): readonly string[] {
+  const raw = (deps.readEtcShells ?? readEtcShells)()
+  if (raw === undefined) return []
+  const seen = new Set<string>()
+  const lines: string[] = []
+  for (const line of raw.split(/\r?\n/)) {
+    const shell = line.trim()
+    if (shell === '' || shell.startsWith('#') || seen.has(shell)) continue
+    seen.add(shell)
+    lines.push(shell)
+  }
+  return lines
+}
+
+function readEtcShells(): string | undefined {
+  try {
+    return readFileSync('/etc/shells', 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The default POSIX shell (#26, VS Code fact chain): the user's passwd shell
+ * (getpwuid via `os.userInfo().shell`) when it exists on disk and is a real
+ * login shell (nologin/false/shutdown never spawn), else the `sh` fallback —
+ * a bare name, so PATH resolution keeps it spawnable even where /bin/sh is
+ * unusual. Detection therefore NEVER fails on POSIX (the loud-failure posture
+ * stays a Windows surface concern); `undefined` is returned only on win32.
+ * Note: the getpwuid shell wins even when absent from /etc/shells — the file
+ * is the candidate/probe surface, not a whitelist over the passwd default.
+ */
+export function detectPosixShell(deps: PosixShellDeps = {}): string | undefined {
+  const platform = deps.platform ?? process.platform
+  if (platform === 'win32') return undefined
+  const exists = deps.exists ?? spawnableExists
+  const passwdShell = deps.userInfoShell?.() ?? userInfoShell()
+  if (passwdShell !== undefined && passwdShell !== '' && passwdShell.startsWith('/')
+    && !NO_USER_SHELLS.has(passwdShell) && exists(passwdShell)) {
+    return passwdShell
+  }
+  return 'sh'
+}
+
+function userInfoShell(): string | undefined {
+  try {
+    // os.userInfo reads getpwuid on POSIX; encoding keeps it a string, not a Buffer.
+    return userInfo({ encoding: 'utf8' }).shell ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Interactive (login) argv for a POSIX shell (#26, VS Code 1:1): macOS
+ * automatically login-flags zsh (`-l`) and bash (`--login`) profiles — the
+ * VS Code terminal-profile fact chain the human decision pinned; other
+ * shells (fish…) and every Linux shell get no flags, exactly as VS Code adds
+ * none there. Exported alongside {@link posixShellProbedLocations} (the
+ * candidate surface, consumed by the POSIX launcher preset rows — follow-up
+ * ticket) as the #26 detection surface.
+ */
+export function posixInteractiveArgv(shellPath: string, platform: NodeJS.Platform = process.platform): readonly string[] {
+  if (platform !== 'darwin') return []
+  const base = basename(shellPath)
+  if (base === 'zsh') return ['-l']
+  if (base === 'bash') return ['--login']
+  return []
 }
