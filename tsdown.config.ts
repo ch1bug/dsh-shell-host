@@ -47,7 +47,9 @@ const lib = defineConfig({
   dts: false,
   clean: false,
   outExtensions: () => ({ js: '.js' }),
-  deps: { neverBundle: [/^@deepseek-ai\//] },
+  // #61: the self-managed pty core's native dependency must stay a runtime
+  // require, never inlined by oxc (native .node binding).
+  deps: { neverBundle: [/^@deepseek-ai\//, /^@lydell\/node-pty$/] },
 })
 
 /**

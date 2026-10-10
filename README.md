@@ -92,16 +92,22 @@ reload (all config fields are volatile). The bundle's `lib/client.js` is a
 closure-factory artifact over the platform module table (requires only
 `@deepseek-ai/dsh-client-ui-primitives` and `react/jsx-runtime`).
 
-## The `./pty` entry (issue #28, ADR-0007)
+## The `./pty` entry (issue #28, ADR-0007; seam-free since #61, ADR-0010)
 
 `src/pty/` is the absorbed dsh-pty-session module (pure move from the
 dsh-pty-session repo, anchored at `dsh-v0.2.1-alpha.1-r1` per ADR-0005): a
-Layer 0, protocol-agnostic PTY session core over the harness's owner-scoped
-terminal seam (`ctx.terminals`). Four tools — `pty_open` / `pty_send` /
-`pty_tail` / `pty_close` — plus a programmatic facade (`ctx.provide("pty")`)
-for consumer plugins. Persistent/interactive session ownership (ADR-0004
-decision 5) is unchanged; only the home moved, and the entry keeps its own
-settings namespace (`dsh-pty-session` plugin name, `backendType` +
+Layer 0, protocol-agnostic PTY session core — SEAM-FREE since #61
+(ADR-0010): sessions are SELF-MANAGED on node-pty (Windows ConPTY) via
+`src/pty/session-core.ts` — an owner-scoped registry (sessionId → live
+session, owner binding, awaited dispose cleanup), per-session line buffers
+with incremental read cursors, the #56 soft cap (`maxSessions`, default 8,
+counted from the registry so an entry remount cannot reset it — the #62
+root cause is structurally gone) and the opt-in per-session
+`idleTimeoutMs` (auto-close on no new output). Four tools — `pty_open` /
+`pty_send` / `pty_tail` / `pty_close` — plus a programmatic facade
+(`ctx.provide("pty")`) for consumer plugins. Persistent/interactive session
+ownership (ADR-0004 decision 5) is unchanged, and the entry keeps its own
+settings namespace (`dsh-pty-session` plugin name, `maxSessions` +
 `tailLines` config) — ADR-0007: sharing the package does not merge config
 surfaces.
 
@@ -109,14 +115,14 @@ surfaces.
 import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
 ```
 
-Mount it via the bundle layer with `name: 'dsh-shell-host/pty'` (plus a
-terminal provider — the plugin needs `ctx.terminals`, which default desktop
-compositions do not mount). Division of labor with `backends/ssh.ts`
-(ADR-0006): the ssh registry backend runs ONE-SHOT commands over a
-ControlMaster connection opened and torn down per invocation; `./pty` owns
-PERSISTENT sessions (survive turns, incremental tail cursor) — for a
-long-running remote session, point `pty_open` at an ssh-capable backend
-type; do not route it through the one-shot registry backend.
+Mount it via the bundle layer with `name: 'dsh-shell-host/pty'` — no
+dependency waiting on a `terminals` provider anymore (the bundle patch
+mounts the pty + terminal rows unconditionally). Division of labor with
+`backends/ssh.ts` (ADR-0006): the ssh registry backend runs ONE-SHOT
+commands over a ControlMaster connection opened and torn down per
+invocation; `./pty` owns PERSISTENT sessions (survive turns, incremental
+tail cursor) — for a long-running remote session, use `ssh_start`; do not
+route it through the one-shot registry backend.
 
 ### ssh 四工具（issue #24，承接 dsh-pty-session#3）
 
@@ -125,7 +131,7 @@ The `./pty` entry additionally registers `ssh_start` / `ssh_tail` /
 same core. `ssh_start({ host, jump?, shell? })` composes the ssh command
 line (`host`/`jump` are argv atoms — no whitespace/shell metacharacters) and
 opens it on the core PTY; the three passthroughs reuse the core's cursors
-and seam reads verbatim.
+and reads verbatim.
 
 Division of labor: `backends/ssh.ts` (ControlMaster, one-shot) for single
 commands; `ssh_start` for sessions a human/agent converses with (long-lived
@@ -227,10 +233,10 @@ answer different layers of one domain and are kept separate on purpose.
 ## The `./terminal` entry (issue #55, ADR-0008)
 
 `src/terminal/` is the launcher layer's plugin entry: ONE tool,
-`shell_open(preset, cwd?, env?)`. It resolves a launcher preset through the
+`shell_open(preset, cwd?, env?, idleTimeoutMs?)`. It resolves a launcher preset through the
 #54 layer (`src/launchers.ts` — descriptor-reuse views + detect scans +
 custom presets from its settings namespace) and opens it on the `./pty`
-entry's session core. The returned sessionId IS a PTY seam session id:
+entry's session core. The returned sessionId IS a core session id:
 everything afterwards goes through the existing `pty_send` / `pty_tail` /
 `pty_close` — no second tool family (ADR-0008 decision 5, no Middle Man).
 Unknown ids fail loudly listing every serviceable preset; uninstalled
@@ -248,11 +254,14 @@ preset table is read-only, surfaced live by the unknown-id error.
   `executable`（命中候选）/ `probed`（全部候选点）/ `cwd`（实际生效值）；
   不返回完整 env（合并后即整条 PATH，无增量），argv 不重复返回（`command`
   已含）。判定单源在 `resolveLauncherDetailed`（`src/launchers.ts`）。
-- **并发软上限**：terminal entry 统计**本 entry 打开**、按 owner 归属的活跃
-  会话数（`pty_close` 即释放；owner dispose 由 pty 层全杀回收）。默认上限
-  8，settings namespace `terminal.maxSessions` 可配；超限时 `shell_open`
+- **并发软上限（#61/#62 起 core 推导）**：计数来自 pty 核心**注册表**（owner 归属、
+  `pty_close` 即释放；plugin dispose 全杀回收）——entry 重挂不再可能把计数归零
+  （#62 的缝时代根因已随缝消失）。默认上限 8，settings namespace
+  `terminal.maxSessions`（与 pty 核心的同名默认一致）可配；超限时 `shell_open`
   响亮报错，列出当前会话数与各 session id。无默认空闲超时 —— 持久终端
-  （长驻 watcher/REPL）是本层卖点。
+  （长驻 watcher/REPL）是本层卖点；`idleTimeoutMs`（可选，per-session）由 pty
+  核心的 watcher 执行：无**新输出**满该时长即自动关闭（#56 裁决：无可靠空闲
+  判据，故 opt-in 且以输出定义）。
 - **逐会话空闲超时**：`shell_open(preset, idleTimeoutMs)` 可选参数 ——
   调用者显式 opt-in 时，该会话**无新输出**持续 `idleTimeoutMs` 毫秒后自动
   `pty_close`（空闲判据 = 输出行数不再增长；新输出会重置计时）。不带该
@@ -271,16 +280,16 @@ alongside (the patch order does not matter; both rows are plugin-layer).
 dsh-shell-host ships two independent capabilities; installing the bundle
 gives you both, and they never fight:
 
-| | 单例执行器（路 B, #23/D8） | 多实例终端（launcher 层, #52/#55） |
+| | 单例执行器（路 B, #23/D8） | 多实例终端（launcher 层, #52/#55/#61） |
 |---|---|---|
-| 缝 | 替换 `ctx.shell`（同 key 单注册，启用即接管） | PTY terminals 缝（owner-scoped，多实例） |
+| 缝 | 替换 `ctx.shell`（同 key 单注册，启用即接管） | 自管 node-pty 会话核心（owner-scoped，多实例；#61/ADR-0010 起不经任何平台缝） |
 | 形态 | 一次性 `bash`/`pwsh` 命令的执行器，backend 单选热切 | VS Code 终端面板式持久会话：随开随关、状态独立 |
 | 工具面 | 既有 bash 工具（无新工具） | `shell_open` + 复用 `pty_*` |
 | 默认状态 | disabled —— 用户在 Plugins 页启用后才接管 `ctx.shell` | 插件层行，启用不影响任何执行器 |
 | 与平台 shell | 启用即取代、禁用即回平台 shell（选择权在用户） | 并存 —— 平台 shell 与 `ctx.shell` 照常工作（真机验证见 `tests/terminal-machine.spec.ts`） |
 
 不 disable 平台 shell 是本包的一贯立场（issue #23 AC7）：启用 shell-host 的
-执行器行替换 `ctx.shell`，launcher 层则完全走另一条缝 —— 两者与平台 shell
+执行器行替换 `ctx.shell`，launcher 层则完全走自管 PTY 通道 —— 两者与平台 shell
 三者可同时在场。
 
 ## Provenance (issue #23 status)

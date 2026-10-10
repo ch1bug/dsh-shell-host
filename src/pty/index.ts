@@ -1,15 +1,16 @@
 /**
  * dsh-shell-host `./pty` entry — absorbed from dsh-pty-session (issue #28,
  * ADR-0007 pure move; the source module stays anchored at
- * dsh-v0.2.1-alpha.1-r1 per ADR-0005): Layer 0 core, protocol-agnostic PTY
- * session lifecycle.
+ * dsh-v0.2.1-alpha.1-r1 per ADR-0005), now SEAM-FREE (issue #61, ADR-0010):
+ * the session lifecycle is self-managed on node-pty (Windows ConPTY) —
+ * own owner-scoped registry, read cursors, #56 soft-cap/idle semantics —
+ * because rc.2's `terminals` seam is agent-execution-world scoped and
+ * invisible to root-composition plugin rows (ADR-0009 blocked conclusion).
  *
- * Thin tool surface over the harness's owner-scoped PTY seam
- * (`ctx.terminals` — the same seam @deepseek-ai/dsh-tool-bash-persistent
- * uses). Four tools, no protocol knowledge:
+ * Four tools, no protocol knowledge:
  *
- *   pty_open({ command, cwd?, env? }) → { sessionId, ... }  spawn on a PTY,
- *       spawn on a PTY with process-level env injection, run the command; survives turns;
+ *   pty_open({ command, cwd?, env? }) → { sessionId, ... }  spawn the
+ *       command on a ConPTY with process-level env injection; survives turns;
  *   pty_send({ id, data, submit? })  → write bytes, return the delta read;
  *   pty_tail({ id, lines? })         → incremental read from a per-session
  *       cursor — repeated tails never resend old lines;
@@ -24,25 +25,26 @@
  * protocol parsing (gdb/MI, line framing — consumer-layer), non-PTY
  * long-running processes (probe servers, RTT, serial — use jobs + tail), no
  * sidecar process. Persistent/interactive session ownership (ADR-0004
- * decision 5) is unchanged — only the home moved into this package's
- * `./pty` entry, with its own settings namespace (ADR-0007).
+ * decision 5) is unchanged — only the transport moved from the harness seam
+ * to this package's own node-pty core.
  */
 
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { posixQuote } from '../posix-quote.ts'
+import { createSessionCore, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, type SessionCore, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
 
 const name = 'dsh-pty-session'
-const inject = ['tools', 'terminals']
-
-const DEFAULT_TAIL_LINES = 200
+const inject = ['tools']
 
 /** Runtime configuration schema — the `./pty` entry's own settings namespace. */
 export interface PtyConfig {
-  /** Registered PTY backend type passed to terminals.spawn. */
-  backendType: string
   /** Default line budget for pty_tail when the caller omits `lines`. */
   tailLines: number
+  /** Concurrent-session soft cap (#56, migrated onto the self-managed core
+   * in #61): counted per owning agent over the core registry — remount-proof
+   * (the #62 root cause is gone with the seam). */
+  maxSessions: number
 }
 
 /**
@@ -50,38 +52,35 @@ export interface PtyConfig {
  * settings-section wiring lands with the consumer tickets that need it.
  */
 const Config = z.object({
-  /** Registered PTY backend type passed to terminals.spawn. */
-  backendType: z.string().default('shell'),
   /** Default line budget for pty_tail when the caller omits `lines`. */
   tailLines: z.number().default(DEFAULT_TAIL_LINES),
+  /** Concurrent-session soft cap per owning agent (#56/#61). */
+  maxSessions: z.number().default(DEFAULT_MAX_SESSIONS),
 })
 
 /** Default-fill a raw config (schemastery z.object has no .parse). */
 function resolveConfig(raw: unknown): PtyConfig {
   const c = (raw ?? {}) as Partial<PtyConfig>
   return {
-    backendType: c.backendType ?? 'shell',
     tailLines: c.tailLines ?? DEFAULT_TAIL_LINES,
+    maxSessions: c.maxSessions ?? DEFAULT_MAX_SESSIONS,
   }
 }
 
 /** Shared render for structured tool output: one JSON text block. */
 const jsonRender = (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }]
 
-/** ssh option values quote through the shared POSIX helper (issue #37). */
-
 /** The tool-execution context slice the plugin consumes (duck-typed seam). */
 interface PtyCtx {
   provide: (name: string, value: unknown) => void
   effect: (fn: () => () => Promise<void>, label: string) => void
-  terminals: any
   tools: { register: (tool: unknown) => void }
 }
 
-/** Owner (Agent) identity passed to every seam call. */
+/** Owner (Agent) identity passed to every core call. */
 type Owner = unknown
 
-/** Every pty/ssh tool requires an owning agent session (owner-scoped seam). */
+/** Every pty/ssh tool requires an owning agent session (owner-scoped core). */
 function requireAgent(exec: { agent?: Owner }): Owner {
   const owner = exec?.agent
   if (owner === undefined) {
@@ -90,170 +89,61 @@ function requireAgent(exec: { agent?: Owner }): Owner {
   return owner
 }
 
-/** The programmatic facade surface ssh tools consume (duck-typed by tests). */
-interface PtyCore {
-  // Return shapes are the core's own structural outputs (session record /
-  // delta-status / tail page / close flag); pinned `any` here keeps the
-  // defineTool output schemas as the single typed contract for callers.
-  open(owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string> }, signal?: AbortSignal): Promise<any>
-  send(owner: Owner, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>
-  tail(owner: Owner, id: string, lines?: number): any
-  close(owner: Owner, id: string): Promise<{ closed: boolean }>
+/** Injectable core dependencies (the unit lane's fake-spawn seam). */
+interface PtyDeps {
+  spawnPty?: (spec: CoreSpawnSpec) => PtyLike
 }
 
-/** Register the four pty_* tools against the owner-scoped terminals seam. */
-function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
-  /** owner (Agent) -> Map<sessionId, absolute consumed line cursor>. */
-  const cursorsByOwner = new Map<Owner, Map<string, number>>()
-
-  const cursorOf = (owner: Owner, id: string) => cursorsByOwner.get(owner)?.get(id) ?? 0
-  const setCursor = (owner: Owner, id: string, value: number) => {
-    let byId = cursorsByOwner.get(owner)
-    if (!byId) cursorsByOwner.set(owner, (byId = new Map()))
-    byId.set(id, value)
-  }
-
-  /** Total retained lines for one owned session (hides the probe read). */
-  const lineCount = (owner: Owner, id: string) =>
-    ctx.terminals.read(owner, id, { offset: 0, count: 1 }).totalLines
-
-  /**
-   * Read the newest `count` lines, `fromEnd` lines back from the end.
-   * Seam contract: a read request's `offset` counts back from the NEWEST
-   * retained line (0 = newest), not from the beginning of the scrollback.
-   */
-  const readNewest = (owner: Owner, id: string, fromEnd: number, count: number) =>
-    ctx.terminals.read(owner, id, { offset: fromEnd, count })
-
-  /** Exclusive send: startSend, await settlement, return the output read. */
-  const sendAndRead = async (owner: Owner, id: string, request: { text: string; submit?: boolean; signal?: AbortSignal }) => {
-    const operation = ctx.terminals.startSend(owner, id, request)
-    const result = await operation.done
-    return { delta: operation.readOutput().delta, result }
-  }
-
-  /**
-   * Incremental read: fetch only lines past the session cursor, advance the
-   * cursor to the newest retained line, and report truncation when the
-   * backlog exceeded the requested budget (older lines are then lost).
-   */
-  const tailPage = (owner: Owner, id: string, lines: number) => {
-    const consumed = cursorOf(owner, id)
-    let total: number = lineCount(owner, id)
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const backlog = total - consumed
-      if (backlog <= 0) return { text: '', lines: 0, truncated: false }
-      const count = Math.min(lines, backlog)
-      // The page read anchors on the LIVE newest line; output arriving
-      // between probe and read would shift the window. Retry until the
-      // probed total is stable, so the cursor only advances to a total the
-      // returned page actually covers — nothing silently skipped.
-      const page = readNewest(owner, id, count, count)
-      if (page.totalLines === total) {
-        setCursor(owner, id, total)
-        return {
-          text: page.text,
-          lines: page.lineEnd - page.lineBegin,
-          truncated: backlog > count || page.truncated === true,
-        }
-      }
-      total = page.totalLines
-    }
-    // Persistently drifting: report no page rather than a misaligned one;
-    // the cursor is untouched, so the next tail retries the whole backlog.
-    return { text: '', lines: 0, truncated: true }
-  }
-
+/** Register the four pty_* tools over the self-managed session core. */
+function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) {
+  /** The self-managed core (src/pty/session-core.ts): the registry, cursors,
+   * cap, idle watch and dispose all live in there — this tool surface and
+   * the provided `pty` service are two views of one core. */
+  const core: SessionCore = createSessionCore(config, deps)
 
   /**
    * Programmatic facade: the four pty_* tool semantics as callable functions
-   * for CONSUMER PLUGINS (T5 gdb, later ssh). Same cursors, same seam reads —
-   * the tool surface and this facade are two views of one core. Consumers
+   * for CONSUMER PLUGINS (T5 gdb, terminal's shell_open, ssh). Consumers
    * pass the owner explicitly (`exec.agent` from their own tool execution);
-   * they must never touch another agent's sessions (the seam enforces this).
+   * they must never touch another agent's sessions (the core enforces this).
    */
-  const core = {
-    /** Spawn on a PTY with env injected into the process, run the command. */
-    async open(owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string> }, signal?: AbortSignal) {
-      const command = spec?.command
-      if (typeof command !== 'string' || command.trim().length === 0) {
-        throw new Error('command must be a non-empty string')
-      }
-      const spawned = await ctx.terminals.spawn(owner, {
-        type: config.backendType,
+  const facade = {
+    /** Spawn the command on a ConPTY with env injected into the process. */
+    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number }, signal?: AbortSignal): Promise<any> =>
+      core.open(owner, {
+        ...(spec.command === undefined ? {} : { command: spec.command }),
         ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
-        // env rides the spawn spec (#53, VS Code profile semantics): the
-        // terminal process is born with these entries — process-level
-        // injection, not shell `export` lines typed into the session.
         ...(spec.env === undefined ? {} : { env: spec.env }),
-      }, signal)
-      const { delta, result } = await sendAndRead(owner, spawned.sessionId, {
-        text: command,
-        submit: true,
-        signal,
-      })
-      const initial = delta || ctx.terminals.read(owner, spawned.sessionId, { offset: 0, count: 1000 }).text
-      // Tail starts from what exists now: early output came back via this open.
-      setCursor(owner, spawned.sessionId, lineCount(owner, spawned.sessionId))
-      return {
-        sessionId: spawned.sessionId,
-        ...(spawned.pid === undefined ? {} : { pid: spawned.pid }),
-        status: result.sessionStatus,
-        initialOutput: initial,
-      }
-    },
+        ...(spec.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: spec.idleTimeoutMs }),
+      } as OpenSpec, signal),
 
-    /** Exclusive send: startSend, await settlement, return the delta read. */
-    async send(owner: Owner, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }) {
-      const { delta, result } = await sendAndRead(owner, id, {
-        text: request.data,
-        submit: request.submit ?? true,
-        signal: request.signal,
-      })
-      return { delta, status: result.sessionStatus }
-    },
+    /** Exclusive send: write, await the settle, return the output read. */
+    send: (owner: Owner, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any> =>
+      core.send(owner, id, request),
 
     /** Incremental read from the per-session cursor. */
-    tail(owner: Owner, id: string, lines?: number) {
-      return tailPage(owner, id, lines ?? config.tailLines)
-    },
+    tail: (owner: Owner, id: string, lines?: number): any => core.tail(owner, id, lines),
 
-    /** Awaited cleanup via the seam; idempotent per close. */
-    async close(owner: Owner, id: string) {
-      let closed = false
-      try {
-        closed = await ctx.terminals.kill(owner, id, 'pty_close')
-      } catch (error: any) {
-        // Already gone (e.g. second close): the documented contract is
-        // closed:false, not a throw. Foreign sessions still propagate.
-        if (error?.code !== 'NO_SESSION') throw error
-      }
-      cursorsByOwner.get(owner)?.delete(id)
-      return { closed }
-    },
+    /** Awaited cleanup; idempotent per close; foreign ids propagate loudly. */
+    close: (owner: Owner, id: string): Promise<any> => core.close(owner, id),
 
-    /** Dispose effect: kill every session this plugin instance opened. */
-    async dispose() {
-      const kills: Array<Promise<unknown>> = []
-      for (const [owner, byId] of cursorsByOwner) {
-        for (const id of byId.keys()) {
-          kills.push(ctx.terminals.kill(owner, id, 'dsh-pty-session disposed').catch(() => {}))
-        }
-      }
-      cursorsByOwner.clear()
-      await Promise.allSettled(kills)
-    },
+    /** Registry-derived liveness for the owner's own sessions (#62: the
+     * counting source of truth). */
+    active: (owner: Owner) => core.active(owner),
+
+    /** Dispose effect: kill every session this core instance spawned. */
+    dispose: () => core.dispose(),
   }
 
   // Consumer plugins inject this service by name (`inject: [..., "pty"]`).
-  ctx.provide('pty', core)
+  ctx.provide('pty', facade)
 
-  ctx.effect(() => () => core.dispose(), 'dsh-pty-session session cleanup')
+  ctx.effect(() => () => facade.dispose(), 'dsh-pty-session session cleanup')
 
   ctx.tools.register(defineTool({
     name: 'pty_open',
     description:
-      'Open a PTY session: spawn on the owner-scoped terminal seam, optionally set env vars, then run the command. ' +
+      'Open a PTY session: spawn the command on a ConPTY, optionally set env vars (process-level injection). ' +
       'The session stays alive across turns until pty_close or owner disposal. Byte-stream only — no protocol parsing.',
     parameters: {
       command: {
@@ -286,7 +176,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
     },
     async execute(args: { command: string; cwd?: string; env?: Record<string, string> }, exec: { agent?: Owner; signal?: AbortSignal }) {
       const owner = requireAgent(exec)
-      return core.open(owner, args, exec.signal)
+      return facade.open(owner, args, exec.signal)
     },
     presentCall: (args: { command: string }) => ({ card: 'terminal', title: args.command }),
   }))
@@ -312,7 +202,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
     },
     async execute(args: { id: string; data: string; submit?: boolean }, exec: { agent?: Owner; signal?: AbortSignal }) {
       const owner = requireAgent(exec)
-      return core.send(owner, args.id, { data: args.data, submit: args.submit, signal: exec.signal })
+      return facade.send(owner, args.id, { data: args.data, submit: args.submit, signal: exec.signal })
     },
     presentCall: (args: { data: string }) => ({ card: 'terminal', title: args.data }),
   }))
@@ -339,14 +229,14 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
     },
     async execute(args: { id: string; lines?: number }, exec: { agent?: Owner }) {
       const owner = requireAgent(exec)
-      return core.tail(owner, args.id, args.lines)
+      return facade.tail(owner, args.id, args.lines)
     },
     presentCall: (args: { id: string }) => ({ card: 'terminal', title: `tail ${args.id}` }),
   }))
 
   ctx.tools.register(defineTool({
     name: 'pty_close',
-    description: 'Terminate a PTY session via the seam\'s awaited cleanup and reclaim it. Idempotent per close.',
+    description: 'Terminate a PTY session (awaited cleanup + reclaim). Idempotent per close.',
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from pty_open.' },
     },
@@ -362,12 +252,12 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig) {
     },
     async execute(args: { id: string }, exec: { agent?: Owner }) {
       const owner = requireAgent(exec)
-      return core.close(owner, args.id)
+      return facade.close(owner, args.id)
     },
     presentCall: (args: { id: string }) => ({ card: 'terminal', title: `close ${args.id}` }),
   }))
 
-  registerSshTools(ctx, core, config)
+  registerSshTools(ctx, facade, config)
 }
 
 /**
@@ -526,7 +416,7 @@ export function composeSshCommand(args: SshLaunchArgs): string {
   return parts.join(' ')
 }
 
-function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
+function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { command: string }, signal?: AbortSignal): Promise<any>; send(owner: unknown, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>; tail(owner: unknown, id: string, lines?: number): any; close(owner: unknown, id: string): Promise<{ closed: boolean }> }, _config: PtyConfig) {
   ctx.tools.register(defineTool({
     name: 'ssh_start',
     description:
@@ -646,9 +536,9 @@ function registerSshTools(ctx: PtyCtx, core: PtyCore, _config: PtyConfig) {
   }))
 }
 
-/** Plugin entry: register the pty_* tool surface against the PTY seam. */
-function apply(ctx: PtyCtx, config: unknown) {
-  registerPtySession(ctx, resolveConfig(config))
+/** Plugin entry: register the pty_* tool surface over the self-managed core. */
+function apply(ctx: PtyCtx, config: unknown, deps: PtyDeps = {}) {
+  registerPtySession(ctx, resolveConfig(config), deps)
 }
 
 export { Config, apply, inject, name }

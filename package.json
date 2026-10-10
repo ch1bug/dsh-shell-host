@@ -69,6 +69,7 @@
     "lib/types/**/*.d.ts",
     "lib/permission-presets.js",
     "lib/pty/index.js",
+    "lib/pty-*.js",
     "lib/remote/index.js",
     "lib/wsl-plugin/index.js",
     "lib/terminal/index.js",
@@ -98,7 +99,8 @@
     "@deepseek-ai/dsh-tools": "0.2.1-alpha.1",
     "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
     "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@lydell/node-pty": "1.2.0-beta.15"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
