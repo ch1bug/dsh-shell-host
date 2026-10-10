@@ -12,6 +12,7 @@
 import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import {
+  builtInLauncherIds,
   resolveLauncher,
   resolveLauncherDetailed,
   resolveLaunchers,
@@ -252,6 +253,97 @@ describe("ssh transport dimension (#54, ADR-0008 decision 1)", () => {
     expect(prod.transport).toBe("ssh");
     expect(prod.command).toContain("ssh -tt");
     expect(prod.command).toContain("prod.example.com zsh");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #68 — POSIX launcher preset rows: zsh / bash / fish
+// ---------------------------------------------------------------------------
+
+const POSIX_ETC_SHELLS = [
+  "/bin/sh",
+  "/bin/bash",
+  "/usr/bin/bash",
+  "/bin/zsh",
+  "/usr/bin/fish",
+  "/opt/homebrew/bin/fish", // a user-appended Homebrew line rides the same file (#26 fact)
+].join("\n");
+
+function posixDeps(overrides: Record<string, unknown> = {}) {
+  return {
+    exists: (candidate: string) => !candidate.includes("homebrew") && !candidate.includes("fish"),
+    env: {} as NodeJS.ProcessEnv,
+    platform: "linux" as NodeJS.Platform,
+    readEtcShells: () => POSIX_ETC_SHELLS,
+    userInfoShell: () => "/usr/bin/zsh",
+    listDistros: () => [] as string[],
+    ...overrides,
+  };
+}
+
+describe("POSIX preset rows (#68)", () => {
+  it("resolves zsh/bash/fish rows on POSIX from /etc/shells lines (exists-filtered, order preserved)", () => {
+    const { presets, absent } = resolveLaunchers(posixDeps());
+    const ids = presets.map((p) => p.id);
+    expect(ids).toContain("zsh");
+    expect(ids).toContain("bash");
+    // fish is in /etc/shells but not on disk → ABSENT, not resolved.
+    expect(ids).not.toContain("fish");
+    const fish = absent.find((a) => a.id === "fish")!;
+    expect(fish.probed).toEqual(["/usr/bin/fish", "/opt/homebrew/bin/fish"]);
+
+    const bash = localPreset(presets, "bash");
+    expect(bash.transport).toBe("local");
+    expect(bash.executable).toEqual(["/bin/bash", "/usr/bin/bash"]);
+    // Linux shells carry no login flags (posixInteractiveArgv single source).
+    expect(bash.argv).toEqual([]);
+  });
+
+  it("prepend the detected passwd shell when it matches the row name (detectPosixShell consumed, not a second table)", async () => {
+    // /usr/bin/zsh is the passwd shell but NOT in /etc/shells → still a candidate.
+    const { presets } = resolveLaunchers(posixDeps({ readEtcShells: () => "/bin/bash\n" }));
+    const zsh = localPreset(presets, "zsh");
+    expect(zsh.executable).toEqual(["/usr/bin/zsh"]);
+    const { posixInteractiveArgv } = await import("../src/detect.ts");
+    expect(zsh.argv).toEqual([...posixInteractiveArgv("/usr/bin/zsh", "linux")]);
+  });
+
+  it("macOS login flags ride the single source: darwin zsh gets -l, bash gets --login", async () => {
+    const { presets } = resolveLaunchers(posixDeps({ platform: "darwin" }));
+    const { posixInteractiveArgv } = await import("../src/detect.ts");
+    const zsh = localPreset(presets, "zsh");
+    expect(zsh.argv).toEqual([...posixInteractiveArgv(zsh.executable[0]!, "darwin")]);
+    expect(zsh.argv).toEqual(["-l"]);
+    expect(localPreset(presets, "bash").argv).toEqual(["--login"]);
+  });
+
+  it("rows with no probe hit at all are absent with an empty probed list (posture, never loud)", () => {
+    const { presets, absent } = resolveLaunchers(posixDeps({ readEtcShells: () => undefined, userInfoShell: () => undefined }));
+    expect(presets.map((p) => p.id)).not.toContain("zsh");
+    expect(absent.find((a) => a.id === "zsh")).toBeDefined();
+    expect(absent.find((a) => a.id === "zsh")!.probed).toEqual([]);
+  });
+
+  it("win32 keeps the POSIX rows dormant: no ids, not even absent entries", () => {
+    const { presets, absent } = resolveLaunchers(posixDeps({ platform: "win32" }));
+    for (const r of [...presets, ...absent]) {
+      expect(["zsh", "bash", "fish"]).not.toContain(r.id);
+    }
+  });
+
+  it("builtInLauncherIds enumerates the POSIX rows on POSIX, not on win32", () => {
+    const linuxIds = builtInLauncherIds(posixDeps());
+    expect(linuxIds).toContain("zsh");
+    expect(linuxIds).toContain("bash");
+    expect(linuxIds).toContain("fish");
+    const win32Ids = builtInLauncherIds(posixDeps({ platform: "win32" }));
+    expect(win32Ids).not.toContain("zsh");
+    expect(win32Ids).not.toContain("fish");
+  });
+
+  it("the loud unknown-id / absent postures cover the POSIX rows", () => {
+    expect(() => resolveLauncher("fish", posixDeps())).toThrow(/Probed: .*fish/);
+    expect(() => resolveLauncher("zsh", posixDeps())).not.toThrow();
   });
 });
 
