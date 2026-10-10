@@ -13,7 +13,8 @@
 
 import { delimiter, dirname, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { detectMsysRoot, detectPlainBash, detectPwsh, detectWslExe, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, pwshProbedLocations, spawnableExists, wslProbedLocations } from './detect.ts'
+import { detectMsysRoot, detectPlainBash, detectPosixShell, detectPwsh, detectWslExe, MSYS2_ROOT_CANDIDATES, PLAIN_BASH_CANDIDATES, posixInteractiveArgv, pwshProbedLocations, spawnableExists, wslProbedLocations } from './detect.ts'
+import type { PosixShellDeps } from './detect.ts'
 import { fromWslPath, toWslPath } from './wsl-bridge.ts'
 import { sshBackend } from './backends/ssh.ts'
 import type { SshSpecific } from './backends/ssh.ts'
@@ -133,7 +134,18 @@ const identityMapping = {
  * subsystem-`'none'` surface (Git Bash, Cygwin) works with zero config and a
  * WSL bash can never be silently picked.
  */
-function plainBackend(config: Config): BackendDescriptor {
+/**
+ * The upstream-equivalent backend: one-shot `['-c', '{command}']`, no
+ * injection. On win32 the bare name is detected instead — PATH probe with the
+ * WSL System32 stub excluded, then Git Bash/Cygwin/MSYS2 candidates — so the
+ * subsystem-`'none'` surface (Git Bash, Cygwin) works with zero config and a
+ * WSL bash can never be silently picked. On POSIX (#26, native
+ * cross-platform): the detected login shell (VS Code fact chain — getpwuid →
+ * `sh` fallback) instead of a hardcoded bare `bash`, with the macOS login
+ * flags (`zsh -l` / `bash --login`) on the interactive surface; `bashPath`
+ * still wins explicitly.
+ */
+export function plainBackend(config: Config, posixDeps: PosixShellDeps = {}): BackendDescriptor {
   const base = {
     id: 'plain',
     // A plain PTY starts bare bash (T4 amendment): Git Bash bakes its own
@@ -143,10 +155,14 @@ function plainBackend(config: Config): BackendDescriptor {
     pathPrefix: [],
     pathMapping: identityMapping,
   } satisfies Omit<BackendDescriptorBase, 'executable'>
-  if (process.platform !== 'win32') {
-    // POSIX keeps the byte-equivalent bare name (upstream contract); nothing
-    // to detect there (detectPlainBash is win32-only by design).
-    return { ...base, executable: [config.bashPath.get() ?? 'bash'] }
+  const explicit = config.bashPath.get()
+  const platform = posixDeps.platform ?? process.platform
+  if (platform !== 'win32') {
+    // POSIX (#26): detect the user's shell (bashPath wins explicitly);
+    // detection never fails — detectPosixShell's own sh fallback (never
+    // undefined off-win32) spawns as a bare PATH name.
+    const detected = explicit ?? detectPosixShell(posixDeps)!
+    return { ...base, executable: [detected], argv: { oneShot: ['-c', COMMAND_TOKEN], interactive: posixInteractiveArgv(detected, platform) } }
   }
   // win32: the bare name is detected instead — PATH probe with the WSL
   // System32 stub excluded, then Git Bash/Cygwin/MSYS2 candidates — so the
@@ -159,7 +175,7 @@ function plainBackend(config: Config): BackendDescriptor {
       + `Probed PATH entries (excluding the WSL C:\\Windows\\System32 stub) and: ${[...PLAIN_BASH_CANDIDATES].join(', ')}`,
     )
   }
-  return { ...base, executable: [config.bashPath.get() ?? detected] }
+  return { ...base, executable: [explicit ?? detected] }
 }
 
 /**
