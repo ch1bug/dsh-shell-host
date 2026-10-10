@@ -32,7 +32,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { posixQuote } from '../posix-quote.ts'
-import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
 
 const name = 'dsh-pty-session'
 const inject = ['tools']
@@ -139,9 +139,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
     description:
       'Open a PTY session: spawn the command on a ConPTY, optionally set env vars (process-level injection). ' +
       'The session stays alive across turns until pty_close or owner disposal. Byte-stream only — no protocol parsing. ' +
-      'For a run-once-and-done command pass autoClose: true — the session is reclaimed automatically when the ' +
-      'process exits (the soft-cap slot frees itself); use the default persistent mode only for interactive sessions. ' +
-      'Final output: read it via pty_tail before reclamation, or carry it in the send/publish deltas.',
+      'For a run-once-and-done command pass autoClose: true. ' + AUTO_CLOSE_SEMANTICS,
     parameters: {
       command: {
         type: 'string',
@@ -159,10 +157,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       },
       autoClose: {
         type: 'boolean',
-        description:
-          'One-shot mode (#64): when true, the session is reclaimed automatically once the process exits — ' +
-          'no pty_close needed, the soft-cap slot frees immediately. Final output must be read before ' +
-          'reclamation (tail in the live window, or the returned deltas). Default false (persistent).',
+        description: AUTO_CLOSE_SEMANTICS,
       },
     },
     output: {
