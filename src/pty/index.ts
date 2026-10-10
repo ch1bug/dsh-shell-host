@@ -32,7 +32,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { posixQuote } from '../posix-quote.ts'
-import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
 
 const name = 'dsh-pty-session'
 const inject = ['tools']
@@ -109,13 +109,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
   const facade = {
     /** Spawn the command on a ConPTY with env injected into the process. */
     open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean }, signal?: AbortSignal): Promise<any> =>
-      core.open(owner, {
-        ...(spec.command === undefined ? {} : { command: spec.command }),
-        ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
-        ...(spec.env === undefined ? {} : { env: spec.env }),
-        ...(spec.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: spec.idleTimeoutMs }),
-        ...(spec.autoClose === undefined ? {} : { autoClose: spec.autoClose }),
-      } as OpenSpec, signal),
+      core.open(owner, extractSpec(spec) as OpenSpec, signal),
 
     /** Exclusive send: write, await the settle, return the output read. */
     send: (owner: Owner, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any> =>

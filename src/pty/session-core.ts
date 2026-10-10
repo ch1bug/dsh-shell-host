@@ -82,6 +82,21 @@ export interface PtyLike {
   onExit(cb: (e: { exitCode: number; signal?: number }) => void): unknown
 }
 
+/**
+ * Strip undefined fields from a raw open-spec object (#65): the ONE
+ * conditional-expansion site — the facade's spec aggregation, the core's
+ * spawnPty spec, and the Session construction all derive from here
+ * (behavior-identical to the previous per-field spread dance: same keys,
+ * same insertion order, undefined simply absent).
+ */
+export function extractSpec<T extends object>(raw: T): T {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (value !== undefined) out[key] = value
+  }
+  return out as T
+}
+
 /** The spawn spec: the launch command text plus the additive cwd/env
  * (#53 VS Code profile semantics — process-level injection at birth). */
 export interface CoreSpawnSpec {
@@ -445,11 +460,11 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
             'Close one with pty_close before opening another.',
         )
       }
-      const pty = spawnPty({
+      const pty = spawnPty(extractSpec({
         command,
-        ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
-        ...(spec.env === undefined ? {} : { env: spec.env }),
-      })
+        cwd: spec.cwd,
+        env: spec.env,
+      }))
       const id = `pty-${nextId++}`
       const s: Session = {
         id,
@@ -459,8 +474,10 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         absBase: 0,
         pending: '',
         exited: false,
-        ...(spec.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: spec.idleTimeoutMs }),
-        ...(spec.autoClose === undefined ? {} : { autoClose: spec.autoClose }),
+        ...extractSpec({
+          idleTimeoutMs: spec.idleTimeoutMs,
+          autoClose: spec.autoClose,
+        }),
         idleLastLines: 0,
         lastActivityAt: Date.now(),
       }
