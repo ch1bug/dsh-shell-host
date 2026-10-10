@@ -10,7 +10,7 @@
  * @module tests/terminal
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { join } from "node:path";
@@ -40,7 +40,7 @@ interface Boot {
 /** Boot the pty AND terminal entries on one fake registry; surface the
  * spawn specs the terminal entry handed to terminals.spawn and the
  * registered tools of both entries. */
-function boot(config: { custom?: CustomLauncherConfig[] } = {}, deps: LauncherDeps = fullDeps): Boot {
+function boot(config: { custom?: CustomLauncherConfig[]; maxSessions?: number } = {}, deps: LauncherDeps = fullDeps): Boot {
   const terminals = new FakeTerminals({
     idPrefix: "term",
     spawnChild: () => echoChild(),
@@ -197,7 +197,6 @@ describe("shell_open (#55)", () => {
     expect(opened.command).toContain("bash --login");
     expect(spawnSpecs[0]!.type).toBe("shell");
   });
-
   it("registers exactly one tool: shell_open (send/tail/close reuse pty_*, no Middle Man)", async () => {
     const { tool } = boot();
     expect(tool("shell_open").name).toBe("shell_open");
@@ -205,3 +204,137 @@ describe("shell_open (#55)", () => {
     expect(() => tool("terminal_tail")).toThrow(/not registered/);
   });
 });
+
+
+describe("shell_open result fields (#56)", () => {
+  it("a built-in local preset reports the minimal self-evidence set: executable/probed/cwd/source/overrode", async () => {
+    const { tool } = boot();
+    const opened = await tool("shell_open").execute({ preset: "pwsh" }, { agent });
+    expect(opened.executable).toBe(PWSH); // the hit candidate
+    expect(Array.isArray(opened.probed)).toBe(true);
+    expect(opened.probed).toContain(PWSH);
+    expect("cwd" in opened ? opened.cwd : undefined).toBeUndefined(); // no cwd anywhere → omitted
+    expect(opened.source).toBe("builtin");
+    expect(opened.overrode).toBe(false);
+    // No env dump, no argv repeat (command already carries it).
+    expect(opened.env).toBeUndefined();
+    expect(opened.argv).toBeUndefined();
+  });
+
+  it("cwd reports the EFFECTIVE value: tool arg overrides preset cwd", async () => {
+    const custom: CustomLauncherConfig[] = [
+      { id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], cwd: "C:\\dev" },
+    ];
+    const { tool, spawnSpecs } = boot({ custom });
+    const opened = await tool("shell_open").execute({ preset: "dev" }, { agent });
+    expect(opened.cwd).toBe("C:\\dev");
+    expect(spawnSpecs[0]!.cwd).toBe("C:\\dev");
+    const overridden = await tool("shell_open").execute({ preset: "dev", cwd: "D:\\x" }, { agent });
+    expect(overridden.cwd).toBe("D:\\x");
+    expect(spawnSpecs[1]!.cwd).toBe("D:\\x");
+  });
+
+  it("a custom id that overrides a built-in reports source custom + overrode true; a custom-only id overrode false", async () => {
+    const custom: CustomLauncherConfig[] = [
+      { id: "pwsh", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: {} },
+      { id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: {} },
+    ];
+    const { tool } = boot({ custom });
+    const overridden = await tool("shell_open").execute({ preset: "pwsh" }, { agent });
+    expect(overridden.source).toBe("custom");
+    expect(overridden.overrode).toBe(true);
+    const customOnly = await tool("shell_open").execute({ preset: "dev" }, { agent });
+    expect(customOnly.source).toBe("custom");
+    expect(customOnly.overrode).toBe(false);
+  });
+
+  it("an ssh preset carries source/overrode but no executable/probed (no local candidates)", async () => {
+    const custom: CustomLauncherConfig[] = [{ id: "box", transport: "ssh", host: "me@example.test" }];
+    const { tool } = boot({ custom });
+    const opened = await tool("shell_open").execute({ preset: "box" }, { agent });
+    expect(opened.source).toBe("custom");
+    expect(opened.overrode).toBe(false);
+    expect(opened.executable).toBeUndefined();
+    expect(opened.probed).toBeUndefined();
+  });
+});
+
+describe("shell_open concurrency cap (#56)", () => {
+  it("soft cap default 8: the 9th open fails loudly listing the current session count", async () => {
+    const { tool } = boot();
+    for (let i = 0; i < 8; i += 1) {
+      await tool("shell_open").execute({ preset: "pwsh" }, { agent });
+    }
+    const err = await tool("shell_open").execute({ preset: "pwsh" }, { agent }).catch((e: Error) => e);
+    expect(err.message).toMatch(/limit/i);
+    expect(err.message).toContain("8");
+  });
+
+  it("maxSessions is configurable; pty_close frees a slot", async () => {
+    const { tool } = boot({ maxSessions: 2 });
+    const a = await tool("shell_open").execute({ preset: "pwsh" }, { agent });
+    const b = await tool("shell_open").execute({ preset: "pwsh" }, { agent });
+    const err = await tool("shell_open").execute({ preset: "pwsh" }, { agent }).catch((e: Error) => e);
+    expect(err.message).toMatch(/2/);
+    await tool("pty_close").execute({ id: a.sessionId }, { agent });
+    const c = await tool("shell_open").execute({ preset: "pwsh" }, { agent });
+    expect(c.sessionId).not.toBe(b.sessionId);
+  });
+
+  it("the cap counts the owner's OWN sessions only (another owner is unaffected)", async () => {
+    const { tool } = boot({ maxSessions: 1 });
+    const other = { name: "other" };
+    await tool("shell_open").execute({ preset: "pwsh" }, { agent });
+    const theirs = await tool("shell_open").execute({ preset: "pwsh" }, { agent: other });
+    expect(theirs.sessionId).toMatch(/^term-/);
+  });
+});
+
+describe("shell_open idleTimeoutMs (#56)", () => {
+  it("an idle session with idleTimeoutMs auto-closes after the timeout; without it, never", async () => {
+    vi.useFakeTimers();
+    try {
+      const { tool, terminals } = boot();
+      // The fake seam settles sends on its own 10ms poll — advance while in flight.
+      const p1 = tool("shell_open").execute({ preset: "pwsh", idleTimeoutMs: 1000 }, { agent });
+      await vi.advanceTimersByTimeAsync(50);
+      const watched = await p1;
+      const p2 = tool("shell_open").execute({ preset: "pwsh" }, { agent });
+      await vi.advanceTimersByTimeAsync(50);
+      const plain = await p2;
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(terminals.sessions.has(watched.sessionId)).toBe(false);
+      expect(terminals.sessions.has(plain.sessionId)).toBe(true);
+      await tool("pty_close").execute({ id: plain.sessionId }, { agent });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("new output resets the idle clock: a busy session survives past its timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const { tool, terminals } = boot();
+      const p1 = tool("shell_open").execute({ preset: "pwsh", idleTimeoutMs: 1000 }, { agent });
+      await vi.advanceTimersByTimeAsync(50);
+      const watched = await p1;
+      await vi.advanceTimersByTimeAsync(700);
+      const sendP = tool("pty_send").execute({ id: watched.sessionId, data: "keepalive" }, { agent });
+      await vi.advanceTimersByTimeAsync(100); // fires the fake seam's settle poll
+      await sendP;
+      await vi.advanceTimersByTimeAsync(700);
+      expect(terminals.sessions.has(watched.sessionId)).toBe(true); // <1000ms since output
+      await vi.advanceTimersByTimeAsync(500);
+      expect(terminals.sessions.has(watched.sessionId)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("idleTimeoutMs must be a positive integer (loud)", async () => {
+    const { tool } = boot();
+    await expect(tool("shell_open").execute({ preset: "pwsh", idleTimeoutMs: 0 }, { agent })).rejects.toThrow(/idleTimeoutMs/);
+    await expect(tool("shell_open").execute({ preset: "pwsh", idleTimeoutMs: -5 }, { agent })).rejects.toThrow(/idleTimeoutMs/);
+  });
+});
+

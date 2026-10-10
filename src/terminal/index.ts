@@ -29,17 +29,25 @@
 import z from '@deepseek-ai/schemastery'
 import { delimiter } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { resolveLauncher, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
+import { resolveLauncherDetailed, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
 import { spawnableExists } from '../detect.ts'
 
 const name = 'dsh-shell-host-terminal'
-const inject = ['tools', 'pty']
+const inject = ['tools', 'pty', 'terminals']
+
+/** Default concurrent-session soft cap (#56 ruling 3). */
+export const DEFAULT_MAX_SESSIONS = 8
+/** Idle-watcher tick period: fine-grained enough for second-scale timeouts. */
+const WATCH_INTERVAL_MS = 250
 
 /** Runtime configuration schema — the `./terminal` entry's own settings
  * namespace. `custom` is the custom-preset data channel (the #54
- * CustomLauncherConfig shape, persisted; CRUD UI is a later ticket). */
+ * CustomLauncherConfig shape, persisted; CRUD UI is a later ticket).
+ * `maxSessions` is the concurrent-session soft cap counted over the entry's
+ * OWN active sessions per owning agent. */
 export interface TerminalConfig {
   custom: CustomLauncherConfig[]
+  maxSessions: number
 }
 
 const Config = z.object({
@@ -47,22 +55,39 @@ const Config = z.object({
    * executable (or inherit a built-in `base`), ssh rows declare host (+ the
    * ssh connection fields). A custom id overrides a built-in view. */
   custom: z.array(z.any()).default([]),
+  /** Concurrent-session soft cap (#56): shell_open fails loudly once an
+   * owner's own active sessions reach this count. */
+  maxSessions: z.number().default(DEFAULT_MAX_SESSIONS),
 })
 
 function resolveConfig(raw: unknown): TerminalConfig {
   const c = (raw ?? {}) as Partial<TerminalConfig>
-  return { custom: Array.isArray(c.custom) ? c.custom : [] }
+  const maxSessions = c.maxSessions ?? DEFAULT_MAX_SESSIONS
+  if (!Number.isInteger(maxSessions) || maxSessions < 1) {
+    throw new Error(`terminal: maxSessions must be a positive integer, got: ${JSON.stringify(c.maxSessions)}`)
+  }
+  return { custom: Array.isArray(c.custom) ? c.custom : [], maxSessions }
 }
 
 /** The tool-execution context slice the entry consumes (duck-typed seam). */
 interface TerminalCtx {
   tools: { register: (tool: unknown) => void }
+  effect: (fn: () => () => Promise<void>, label: string) => void
   get: (name: string) => unknown
+  terminals: SeamRead
+}
+
+/** The seam slice the entry needs: a liveness/progress probe per session
+ * (the same `offset` counts back from the newest line contract the pty core
+ * uses). NO_SESSION on read = the session is gone. */
+interface SeamRead {
+  read(owner: unknown, id: string, req: { offset: number; count: number }): { totalLines: number }
 }
 
 /** The pty entry's session core facade (provided as the `pty` service). */
 interface PtyCore {
   open(owner: unknown, spec: { command: string; cwd?: string; env?: Record<string, string> }, signal?: AbortSignal): Promise<{ sessionId: string; initialOutput?: string; [key: string]: unknown }>
+  close(owner: unknown, id: string): Promise<{ closed: boolean }>
 }
 
 /**
@@ -71,16 +96,17 @@ interface PtyCore {
  * keeps the loud posture if the machine changed mid-flight) + the preset's
  * interactive argv. Paths with spaces double-quote — quoting that is valid
  * for every dialect the seam's default terminal can host (bash / pwsh /
- * cmd); argv atoms are passed verbatim.
+ * cmd); argv atoms are passed verbatim. Returns the HIT candidate too — the
+ * shell_open result's `executable` field (#56).
  */
-function localLaunchCommand(preset: LocalLauncherPreset, deps: LauncherDeps): string {
+function localLaunchCommand(preset: LocalLauncherPreset, deps: LauncherDeps): { executable: string; command: string; probed: string[] } {
   const exists = deps.exists ?? spawnableExists
   const executable = preset.executable.find(candidate => exists(candidate))
   if (executable === undefined) {
     throw new Error(`launcher: preset '${preset.id}' has no existing executable candidate. Probed: ${preset.executable.join(', ')}`)
   }
   const exe = executable.includes(' ') ? `"${executable}"` : executable
-  return [exe, ...preset.argv].join(' ')
+  return { executable, command: [exe, ...preset.argv].join(' '), probed: [...preset.probed] }
 }
 
 /**
@@ -102,22 +128,106 @@ function launchEnv(preset: ResolvedLauncher, overrides: Record<string, string> |
   return { ...env, ...overrides }
 }
 
+/** One session the entry opened and is bookkeeping (cap + optional idle
+ * watch). `lastLines`/`lastActivityAt` implement the per-session idle
+ * judgment: idle = no NEW OUTPUT for idleTimeoutMs (PTY input without echo
+ * does not reset the clock — the ruling's "no reliable idle criterion" is
+ * honored by making the timeout opt-in per session, output-defined). */
+interface OwnSession {
+  owner: unknown
+  idleTimeoutMs?: number
+  lastLines: number
+  lastActivityAt: number
+}
+
 /** Register the single shell_open tool against the pty session core. */
 function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: LauncherDeps): void {
   const core = ctx.get('pty') as PtyCore
   if (core === undefined) {
     throw new Error('terminal: the pty session core is missing — mount the dsh-shell-host/pty entry alongside ./terminal')
   }
+  const seam: SeamRead = ctx.terminals
+
+  /** sessionId -> tracking row for every session this entry opened. */
+  const own = new Map<string, OwnSession>()
+  let watcher: ReturnType<typeof setInterval> | undefined
+
+  /** Liveness/progress probe; throws when the session is gone. */
+  const probe = (owner: unknown, id: string): number => seam.read(owner, id, { offset: 0, count: 1 }).totalLines
+
+  /** Probe one tracked session; drop the row and return undefined when the
+   * session no longer exists (pty_close, owner disposal). The shared shape
+   * behind both the cap count and the idle watch. */
+  const probeOrDrop = (id: string, row: OwnSession): number | undefined => {
+    try {
+      return probe(row.owner, id)
+    } catch {
+      own.delete(id)
+      return undefined
+    }
+  }
+
+  /** The surviving session ids for `owner` (dead rows pruned). */
+  const activeOwn = (owner: unknown): string[] => {
+    const alive: string[] = []
+    for (const [id, row] of own) {
+      if (row.owner !== owner) continue
+      if (probeOrDrop(id, row) !== undefined) alive.push(id)
+    }
+    return alive
+  }
+
+  /** The idle watcher: lazily started with the first watched session,
+   * stopped when none remain. Output activity refreshes the clock; an
+   * idle-expired session is closed through the pty core (one close path). */
+  const tick = async (): Promise<void> => {
+    const now = Date.now()
+    for (const [id, row] of own) {
+      if (row.idleTimeoutMs === undefined) continue
+      const total = probeOrDrop(id, row)
+      if (total === undefined) continue
+      if (total !== row.lastLines) {
+        row.lastLines = total
+        row.lastActivityAt = now
+        continue
+      }
+      if (now - row.lastActivityAt >= row.idleTimeoutMs) {
+        own.delete(id)
+        // Close failure is intentionally swallowed: the janitor's worst case
+        // is a session that stays until pty_close / owner disposal.
+        await core.close(row.owner, id).catch(() => {})
+      }
+    }
+    if (own.size === 0 && watcher !== undefined) {
+      clearInterval(watcher)
+      watcher = undefined
+    }
+  }
+  const ensureWatcher = (): void => {
+    if (watcher === undefined) {
+      watcher = setInterval(() => { void tick() }, WATCH_INTERVAL_MS)
+      watcher.unref?.()
+    }
+  }
+
+  ctx.effect(() => () => {
+    if (watcher !== undefined) clearInterval(watcher)
+    watcher = undefined
+    return Promise.resolve()
+  }, 'dsh-shell-host-terminal idle-watcher cleanup')
+
   ctx.tools.register(defineTool({
     name: 'shell_open',
     description:
       'Open a persistent terminal for a launcher preset (e.g. msys2-ucrt, pwsh, powershell, wsl, cmd, git-bash, python-repl, or a configured custom preset). ' +
       'Returns a sessionId that is a PTY seam session: operate it with pty_send / pty_tail / pty_close — no second tool family. ' +
-      'Unknown ids fail loudly listing the available presets; uninstalled environments fail loudly naming every probe point.',
+      'Unknown ids fail loudly listing the available presets; uninstalled environments fail loudly naming every probe point. ' +
+      'A per-agent concurrent-session cap applies; idleTimeoutMs opts ONE session into auto-close when it produces no new output for that long.',
     parameters: {
       preset: { type: 'string', required: true, description: 'Launcher preset id (built-in view or configured custom preset).' },
       cwd: { type: 'string', description: 'Working directory override; defaults to the preset\'s cwd.' },
       env: { type: 'object', additionalProperties: true, description: 'Env var overrides merged over the preset env (VS Code profile semantics).' },
+      idleTimeoutMs: { type: 'number', description: 'Opt-in per-session idle timeout (ms, positive integer): auto-close the session after this much time with no new output. Omit = never idle-closed (persistent-session contract).' },
     },
     output: {
       schema: {
@@ -129,17 +239,43 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
           transport: { type: 'string', required: true, description: '"local" or "ssh".' },
           command: { type: 'string', required: true, description: 'The launch command opened on the PTY.' },
           initialOutput: { type: 'string', description: 'Output captured during launch.' },
+          executable: { type: 'string', description: 'The executable candidate that hit (local presets).' },
+          probed: { type: 'array', items: { type: 'string' }, description: 'Every probe point considered (local presets).' },
+          cwd: { type: 'string', description: 'The effective working directory, when one applies.' },
+          source: { type: 'string', required: true, description: '"builtin" or "custom" — where the preset view came from.' },
+          overrode: { type: 'boolean', required: true, description: 'True when a custom preset REPLACED a built-in view of the same id (loud flag, never an error).' },
         },
       },
       render: (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }],
     },
-    async execute(args: { preset: string; cwd?: string; env?: Record<string, string> }, exec: { agent?: unknown; signal?: AbortSignal }) {
+    async execute(args: { preset: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number }, exec: { agent?: unknown; signal?: AbortSignal }) {
       const owner = exec?.agent
       if (owner === undefined) {
         throw Object.assign(new Error('shell_open requires an owning agent session'), { code: 'NO_AGENT' })
       }
-      const launcher = resolveLauncher(args.preset, deps, config.custom)
-      const command = launcher.transport === 'ssh' ? launcher.command : localLaunchCommand(launcher, deps)
+      if (args.idleTimeoutMs !== undefined && (!Number.isInteger(args.idleTimeoutMs) || args.idleTimeoutMs <= 0)) {
+        throw new Error(`shell_open: idleTimeoutMs must be a positive integer (ms), got: ${JSON.stringify(args.idleTimeoutMs)}`)
+      }
+      // Soft cap over the owner's OWN active sessions (#56 ruling 3): prune
+      // the dead, then count — a pty_close always frees its slot.
+      const active = activeOwn(owner)
+      if (active.length >= config.maxSessions) {
+        throw new Error(
+          `terminal: shell_open hit the concurrent session limit (max ${config.maxSessions}); ` +
+          `${active.length} sessions already active for this agent: ${active.join(', ')}. ` +
+          'Close one with pty_close before opening another.',
+        )
+      }
+      const detail = resolveLauncherDetailed(args.preset, deps, config.custom)
+      const launcher = detail.launcher
+      let launched: { executable: string; command: string; probed: string[] } | undefined
+      let command: string
+      if (launcher.transport === 'local') {
+        launched = localLaunchCommand(launcher, deps)
+        command = launched.command
+      } else {
+        command = launcher.command
+      }
       const cwd = launcher.transport === 'local' ? (args.cwd ?? launcher.cwd) : args.cwd
       const env = launchEnv(launcher, args.env, deps)
       const opened = await core.open(owner, {
@@ -147,12 +283,23 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
         ...(cwd === undefined ? {} : { cwd }),
         ...(env === undefined ? {} : { env }),
       }, exec.signal)
+      own.set(opened.sessionId, {
+        owner,
+        ...(args.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: args.idleTimeoutMs }),
+        lastLines: 0,
+        lastActivityAt: Date.now(),
+      })
+      if (args.idleTimeoutMs !== undefined) ensureWatcher()
       return {
         sessionId: opened.sessionId,
         preset: launcher.id,
         transport: launcher.transport,
         command,
         ...(opened.initialOutput === undefined ? {} : { initialOutput: opened.initialOutput }),
+        ...(launched === undefined ? {} : { executable: launched.executable, probed: launched.probed }),
+        ...(cwd === undefined ? {} : { cwd }),
+        source: detail.source,
+        overrode: detail.overrode,
       }
     },
     presentCall: (args: { preset: string }) => ({ card: 'terminal', title: `shell_open ${args.preset}` }),
