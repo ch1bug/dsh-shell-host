@@ -110,6 +110,10 @@ interface Session {
   exited: boolean
   exitCode?: number
   idleTimeoutMs?: number
+  /** One-shot mode (#64): reclaim through the single close path as soon as
+   * the process exits — after the settle window so the final output has
+   * landed. Default (absent): persistent semantics, zero change. */
+  autoClose?: boolean
   /** Absolute line count at the last idle-watch observation. */
   idleLastLines: number
   lastActivityAt: number
@@ -125,6 +129,11 @@ export interface OpenSpec {
   /** Opt-in per-session idle timeout (#56): auto-close after this much
    * time with no NEW OUTPUT (output-defined idle; opt-in per session). */
   idleTimeoutMs?: number
+  /** One-shot mode (#64): when true, the core reclaims the session
+   * automatically on process exit (settle window first, then the single
+   * close path) — the soft-cap slot frees itself; tail afterwards reports
+   * NO_SESSION. Default false: persistent, unchanged. */
+  autoClose?: boolean
 }
 
 export interface OpenResult {
@@ -302,8 +311,10 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
   /** The settle: wait until the session's byte production goes quiet —
    * the exclusive-send contract's "output read while the write settled".
    * An aborted signal resolves immediately (the write itself is not
-   * cancelable; only the wait is). */
-  const settleFor = (s: Session, signal?: AbortSignal): Promise<void> =>
+   * cancelable; only the wait is). `ignoreExit` (#64 autoClose reclaim):
+   * skip the exited short-circuit so the quiet window still runs AFTER the
+   * process exit event — buffered output racing the exit gets to land. */
+  const settleFor = (s: Session, signal?: AbortSignal, opts?: { ignoreExit?: boolean }): Promise<void> =>
     new Promise((resolve) => {
       if (signal?.aborted) {
         resolve()
@@ -325,7 +336,7 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
           lastChars = chars
           lastDataAt = Date.now()
         }
-        if (s.exited || signal?.aborted || Date.now() - lastDataAt >= config.settleQuietMs || Date.now() - startedAt >= config.settleTimeoutMs) {
+        if ((opts?.ignoreExit !== true && s.exited) || signal?.aborted || Date.now() - lastDataAt >= config.settleQuietMs || Date.now() - startedAt >= config.settleTimeoutMs) {
           finish()
         }
       }, config.settleTickMs)
@@ -418,6 +429,9 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       if (typeof command !== 'string' || command.trim().length === 0) {
         throw new Error('command must be a non-empty string')
       }
+      if (spec.autoClose !== undefined && typeof spec.autoClose !== 'boolean') {
+        throw new Error(`autoClose must be a boolean, got: ${JSON.stringify(spec.autoClose)}`)
+      }
       if (spec.idleTimeoutMs !== undefined && (!Number.isInteger(spec.idleTimeoutMs) || spec.idleTimeoutMs <= 0)) {
         throw new Error(`idleTimeoutMs must be a positive integer (ms), got: ${JSON.stringify(spec.idleTimeoutMs)}`)
       }
@@ -446,6 +460,7 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         pending: '',
         exited: false,
         ...(spec.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: spec.idleTimeoutMs }),
+        ...(spec.autoClose === undefined ? {} : { autoClose: spec.autoClose }),
         idleLastLines: 0,
         lastActivityAt: Date.now(),
       }
@@ -454,6 +469,12 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       pty.onExit(({ exitCode }) => {
         s.exited = true
         s.exitCode = exitCode
+        // One-shot mode (#64): let the settle window drain the final output,
+        // then reclaim through the single close path — already-exited
+        // sessions skip the kill, the registry row drops, the slot frees.
+        if (s.autoClose) {
+          void settleFor(s, undefined, { ignoreExit: true }).then(() => killSession(s, 'autoClose')).catch(() => {})
+        }
       })
       // Initial settle: the banner/prompt produced at birth lands in
       // initialOutput; the tail cursor starts from what exists now.

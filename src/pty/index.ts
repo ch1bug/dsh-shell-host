@@ -32,7 +32,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { posixQuote } from '../posix-quote.ts'
-import { createSessionCore, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, type SessionCore, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
 
 const name = 'dsh-pty-session'
 const inject = ['tools']
@@ -58,13 +58,12 @@ const Config = z.object({
   maxSessions: z.number().default(DEFAULT_MAX_SESSIONS),
 })
 
-/** Default-fill a raw config (schemastery z.object has no .parse). */
-function resolveConfig(raw: unknown): PtyConfig {
-  const c = (raw ?? {}) as Partial<PtyConfig>
-  return {
-    tailLines: c.tailLines ?? DEFAULT_TAIL_LINES,
-    maxSessions: c.maxSessions ?? DEFAULT_MAX_SESSIONS,
-  }
+/** Default-fill a raw config (#64 fix: forward the FULL core config — the
+ * settle/idle/scrollback knobs were previously dropped here, so tool-surface
+ * config could never tune them; the core's own resolveCoreConfig defaults
+ * fill the rest). */
+function resolveConfig(raw: unknown): SessionCoreConfig {
+  return resolveCoreConfig(raw as Partial<SessionCoreConfig>)
 }
 
 /** Shared render for structured tool output: one JSON text block. */
@@ -109,12 +108,13 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
    */
   const facade = {
     /** Spawn the command on a ConPTY with env injected into the process. */
-    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number }, signal?: AbortSignal): Promise<any> =>
+    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean }, signal?: AbortSignal): Promise<any> =>
       core.open(owner, {
         ...(spec.command === undefined ? {} : { command: spec.command }),
         ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
         ...(spec.env === undefined ? {} : { env: spec.env }),
         ...(spec.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: spec.idleTimeoutMs }),
+        ...(spec.autoClose === undefined ? {} : { autoClose: spec.autoClose }),
       } as OpenSpec, signal),
 
     /** Exclusive send: write, await the settle, return the output read. */
@@ -144,7 +144,10 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
     name: 'pty_open',
     description:
       'Open a PTY session: spawn the command on a ConPTY, optionally set env vars (process-level injection). ' +
-      'The session stays alive across turns until pty_close or owner disposal. Byte-stream only — no protocol parsing.',
+      'The session stays alive across turns until pty_close or owner disposal. Byte-stream only — no protocol parsing. ' +
+      'For a run-once-and-done command pass autoClose: true — the session is reclaimed automatically when the ' +
+      'process exits (the soft-cap slot frees itself); use the default persistent mode only for interactive sessions. ' +
+      'Final output: read it via pty_tail before reclamation, or carry it in the send/publish deltas.',
     parameters: {
       command: {
         type: 'string',
@@ -160,6 +163,13 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         additionalProperties: true,
         description: 'Optional env vars injected into the spawned terminal process (VS Code profile semantics, #53).',
       },
+      autoClose: {
+        type: 'boolean',
+        description:
+          'One-shot mode (#64): when true, the session is reclaimed automatically once the process exits — ' +
+          'no pty_close needed, the soft-cap slot frees immediately. Final output must be read before ' +
+          'reclamation (tail in the live window, or the returned deltas). Default false (persistent).',
+      },
     },
     output: {
       schema: {
@@ -174,7 +184,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       },
       render: jsonRender as any,
     },
-    async execute(args: { command: string; cwd?: string; env?: Record<string, string> }, exec: { agent?: Owner; signal?: AbortSignal }) {
+    async execute(args: { command: string; cwd?: string; env?: Record<string, string>; autoClose?: boolean }, exec: { agent?: Owner; signal?: AbortSignal }) {
       const owner = requireAgent(exec)
       return facade.open(owner, args, exec.signal)
     },
