@@ -72,6 +72,11 @@
 # 实测两组件「等待依赖」(桌面安装流程验证发现,详见 issue)。需要 shell_open
 # 的组合显式挂 dsh-shell-host/pty + dsh-shell-host/terminal 两行;world 级
 # 挂载机制归上游跟进票。
+# 【2026-10-10 #60 核实加强】blocked 结论落 ADR-0009:rc.2 dsh-terminal
+# (asar 实测 0.2.0-rc.2)是纯库包——main 只导出 TerminalSessionService 类,
+# 无 provide 入口;全 asar 无 new TerminalSessionService;desktop profile
+# 未装该包;无 world 挂载声明。全局安装排除(堵点是组合语义非包解析)。
+# 后续路线已拍板:本仓补缝 provide entry(ADR-0009 决策 2),落地后恢复两行。
 
 # 用户侧边栏终端(api-terminal-controller)是宿主级 user terminal,与 preset
 # 无关:发现走宿主 PATH。本机 Windows PATH 不含 MSYS2,裸 `bash` 只会命中
