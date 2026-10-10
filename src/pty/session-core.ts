@@ -125,9 +125,9 @@ interface Session {
   exited: boolean
   exitCode?: number
   idleTimeoutMs?: number
-  /** One-shot mode (#64): reclaim through the single close path as soon as
-   * the process exits — after the settle window so the final output has
-   * landed. Default (absent): persistent semantics, zero change. */
+  /** One-shot mode (#64) — semantics have a single source of truth:
+   * `AUTO_CLOSE_SEMANTICS` (OpenSpec doc). Reclaim rides the settle
+   * window, then the single close path. Default (absent): persistent. */
   autoClose?: boolean
   /** Absolute line count at the last idle-watch observation. */
   idleLastLines: number
@@ -144,12 +144,23 @@ export interface OpenSpec {
   /** Opt-in per-session idle timeout (#56): auto-close after this much
    * time with no NEW OUTPUT (output-defined idle; opt-in per session). */
   idleTimeoutMs?: number
-  /** One-shot mode (#64): when true, the core reclaims the session
-   * automatically on process exit (settle window first, then the single
-   * close path) — the soft-cap slot frees itself; tail afterwards reports
-   * NO_SESSION. Default false: persistent, unchanged. */
+  /** One-shot mode (#64) — semantics have a single source of truth:
+   * `AUTO_CLOSE_SEMANTICS` below. Default false: persistent, unchanged. */
   autoClose?: boolean
 }
+
+/**
+ * Single source of truth for the autoClose semantics wording (#66, #49
+ * keepalive precedent): the pty_open tool description and its autoClose
+ * parameter description both quote this constant verbatim, so the wording
+ * cannot drift between the agent-facing surfaces and the core's contract.
+ * Doc comments elsewhere reference this constant instead of restating it.
+ */
+export const AUTO_CLOSE_SEMANTICS =
+  'One-shot mode (#64): when true, the session is reclaimed automatically once the process exits — ' +
+  'settle window first (so the final output lands), then the single close path; no pty_close needed, ' +
+  'the soft-cap slot frees itself. Final output must be read before reclamation (tail in the live ' +
+  'window, or the returned deltas). Default false: persistent, unchanged.'
 
 export interface OpenResult {
   sessionId: string

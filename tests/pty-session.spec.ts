@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { apply } from "../src/pty/index.ts";
+import { AUTO_CLOSE_SEMANTICS } from "../src/pty/session-core.ts";
 import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
 
 // ---------------------------------------------------------------------------
@@ -204,6 +205,14 @@ describe("pty_open options", () => {
     handle.emitExit({ exitCode: 0 });
     await new Promise((r) => setTimeout(r, 250));
     expect(pty().active(a)).not.toContain(opened.sessionId);
+  });
+  it("autoClose semantics wording has one source: the tool surface quotes the exported constant (#66)", () => {
+    const open = tool("pty_open");
+    // The parameter description IS the semantic body — no second wording.
+    expect(open.parameters.properties.autoClose.description).toBe(AUTO_CLOSE_SEMANTICS);
+    // The tool description quotes it too (self-contained agent-facing text,
+    // zero independent rephrasing).
+    expect(open.description).toContain(AUTO_CLOSE_SEMANTICS);
   });
 });
 
