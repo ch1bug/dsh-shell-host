@@ -17,6 +17,7 @@ import {
   resolveLauncherDetailed,
   resolveLaunchers,
   type CustomLauncherConfig,
+  type LauncherDeps,
   type LocalLauncherPreset,
   type ResolvedLauncher,
 } from "../src/launchers.ts";
@@ -269,16 +270,18 @@ const POSIX_ETC_SHELLS = [
   "/opt/homebrew/bin/fish", // a user-appended Homebrew line rides the same file (#26 fact)
 ].join("\n");
 
-function posixDeps(overrides: Record<string, unknown> = {}) {
-  return {
-    exists: (candidate: string) => !candidate.includes("homebrew") && !candidate.includes("fish"),
-    env: {} as NodeJS.ProcessEnv,
-    platform: "linux" as NodeJS.Platform,
-    readEtcShells: () => POSIX_ETC_SHELLS,
-    userInfoShell: () => "/usr/bin/zsh",
-    listDistros: () => [] as string[],
-    ...overrides,
-  };
+function posixDeps(overrides: Partial<LauncherDeps> = {}): LauncherDeps {
+  return Object.assign(
+    {
+      exists: (candidate: string) => !candidate.includes("homebrew") && !candidate.includes("fish"),
+      env: {} as NodeJS.ProcessEnv,
+      readEtcShells: () => POSIX_ETC_SHELLS,
+      userInfoShell: () => "/usr/bin/zsh",
+      listDistros: () => [] as string[],
+      platform: "linux" as NodeJS.Platform,
+    },
+    overrides,
+  );
 }
 
 describe("POSIX preset rows (#68)", () => {
@@ -301,7 +304,7 @@ describe("POSIX preset rows (#68)", () => {
 
   it("prepend the detected passwd shell when it matches the row name (detectPosixShell consumed, not a second table)", async () => {
     // /usr/bin/zsh is the passwd shell but NOT in /etc/shells → still a candidate.
-    const { presets } = resolveLaunchers(posixDeps({ readEtcShells: () => "/bin/bash\n" }));
+    const { presets } = resolveLaunchers(posixDeps({ readEtcShells: () => "/bin/bash\n", platform: "linux" }));
     const zsh = localPreset(presets, "zsh");
     expect(zsh.executable).toEqual(["/usr/bin/zsh"]);
     const { posixInteractiveArgv } = await import("../src/detect.ts");
@@ -318,7 +321,7 @@ describe("POSIX preset rows (#68)", () => {
   });
 
   it("rows with no probe hit at all are absent with an empty probed list (posture, never loud)", () => {
-    const { presets, absent } = resolveLaunchers(posixDeps({ readEtcShells: () => undefined, userInfoShell: () => undefined }));
+    const { presets, absent } = resolveLaunchers(posixDeps({ readEtcShells: () => undefined, userInfoShell: () => undefined, platform: "linux" }));
     expect(presets.map((p) => p.id)).not.toContain("zsh");
     expect(absent.find((a) => a.id === "zsh")).toBeDefined();
     expect(absent.find((a) => a.id === "zsh")!.probed).toEqual([]);
