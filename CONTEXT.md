@@ -95,6 +95,10 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **phase 1 落地(human 拍板 C)**:`ssh_start` 增 `port`(-p)+ keepalive 默认(ServerAliveInterval=15/ServerAliveCountMax=4,可被同名 options 覆盖)+ 自由 `-o` options 透传——options 面为后续远程工作区能力(远程文件系统/runtime,后续票)预留。
 - 证据:unit `ssh-pty.spec.ts`(#21 组合块)+ machine live `ssh-pty-live.spec.ts` 长流 500 行无跳读/无重发(真机 bh4gxf)。
 
+## D11 (#63, 2026-10-10, human 拍板路线 A, 见 ADR-0011)
+
+- **pwsh 工具 host-only fork(只 fork 不提上游)**:平台 `dsh-tool-pwsh` 执行器裸查 `pwsh`,缺 PS7 静默回落 bash(#63 现象)。fork = 本包 `./pwsh` entry 注册同名 `pwsh` 工具,cordis.patch.yml 以同 id `tool-pwsh` 接管 loader 行(permission 行先例);唯一语义差 = executable 解析(`pwsh.exe → powershell.exe` 有序探测,双缺响亮报全部探测点)。一次性执行走 `ctx.subprocess`(非 PTY 世界);backends pwsh descriptor 是执行器维度另一层,红线不动。POSIX 门控镜像基座行逐字。
+
 ## 术语表(惰性)
 
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。

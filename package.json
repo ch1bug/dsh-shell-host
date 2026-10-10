@@ -46,6 +46,10 @@
       "types": "./lib/types/permission-presets.d.ts",
       "default": "./lib/permission-presets.js"
     },
+    "./pwsh": {
+      "types": "./lib/types/pwsh.d.ts",
+      "default": "./lib/pwsh.js"
+    },
     "./pty": {
       "types": "./lib/types/pty/index.d.ts",
       "default": "./lib/pty/index.js"
@@ -68,6 +72,7 @@
     "lib/client.js",
     "lib/types/**/*.d.ts",
     "lib/permission-presets.js",
+    "lib/pwsh.js",
     "lib/pty/index.js",
     "lib/pty-*.js",
     "lib/remote/index.js",
@@ -75,6 +80,7 @@
     "lib/terminal/index.js",
     "lib/posix-quote-*.js",
     "lib/backends-*.js",
+    "lib/src-*.js",
     "cordis.patch.yml"
   ],
   "scripts": {

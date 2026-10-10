@@ -39,7 +39,10 @@ const lib = defineConfig({
   // #55 (ADR-0008): the terminal entry joins — lib/terminal/index.js behind
   // the dsh-shell-host/terminal export. Plugin-LAYER entry: the launcher
   // preset surface (shell_open) over the pty session core.
-  entry: ['src/index.ts', 'src/permission-presets.ts', 'src/pty/index.ts', 'src/remote/index.ts', 'src/wsl-plugin/index.ts', 'src/terminal/index.ts'],
+  // #63: the pwsh tool fork joins — lib/pwsh.js behind the dsh-shell-host/pwsh
+  // export. Plugin-LAYER entry: the same-name `pwsh` tool takeover of the
+  // platform dsh-tool-pwsh row (one-shot execution over ctx.subprocess).
+  entry: ['src/index.ts', 'src/permission-presets.ts', 'src/pwsh.ts', 'src/pty/index.ts', 'src/remote/index.ts', 'src/wsl-plugin/index.ts', 'src/terminal/index.ts'],
   outDir: 'lib',
   format: 'esm',
   platform: 'node',
