@@ -82,6 +82,24 @@
       config:
         custom: []
 
+# #63(A 路线,human 2026-10-10 拍板):pwsh 工具 host-only fork —— 平台
+# dsh-tool-pwsh 的执行器裸查 `pwsh`,缺 PowerShell 7 时静默回落 bash,
+# Windows 上 pwsh 工具跑的是 bash(#63 现象)。本行以同 id 接管 loader 行
+# (同 permission 行先例:同 group 同 id 后行覆盖,Entry.update create:true
+# 整体替换),注册同名 `pwsh` 工具;唯一语义差 = executable 解析:
+# `pwsh.exe → powershell.exe` 有序探测(detect.ts pwshProbedLocations +
+# spawnableExists,与 backends pwsh descriptor 同一候选表),双缺响亮报
+# 全部探测点——绝不静默回落 bash。仅剩 Windows PowerShell 5.1 时经
+# powershell.exe -Command 正常执行 PowerShell 语法(UTF-8 前导对齐该
+# descriptor)。一次性命令走 ctx.subprocess 通道(非 PTY 世界;ADR-0007
+# 插件层/执行器层不合并——backends pwsh descriptor 是另一维度,不动)。
+# disabled 表达式与基座行逐字镜像:POSIX 上平台行本就 disabled,接管行
+# 不得把它翻亮。
+- insert:
+    - id: tool-pwsh
+      name: dsh-shell-host/pwsh
+      disabled: !!js process.platform !== 'win32'
+
 # 用户侧边栏终端(api-terminal-controller)是宿主级 user terminal,与 preset
 # 无关:发现走宿主 PATH。本机 Windows PATH 不含 MSYS2,裸 `bash` 只会命中
 # C:\Windows\System32\bash.exe(WSL 启动器 stub)。这里把 MSYS2 bash 显式设为
