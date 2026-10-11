@@ -3,7 +3,7 @@
 - Status: Accepted (T1 deliverable, direct input to T2/#5)
 - Date: 2026-09-30
 - Deciders: human (D7 consensus, triage 2026-09-30); this ADR records the VS Code source survey that grounds it
-- Context: `CONTEXT.md` D2/D7; spec issue #1; tickets #4 (this) → #5 (implements)
+- Context: `GLOSSARY.md` D2/D7; spec issue #1; tickets #4 (this) → #5 (implements)
 
 ## Context
 
@@ -234,7 +234,7 @@ Recorded here rather than left as silent drift (same rule as the T2 amendment):
    semantics) — a bogus explicit root fails its spawn rather than silently
    falling back to a detected root. The win32 plain surface resolves bare
    `bash` by PATH probe excluding the WSL `C:\Windows\System32\bash.exe`
-   stub (CONTEXT.md fact 6), then ordered candidates: Git Bash
+   stub (GLOSSARY.md fact 6), then ordered candidates: Git Bash
    (`Program Files\Git\bin|usr\bin`), Cygwin (`C:\cygwin64`, `C:\cygwin`),
    MSYS2 (`usr\bin\bash.exe`). Detection failure is loud, naming the config
    knob (`msysRoot`/`bashPath`) and every probed location; POSIX plain stays
@@ -289,7 +289,7 @@ planned:
 
 ## T5/D8 amendment (2026-09-30, issue #8 — human-approved direction revision D8)
 
-Mid-T5 the delivery shape pivoted (CONTEXT.md D8): the additive `Native
+Mid-T5 the delivery shape pivoted (GLOSSARY.md D8): the additive `Native
 MSYS2 Bash` preset is replaced by a HOST-PLANE replacement of the built-in
 platform shell executors. This section supersedes the additive-only and
 single-preset pins in T4 §3/§4 above.

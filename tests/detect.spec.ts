@@ -33,7 +33,7 @@ describe('detectMsysRoot', () => {
 
 describe('detectPlainBash (win32 PATH probe + ordered fallbacks)', () => {
   it('resolves bash.exe from PATH but excludes the WSL System32 stub', () => {
-    // CONTEXT.md fact 6: C:\Windows\System32\bash.exe is WSL, never a POSIX
+    // GLOSSARY.md fact 6: C:\Windows\System32\bash.exe is WSL, never a POSIX
     // bash we can inject into — the probe must skip it.
     const path = ['C:\\Windows\\System32', 'D:\\tools'].join(';')
     const exists = existsFor(['D:\\tools\\bash.exe'])

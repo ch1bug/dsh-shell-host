@@ -6,7 +6,7 @@
   spec; this ADR records the reversal the ticket mandates)
 - Context: #23 (route B), ADR-0003 (multi-backend registry; "ssh/远程语义
   永不进 registry"), ADR-0004 (remote execution in its own repo,
-  dsh-shell-remote), CONTEXT.md D8/D9/D10
+  dsh-shell-remote), GLOSSARY.md D8/D9/D10
 
 ## Decision
 
@@ -30,7 +30,7 @@ dsh-shell-remote becomes a thin shell or is archived.
 
 ## Consequences
 
-- CONTEXT.md's registry glossary entries and D10's three-repo split describe
+- GLOSSARY.md's registry glossary entries and D10's three-repo split describe
   the pre-#23 world; the ssh row there is historical. The registry now
   serves msys2 / plain / pwsh / wsl / ssh.
 - `executable: ['ssh']` resolves the launcher through bare PATH (the

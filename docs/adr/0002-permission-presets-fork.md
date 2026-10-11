@@ -3,7 +3,7 @@
 - Status: Accepted (issue #10 deliverable)
 - Date: 2026-09-30
 - Deciders: human (path decision "in-bundle fork only, no upstream PR", triage 2026-09-30); fork shape "host-side only"
-- Context: `CONTEXT.md` D8 + its regression note; ADR-0001 T5/D8 amendment §4(b); issue #10
+- Context: `GLOSSARY.md` D8 + its regression note; ADR-0001 T5/D8 amendment §4(b); issue #10
 
 ## Context
 

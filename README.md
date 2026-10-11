@@ -309,4 +309,4 @@ Status: v0.2.0-rc.2-r1 + issue #23 route B: decoupled build (inlined types,
 tsdown-only, npm-resolved deps), backend routing (msys2/plain/pwsh/wsl/ssh),
 coexistence with the platform shell (default disabled), ssh backend merged
 from dsh-shell-remote, backend dropdown in the settings card.
-See `CONTEXT.md` and GitHub Issues for the plan.
+See `GLOSSARY.md` and GitHub Issues for the plan.

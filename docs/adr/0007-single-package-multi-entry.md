@@ -6,7 +6,7 @@
 - Context: #27, batch 4 (#28 `./pty` → #29 `./remote` → #30 `./wsl` →
   #31 archive), ADR-0004 (remote in its own repo), ADR-0005 (release-tag
   anchoring), ADR-0006 (ssh registry entry, route B), ADR-0003
-  (multi-backend registry), CONTEXT.md D9/D10
+  (multi-backend registry), GLOSSARY.md D9/D10
 - Precedent: mimo-agent-tools absorbing voice-mimo's `./client` + `./mimo`
   entries
 
@@ -111,5 +111,5 @@ addresses (entries) and the settings namespaces living in one package.
   distinguish per-repo modules within the shell-execution domain.
 - Settings namespaces stay per-entry; users configure `./host`,
   `./pty`, `./remote`, `./wsl` surfaces independently.
-- CONTEXT.md's three-repo vocabulary (D10) describes the pre-merge
+- GLOSSARY.md's three-repo vocabulary (D10) describes the pre-merge
   world; the glossary's entry term now covers this ADR.

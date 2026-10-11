@@ -1,4 +1,4 @@
-# CONTEXT.md — dsh-shell-host
+# GLOSSARY.md — dsh-shell-host
 
 > 状态:初始化骨架。术语表与决策随 grill/implement 惰性填充。
 

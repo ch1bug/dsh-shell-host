@@ -255,7 +255,7 @@ export function resolveLaunchers(deps: LauncherDeps = {}, custom: readonly Custo
     exists(powershellCandidates[0])
       ? {
           // Pure-data interactive row (ADR-0008 decision 2): `-Login` is
-          // pwsh ≥7.4 only (CONTEXT.md D7); 5.1's keep-open terminal is
+          // pwsh ≥7.4 only (GLOSSARY.md D7); 5.1's keep-open terminal is
           // plain `-NoExit`.
           id: 'powershell', transport: 'local', executable: powershellCandidates, argv: ['-NoExit'],
           env: {}, pathPrefix: [], probed: powershellCandidates,

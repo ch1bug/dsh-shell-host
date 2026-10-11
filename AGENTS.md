@@ -19,12 +19,12 @@ Default five-role vocabulary (`needs-triage`, `needs-info`,
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See
+Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See
 `docs/agents/domain.md`.
 
 ## Project context
 
-Read `CONTEXT.md` first — it carries the verified upstream facts and the
+Read `GLOSSARY.md` first — it carries the verified upstream facts and the
 grill-locked decisions (D1–D8) this repo is built on.
 
 ## Build & verify

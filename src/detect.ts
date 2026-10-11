@@ -118,7 +118,7 @@ export function detectMsysRoot(exists: (path: string) => boolean = existsSync): 
   return undefined
 }
 
-/** The Windows system bash is WSL's launcher (CONTEXT.md fact 6) — spawning it as a POSIX bash is always wrong. */
+/** The Windows system bash is WSL's launcher (GLOSSARY.md fact 6) — spawning it as a POSIX bash is always wrong. */
 function isWslSystemBash(candidate: string): boolean {
   return /\\windows\\system32\\/i.test(candidate)
 }
@@ -246,7 +246,7 @@ export function detectPwsh(
  * Every WSL launcher location the wsl backend probes (win32, #15, ADR-0003
  * decision 3): the explicit System32 `wsl.exe` — the only candidate by
  * decision. A bare `bash` on the Windows PATH is a known unreliable probe
- * (CONTEXT.md verified facts: it hits the System32 WSL stub) and the System32
+ * (GLOSSARY.md verified facts: it hits the System32 WSL stub) and the System32
  * `bash.exe` launcher collides with that hazard, so neither is ever probed.
  */
 export function wslProbedLocations(env: NodeJS.ProcessEnv = process.env): readonly string[] {

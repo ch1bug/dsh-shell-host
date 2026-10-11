@@ -2,7 +2,7 @@
 
 - Status: Accepted (design output of #2 grill, 2026-10-03)
 - Deciders: human (grill session 2026-10-03, Q1–Q8)
-- Context: #2 (wsl bash executor, generalized to multi-backend), ADR-0001 descriptor layer, CONTEXT.md D7/D8
+- Context: #2 (wsl bash executor, generalized to multi-backend), ADR-0001 descriptor layer, GLOSSARY.md D7/D8
 - Supersedes: the #2 triage note's "do not force a local-backend abstraction for wsl" stance (overridden by the human's 2026-09-30 direction update: multi-backend form, wsl as registry anchor)
 
 ## Decisions
@@ -30,7 +30,7 @@
    (Q3=A).** Explicit distro; `-e` prevents wsl.exe from re-interpreting the
    command line. The descriptor's path candidates point at `wsl.exe`
    (explicit System32 path — a bare `bash` on Windows PATH is a known
-   unreliable probe, see CONTEXT.md verified facts). Distro discovery is a
+   unreliable probe, see GLOSSARY.md verified facts). Distro discovery is a
    descriptor concern; missing distro fails loudly naming the probe points,
    mirroring the pwsh backend's detection-failure posture. Rejected: default-
    distro form (silent semantic change when the user switches default), and

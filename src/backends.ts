@@ -313,7 +313,7 @@ function defaultListDistros(wslExe: string): readonly string[] {
  * `wsl.exe -d <distro> -e bash -c <cmd>` — explicit distro, `-e` prevents
  * wsl.exe from re-interpreting the command line; the only launcher candidate is
  * the explicit System32 `wsl.exe` (a bare `bash` on the Windows PATH is the
- * System32 WSL stub hazard, CONTEXT.md verified facts). Interactive (PTY
+ * System32 WSL stub hazard, GLOSSARY.md verified facts). Interactive (PTY
  * terminal) mode declares the same distro selection through `-e bash --login
  * -i`. The distro is a backend-specific descriptor field (decision 4): an
  * explicit `wslDistro` config knob wins; otherwise discovery runs

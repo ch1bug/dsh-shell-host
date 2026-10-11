@@ -2,7 +2,7 @@
 
 - Status: Accepted (design output of #16 grill, 2026-10-03)
 - Deciders: human (grill session 2026-10-03, Q1–Q9)
-- Context: #16 (remote/ssh anchor ticket), ADR-0003 decision 2 (registry is local-machine-only), ADR-0001 descriptor vocabulary, CONTEXT.md D8/D9
+- Context: #16 (remote/ssh anchor ticket), ADR-0003 decision 2 (registry is local-machine-only), ADR-0001 descriptor vocabulary, GLOSSARY.md D8/D9
 - Anchor of: #16 (transferred — implementation mirror ticket opens in dsh-shell-remote)
 
 ## Decisions
