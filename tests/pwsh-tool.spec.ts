@@ -18,6 +18,7 @@ import { isAbsolute, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import YAML from 'yaml'
 import { apply } from '../src/pwsh.ts'
+import { pwshProbedLocations } from '../src/detect.ts'
 
 interface CollectedText { text: string; truncated: boolean; spillPath?: string }
 interface FakeSpec {
@@ -46,6 +47,10 @@ function fakeHandle(stdout: CollectedText, stderr: CollectedText, outcome: { exi
 const PWSH7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
 const PS51 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const BASE_ENV = { SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' } as NodeJS.ProcessEnv
+
+/** The bundle patch, parsed once (custom !!js tags resolved as raw strings). */
+const jsTag = { tag: 'tag:yaml.org,2002:js', resolve: (value: string): string => value }
+const doc = YAML.parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'), { customTags: [jsTag] }) as Array<Record<string, unknown>>
 
 interface Boot {
   tool: () => any
@@ -213,10 +218,54 @@ describe('#63 AC3: one-shot execution over ctx.subprocess (-Command, UTF-8 pream
   })
 })
 
-describe('#63: the bundle patch (cordis.patch.yml) — the fork owns the tool-pwsh entry id', () => {
-  const jsTag = { tag: 'tag:yaml.org,2002:js', resolve: (value: string): string => value }
-  const doc = YAML.parse(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'), { customTags: [jsTag] }) as Array<Record<string, unknown>>
+describe('#72: narrow-component contract — enabled by default, ctx.shell untouched, no bash anywhere', () => {
+  /** Apply with a minimal tool-registering ctx; return the registered tools. */
+  function bootRegistering(config: unknown): Array<{ name: string }> {
+    const registered: Array<{ name: string }> = []
+    apply({ tools: { register: (t: unknown) => registered.push(t as { name: string }) }, get: () => undefined } as any, config, { exists: () => true })
+    return registered
+  }
 
+  it('the probe candidate chain never contains a bash candidate (AC: 禁止 */bash* 出现在候选链)', () => {
+    for (const path of ['C:\\Windows\\System32', 'C:\\msys64\\usr\\bin;C:\\Program Files\\Git\\usr\\bin', '']) {
+      const probed = pwshProbedLocations(path, BASE_ENV)
+      expect(probed.length).toBeGreaterThan(0)
+      for (const candidate of probed) expect(candidate.toLowerCase()).not.toMatch(/bash/)
+    }
+  })
+
+  it('apply never touches ctx.shell (the narrow component is not a shell-seam provider — AC: 启用前后 ctx.shell provider 不变)', () => {
+    const sentinel = { enginePath: 'sentinel' }
+    const ctx: any = {
+      tools: { register: () => {} },
+      get: () => undefined,
+      shell: sentinel,
+    }
+    apply(ctx, {}, { exists: () => true, path: 'C:\\Windows\\System32', env: BASE_ENV })
+    expect(ctx.shell).toBe(sentinel)
+  })
+
+  it('enabled defaults to true — the tool registers with no config at all (开箱即保护)', () => {
+    expect(bootRegistering(undefined)).toHaveLength(1)
+  })
+
+  it('enabled: false opts out — the component registers nothing (opt-out 有效)', () => {
+    expect(bootRegistering({ enabled: false })).toHaveLength(0)
+  })
+
+  it('the bundle patch row stays takeover-shaped: id tool-pwsh, win32-gated, and carries NO shell-seam config', () => {
+    const inserts = doc.flatMap((op) => Array.isArray(op.insert) ? op.insert as Array<Record<string, unknown>> : [])
+    const row = inserts.find((r) => r.id === 'tool-pwsh')
+    expect(row).toBeDefined()
+    expect(row?.name).toBe('dsh-shell-host/pwsh')
+    expect(row?.disabled).toBe("process.platform !== 'win32'")
+    // A shell-seam row would carry backend/subsystem config; the narrow
+    // component owns executable resolution only (#72 ruling: 不触碰 ctx.shell).
+    expect(row?.config).toBeUndefined()
+  })
+})
+
+describe('#63: the bundle patch (cordis.patch.yml) — the fork owns the tool-pwsh entry id', () => {
   it('the fork insert owns the tool-pwsh entry id (same-id later row replaces the platform row)', () => {
     const inserts = doc.flatMap((op) => Array.isArray(op.insert) ? op.insert as Array<Record<string, unknown>> : [])
     const fork = inserts.find((row) => row.name === 'dsh-shell-host/pwsh')

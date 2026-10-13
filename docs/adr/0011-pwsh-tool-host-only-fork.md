@@ -61,3 +61,54 @@ later row, loader last-wins), so the upstream module never composes on win32.
   escalation, system-prompt section) are NOT regressions to file against the
   fork — they are the documented narrow scope; a ticket opens if a deployment
   needs one.
+
+## Amendment (issue #72, 2026-10-13): the fork is the narrow component — default enabled
+
+Human ruling (expectation 4+3): the fork ships as an **independent narrow
+component** — default `enabled` (win32-only, the base row's gating verbatim),
+covering ONLY the `pwsh` tool's executable probe chain
+(`pwsh.exe → powershell.exe`, no `*bash*` candidate ever), never `ctx.shell`
+— the #23 AC7 opt-in contract governs the shell seam and is not engaged. The
+`enabled` config key (default true) opts a deployment out: false unregisters
+the tool entirely; because the loader row replaces the platform row, opting
+out NEVER reintroduces the bash fallback.
+
+Two evidence notes recorded for the record:
+
+1. The ruling framed this as narrowing the scope from "whole-row takeover";
+   in this repo the fork already was that narrow (it never touched
+   `ctx.shell`), and the `tool-pwsh` row has been enabled on win32 since the
+   original commit (c6ffc25) — including the shipped `0.2.0-rc.2-r1` tgz.
+   The #72 report's premise ("the takeover row defaults to disabled") does
+   not match the artifact evidence; the deployed 44.0.0 bash-fallback
+   observation remains unexplained by it (tracked on #72).
+2. Deliverables under this amendment: the `enabled` toggle, the
+   no-bash-candidate regression pins, the ctx.shell-untouched pin, the
+   README "default behavior + bypass" section, and this ADR note.
+
+### Verification record (#72 AC)
+
+- **configForms toggle**: the row's settings form is the settings-controller's
+  per-row derivation (namespace = row id, a GLOSSARY-verified implementation
+  fact from #23/#55); the entry's `Config` static carries
+  `enabled: z.boolean().default(true)`, which renders as the default-on
+  toggle. No bespoke client code is added — the `shell-host` card is bespoke
+  only because it predates nothing; it customizes layout, not existence.
+  Live Plugins-page rendering of the `tool-pwsh` toggle is pending desktop
+  verification (noted on #72).
+- **Narrow component + full-seam row coexistence**: structural, pinned by
+  tests — the shell-host executor row registers NO tools and only provides
+  `ctx.shell`; the narrow row registers the `pwsh` tool and is pinned to
+  never touch `ctx.shell` (the sentinel-identity pin). The two rows share no
+  service and no config namespace (`shell-host` vs `tool-pwsh`), so
+  co-enabling cannot conflict; the single-takeover-row yml pin guarantees
+  the `pwsh` tool has exactly one owner.
+- **AC3 (missing pwsh.exe resolves powershell.exe)**: covered by the #63
+  ordered-probe tests (PATH hit, install-root win, 5.1 fallback) plus the
+  real-5.1 machine lane (`tests/pwsh-tool-machine.spec.ts`); the #72 pin adds
+  the no-`*bash*`-candidate invariant over the whole chain.
+- **Opt-out semantics** (Brief AC "回到上游现状" — recorded deviation):
+  `enabled: false` unregisters the tool entirely. Restoring upstream behavior
+  is impossible without un-replacing the platform row, and re-teaching a bash
+  fallback is the bug this component exists to kill — so opt-out = tool
+  offline, never bash. Deviation flagged to the maintainer on #72.

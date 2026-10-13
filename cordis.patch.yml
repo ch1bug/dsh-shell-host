@@ -95,6 +95,11 @@
 # 插件层/执行器层不合并——backends pwsh descriptor 是另一维度,不动)。
 # disabled 表达式与基座行逐字镜像:POSIX 上平台行本就 disabled,接管行
 # 不得把它翻亮。
+# #72 裁决(期望 4+3):本行即「pwsh 窄组件」——默认启用(win32),只接管
+# pwsh 工具的 executable 探测链,不触碰 ctx.shell(不涉 #23 AC7 契约);
+# 独立 settings namespace(id: tool-pwsh,settings-controller 按行派生),
+# `enabled` 开关默认 true,false 即本组件不注册任何工具(loader 行已替换
+# 平台行,故 opt-out 是「pwsh 工具下线」而非「回到回落 bash」)。
 - insert:
     - id: tool-pwsh
       name: dsh-shell-host/pwsh

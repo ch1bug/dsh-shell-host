@@ -72,6 +72,24 @@ tool on win32; after the replacement its command text is handed to bash (the
 seam has no dialect translation, by upstream contract). Use bash-dialect
 presets on deployments with this bundle.
 
+## The `pwsh` tool narrow component (issues #63/#72, ADR-0011)
+
+平台 `pwsh` 工具的执行器裸查 `pwsh`,机器没装 PowerShell 7 时会**静默回落
+bash**——PowerShell 语法被交给 bash 执行(exit 127)。本 bundle 的窄组件
+(`dsh-shell-host/pwsh`,loader 行 `tool-pwsh` 同 id 接管平台行)**默认启用
+(win32)**,只修一件事:executable 探测链固定为 `pwsh.exe → powershell.exe`,
+绝不出现任何 `*bash*` 候选;两者皆缺时响亮报错并列出全部探测点,绝不静默
+回落。它**不触碰 `ctx.shell`**——shell-host 整缝接管行保持默认 disabled
+(#23 AC7 契约不受影响),两行同开也无冲突。
+
+- **默认行为**:只装 Windows PowerShell 5.1 的机器上,`pwsh` 工具经
+  `powershell.exe -Command` 正常执行 PowerShell 语法(UTF-8 输出)。
+- **opt-out**:Plugins 页该行的 `enabled` 开关置 false(或 loader 行整体
+  禁用)。注意:loader 行已替换平台行,故 opt-out 后 `pwsh` 工具直接下线,
+  而不是回到「回落 bash」的旧行为。
+- **绕行**(不想用该工具时):`shell_open(preset: 'powershell')` 开持久
+  PowerShell 终端,或经 bash 工具显式 `powershell -Command "..."`。
+
 ## VS Code-modeled internals
 
 Backend descriptors (`src/backends.ts`) mirror VS Code terminal profiles:

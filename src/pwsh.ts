@@ -31,6 +31,14 @@
  * packages/shell/tool-pwsh on every DSH bump; upstream PR explicitly NOT
  * pursued (route B reserved for the maintainer's call).
  *
+ * #72 (human ruling 2026-10-13, expectation 4+3): this fork IS the narrow
+ * component — default ENABLED (win32-only, mirroring the base row's gating),
+ * touching only the `pwsh` tool's executable resolution, never `ctx.shell`
+ * (the #23 AC7 opt-in contract governs the shell seam and is not involved).
+ * The `enabled` config key opts a deployment out: false unregisters the tool
+ * entirely — the loader row replaces the platform row, so a bash fallback is
+ * never reintroduced.
+ *
  * @module dsh-shell-host/pwsh
  */
 
@@ -56,6 +64,11 @@ const inject = ['tools']
 /** Resolved runtime budgets (plain values — apply() defaults the schema's
  * volatile fields, the same resolveConfig posture as the ./terminal entry). */
 export interface PwshToolConfig {
+  /** Narrow-component opt-out (#72): false = register nothing. Because the
+   * loader row replaces the platform `tool-pwsh` row, opting out removes the
+   * `pwsh` tool entirely rather than restoring upstream's bash fallback — a
+   * bash fallback is never reintroduced by this component. */
+  enabled: boolean
   /** Default foreground timeout in milliseconds. */
   timeoutMs: number
   /** Upper bound for per-call timeout overrides. */
@@ -77,6 +90,10 @@ const DEFAULT_MAX_SPILL_BYTES = 64 * 1024 * 1024
 const DEFAULT_GRACE_MS = 3_000
 
 const Config = z.object({
+  /** Narrow-component switch (#72): the pwsh tool's executable-resolution
+   * protection is ON by default (no opt-in contract — it never touches
+   * ctx.shell); false opts the deployment out (the tool unregisters). */
+  enabled: z.boolean().default(true).volatile(),
   timeoutMs: z.number().default(DEFAULT_TIMEOUT_MS).volatile(),
   maxTimeoutMs: z.number().default(DEFAULT_MAX_TIMEOUT_MS).volatile(),
   maxOutputBytes: z.number().default(DEFAULT_MAX_OUTPUT_BYTES).volatile(),
@@ -215,8 +232,10 @@ interface PwshToolCtx {
   get: (name: string) => unknown
 }
 
-/** Register the single `pwsh` tool over `ctx.subprocess`. */
+/** Register the single `pwsh` tool over `ctx.subprocess` (#72: no-op when the
+ * narrow component is opted out via `enabled: false`). */
 function registerPwshTool(ctx: PwshToolCtx, config: PwshToolConfig, deps: PwshToolDeps): void {
+  if (!config.enabled) return
   const subprocess = () => {
     const runtime = ctx.get('subprocess') as { spawn: (spec: SubprocessSpawnSpec) => SubprocessHandle } | undefined
     if (runtime === undefined) {
@@ -313,10 +332,12 @@ function registerPwshTool(ctx: PwshToolCtx, config: PwshToolConfig, deps: PwshTo
   }))
 }
 
-/** Plugin entry: register the same-name `pwsh` tool takeover. */
+/** Plugin entry: register the same-name `pwsh` tool takeover (#72: default ON;
+ * `enabled: false` opts the deployment out — nothing registers). */
 function apply(ctx: PwshToolCtx, config: unknown, deps: PwshToolDeps = {}): void {
   const c = (config ?? {}) as Partial<PwshToolConfig>
   registerPwshTool(ctx, {
+    enabled: c.enabled !== false,
     timeoutMs: c.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     maxTimeoutMs: c.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS,
     maxOutputBytes: c.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
