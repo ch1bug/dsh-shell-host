@@ -107,6 +107,15 @@ Two evidence notes recorded for the record:
   ordered-probe tests (PATH hit, install-root win, 5.1 fallback) plus the
   real-5.1 machine lane (`tests/pwsh-tool-machine.spec.ts`); the #72 pin adds
   the no-`*bash*`-candidate invariant over the whole chain.
+- **npm-lane (human-required 2026-10-13)**: after `pnpm build`, the BUILT
+  `lib/pwsh.js` re-passes all six behavioral checks in plain Node
+  (`.scratch/verify-72-npm.mjs`: default-on registration, `enabled: false`
+  opt-out, missing-pwsh.exe → powershell.exe argv, loud double-absence probe
+  list, no bash candidate in the probe list — advisory prose aside,
+  ctx.shell sentinel identity), and a fresh `pnpm pack` carries the
+  `tool-pwsh` row (win32 gating verbatim) plus the `enabled` schema in
+  `lib/pwsh.js`; `scripts/verify-pack.mjs` green (all 16 export entries
+  packed and importable).
 - **Opt-out semantics** (Brief AC "回到上游现状" — recorded deviation):
   `enabled: false` unregisters the tool entirely. Restoring upstream behavior
   is impossible without un-replacing the platform row, and re-teaching a bash
