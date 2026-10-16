@@ -114,9 +114,15 @@ python -m git_filter_repo --force \
 
 ## 6. 防复发（已就位）
 
-- `scripts/privacy-scan.mjs`：三面判据（本机身份运行时取 / 三种布局形态 /
-  `<DSH_HOME>/privacy-denylist.txt`），**大小写不敏感**，扫 `git ls-files`，
-  只报 `file:line 命中<类别>`、不回显 token；`.githooks/pre-commit` 第 5 步与
-  `tests/privacy-scan.spec.ts` 共用它（误报才 `SKIP_HOOKS=1`）。
-- AGENTS.md 的硬规则 + 指针；`docs/dev-environment.md` §0.0 记本仓这一次的现场事实。
-- 引用哈希可解析性由 `tests/doc-references.spec.ts` 守。
+- `scripts/privacy-scan.mjs`：扫**会被推出去的发布面** —— tracked 文件、**全部提交消息**、
+  **提交身份**（author / committer）、**ref 名**（分支 / tag）、以及 pre-commit 窗口里的
+  `.git/COMMIT_EDITMSG`；`--gh` 再加**轨迹面**（issue 正文 / 评论，分页取 JSONL）。
+  判据三面：本机运行时身份 + 结构性形态（字面家目录 / 检出 / 旧布局，占位符与
+  `$(whoami)` 这类运行期派生豁免）+ `<DSH_HOME>/privacy-denylist.txt`（**大小写不敏感**）。
+  只报 `发布面:文件:行 命中<类别>`，**不回显 token 与行文**（输出也是发布面）。
+- `.githooks/pre-commit` 第 5 步跑它（误报才 `SKIP_HOOKS=1`）；`tests/privacy-scan.spec.ts`
+  共用同一份判据，并用**真 git 夹具**逐面钉死（文件 / 消息 / 身份 / ref / 待提交消息 +
+  CLI 退出码 + 非 git 目录响亮跳过），最后一条是**常驻守卫**（真实仓三个面全 0）。
+- 引用哈希可解析性由 `tests/doc-references.spec.ts` 守（历史重写会改写全部 SHA）。
+- 审计轨迹面现状：`node scripts/privacy-scan.mjs --gh`（有命中即 exit 1，逐条给
+  `issue:#N:行` / `comment:<id> (#N):行`，按 §5 处置）。
