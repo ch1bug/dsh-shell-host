@@ -313,7 +313,7 @@ describe("formatEntry", () => {
 
 describe("failureExcerpt", () => {
   it("pulls the failure block out of the middle instead of tailing blindly", () => {
-    // 12068aa：vitest 把失败详情印在中段，末尾是汇总与耗时——
+    // 64a8e73：vitest 把失败详情印在中段，末尾是汇总与耗时——
     // 盲切末尾 25 行看不到「哪条断言挂了」。
     const out = [
       " RUN  v4.1.8 <repo>",
