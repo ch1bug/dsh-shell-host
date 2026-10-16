@@ -70,6 +70,34 @@ Create a GitHub issue.
 
 Run `gh issue view <number> --comments`.
 
+## Ready frontier（可开工票集合）
+
+排批 / 预检的输入 = **open + `ready-for-agent` + 无 open 阻塞 + 无 assignee**。
+**现算，不读票面文字：**
+
+```bash
+node scripts/frontier.mjs                  # 默认 ready-for-agent
+node scripts/frontier.mjs --label ready-for-human
+node scripts/frontier.mjs --json           # 排批输入：frontier + gated（含理由）
+```
+
+它只走 **GitHub 原生依赖边**（逐票 `.../issues/<n>/dependencies/blocked_by`）。
+三个读图陷阱（前两个实测踩过）：
+
+- **正文/回复里的阻塞只是叙述，会过期。** 本会话曾在回复里写下"#81 → #80 连着做"，
+  而 tracker 里根本没有那条边 —— 阻塞只活在对话里，换个会话就没了。
+  **改阻塞关系 = 改边**（`gh issue edit <child> --add-blocked-by <blocker>`），正文顺手对齐。
+- **`issue_dependencies_summary` 写入后滞后。** 刚 `--add-blocked-by` 后立即查 REST，
+  `blocked_by` 读到 `0`（实测等几秒才变 `1`）。据此判断"边没建上"再重试，会得到
+  `Validation failed: Target issue has already been taken` —— 那条错误恰恰说明**边已建好**。
+  脚本因此用**逐票依赖端点**取数，而非 summary 字段。
+- **state 大小写不一致**：`gh issue list --json state` 给 `OPEN`，REST `gh api` 给 `open`。
+  纯函数按大小写不敏感比较，边界归一。
+
+纯逻辑（label 命中 / open 阻塞 / assignee / state 大小写 / **正文文字不影响结果**）
+由 `tests/frontier.spec.ts` 离线断言；CLI 那半截需要 PATH 上有已登录的 `gh`，
+任何 gh 失败都**响亮退出** —— 绝不把"接口挂了"伪装成"没有阻塞"。
+
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.

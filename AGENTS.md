@@ -73,6 +73,10 @@ Do not propose adding ci.yml. Local guardrails ARE allowed — enable once per c
 
 分层、证据纪律、失败归因规则见 `docs/agents/TESTING.md`。
 
+**审阅阶段**（`/code-review` 的两个轴 subagent）另读 `docs/code-review-brief.md` ——
+本仓怎么组装那两份 brief（固定点写法、spec 源、standards 清单、smell 基线粘贴要求）。
+实现阶段不必读。
+
 Gotchas (learned the hard way):
 
 - `!!js` values inside `cordis.patch.yml` that contain a colon-space (`: `)

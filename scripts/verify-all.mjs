@@ -101,6 +101,22 @@ for (const lane of LANES) {
 
 const label = { PASS: 'PASS ', 'PASS*': 'PASS*', FAIL: 'FAIL ', SKIP: 'SKIP ' }
 console.log('\n=== verify-all ===')
+
+// 提交前门禁是**每 clone 一次**的本地 git 配置（core.hooksPath 不随 clone 分发）：
+// 没配就是静默没有，而套件照样全绿 —— 与 loud-skip 的"如实告知"口径相反。
+// 故响亮提一句（advisory：不阻断、不改 exit code）。
+{
+  const probe = spawnSync('git', ['config', 'core.hooksPath'], { cwd: REPO, encoding: 'utf8' })
+  const hooksPath = (probe.stdout ?? '').trim()
+  // git 不可用时不猜（probe.error 存在即静默跳过），只在能确证时提示。
+  if (probe.error === undefined && probe.status !== null && hooksPath !== '.githooks') {
+    console.log(
+      `  !! pre-commit 钩子未启用（core.hooksPath = ${hooksPath === '' ? '未设置' : hooksPath}）` +
+        ' —— 首次 clone 跑一次: git config core.hooksPath .githooks',
+    )
+  }
+}
+
 for (const r of results) {
   console.log(`  ${label[r.status]} ${r.label.padEnd(40)} ${r.detail}`)
 }
