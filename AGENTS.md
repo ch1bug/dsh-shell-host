@@ -79,6 +79,8 @@ Do not propose adding ci.yml. Local guardrails ARE allowed — enable once per c
 
 Gotchas (learned the hard way):
 
+- 提交或复核前先 `git add -A` 再 `git diff --staged` —— **否则新增文件不进 diff**
+  （`docs/code-review-brief.md` §1；此前真实踩过：审出的面少了新文件）
 - `!!js` values inside `cordis.patch.yml` that contain a colon-space (`: `)
   must be block scalars (`!!js >-`) — colon-space breaks YAML plain-scalar
   parsing. Colon-free inline expressions (the platform guards) are fine;
