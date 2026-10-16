@@ -39,6 +39,17 @@ profile (symlink, registration records, restart semantics): see
 `docs/agents/profile-install.md`. Install only via the plugin manager — a
 hand-made node_modules symlink is not a registration.
 
+### Authoritative worktree (commit only here)
+
+`<repo>` is the **only** authoritative worktree. Any msys2-side
+checkout (e.g. `/home/<user>/dsh-shellhost-src`, used to run the `dsh-host-dev`
+instance on port 19502) is a **read-only deployment copy**: change code, commit,
+and push **here**; sync that copy forward with `fetch` + `merge --ff-only`.
+Both `main`s must point at the same commit — if they differ, someone committed
+in the copy: stop and reconcile. Do not `checkout` tags in this repo; the
+`dsh-v0.2.0-rc.2` anchor belongs to the **host** source tree only (a tag
+checkout here just creates a detached HEAD). See `docs/agents/TESTING.md`.
+
 ## Project context
 
 Read `GLOSSARY.md` first — it carries the verified upstream facts and the

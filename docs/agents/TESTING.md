@@ -84,6 +84,40 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 
 **宿主锚点统一 = `dsh-v0.2.0-rc.2`（`639ed015`）**，ADR-0008 口径。
 
+## 权威工作树 vs 部署副本（**提交只在权威树**）
+
+**权威工作树 = `<repo>`（本仓库）。** 任何 msys2 侧的源码树
+（如 `/home/<user>/dsh-shellhost-src`）都是**只读部署副本**。
+
+| 动作 | 位置 |
+|---|---|
+| 改代码 / `git add` / `git commit` / `git push` | ✅ **只在 `<repo>`** |
+| 跑实例、跑 B1 构建（原生件走 Windows node）、部署验证 | 部署副本 |
+| 临时探针脚本（未跟踪、不提交） | 部署副本 |
+
+**实测教训（2026-10-16）**：为搭 msys2 部署环境建克隆后，顺手**在克隆里开发并提交**，
+结果出现「两个都叫 `main`、内容不同」的仓库，权威树落后 3 个提交；又叠加
+`git checkout <sha>` 造成的 detached HEAD，需 `merge --ff-only` 补救。
+**根因是把"部署副本"和"开发工作树"混为一个。**
+
+**两边的 `main` 必须同提交。** 不同即说明有人又在副本里提交了 —— 停下核对：
+
+```bash
+git -C <repo> rev-parse HEAD
+git -C /c/msys64/home/<user>/dsh-shellhost-src rev-parse HEAD   # 必须相同
+```
+
+副本同步（单向，权威 → 副本）：
+
+```bash
+git -C /c/msys64/home/<user>/dsh-shellhost-src fetch <repo> main
+git -C /c/msys64/home/<user>/dsh-shellhost-src merge --ff-only FETCH_HEAD
+```
+
+> 宿主的 tag 锚点（`dsh-v0.2.0-rc.2`）**只切在宿主源码树** `dsh-host-src`；
+> **插件仓库不要 checkout tag** —— 本仓 `main` 就是工作线，切 tag 只会制造
+> detached HEAD。
+
 ## 实测踩坑（写进规则，避免重复踩）
 
 1. **tsdown tsconfig 路径双拼**（msys2 下）：`D:\x/D:\x\tsconfig.json` → 见 #80
