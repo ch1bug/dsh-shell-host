@@ -49,6 +49,18 @@ export GIT_CONFIG_GLOBAL="$(cygpath -u "$USERPROFILE")/.gitconfig"
 export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
 ```
 
+3. **pty 里跑长命令要把输出重定向到文件**。msys2 bash 在 pty 下会缓冲，
+   增量读取（`pty_tail`）会出现连续 `(no new output)` —— 实测为此反复空轮询十几次，
+   关键路径被拖长。可靠做法是**命令写文件、读文件**：
+
+   ```bash
+   pnpm build > /d/build.log 2>&1; echo "exit=$?"; tail -20 /d/build.log
+   ```
+
+   次优：把整个命令链串成**一条**（含 `sleep`）再读取，而不是分多条排队 ——
+   排队会让输出积压得更深。构建这类分钟级任务可交给后台作业（`run_in_background`），
+   避开 pty 缓冲。
+
 只**指向**Windows 配置，不复制不修改：凭据与登录态留在原处。
 
 ## 1. 隔离契约（三实例互不干扰）

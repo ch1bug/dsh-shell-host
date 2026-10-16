@@ -100,9 +100,42 @@ for (const r of results) {
   console.log(`  ${label[r.status]} ${r.label.padEnd(40)} ${r.detail}`)
 }
 
+/**
+ * Pull the lines that actually explain a failure.
+ *
+ * Blindly tailing the output loses the diagnosis: vitest prints its failure
+ * detail mid-stream and ends with the summary and timings, so a tail shows the
+ * counts but not WHICH assertion failed. Extract the failure block instead, and
+ * fall back to the tail only when nothing matches (e.g. a crash before vitest
+ * could format anything).
+ */
+function failureExcerpt(output) {
+  const lines = output.split('\n')
+  const markers = [
+    /^\s*FAIL\b/u,                        // vitest per-file failure banner
+    /AssertionError/u,
+    /^\s*Error:/u,
+    /^\s*[×✗]\s/u,                        // failed case line
+    /Cannot find (module|package)/u,
+    /is not a function|is not defined/u,
+  ]
+  const hits = []
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!markers.some((m) => m.test(lines[i]))) continue
+    hits.push(i)
+  }
+  if (hits.length === 0) return lines.slice(-25).join('\n')
+  // Keep a window around each hit, deduplicated and in order.
+  const keep = new Set()
+  for (const hit of hits.slice(0, 6)) {
+    for (let i = Math.max(0, hit - 2); i <= Math.min(lines.length - 1, hit + 14); i += 1) keep.add(i)
+  }
+  return [...keep].sort((a, b) => a - b).map((i) => lines[i]).join('\n')
+}
+
 for (const failed of results.filter((r) => r.status === 'FAIL')) {
   console.log(`\n--- ${failed.label} (${failed.detail}) ---`)
-  console.log((failed.output ?? '').split('\n').slice(-25).join('\n'))
+  console.log(failureExcerpt(failed.output ?? ''))
 }
 
 const failed = results.filter((r) => r.status === 'FAIL').length

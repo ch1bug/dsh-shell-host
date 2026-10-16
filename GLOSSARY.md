@@ -120,10 +120,9 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   `@deepseek-ai/dsh-invariants`**,且 `cordis ~4.0.4` / `schemastery ~3.18.4`
   (与 alpha 的 `~4.0.5-alpha.1` / `~3.18.5-alpha.1` 不同)。照 alpha 抄 peer 会
   **漏声明**(#82 即此)。
-- **宿主 `scripts/build.ts` 参数不同**:RC2 用 `--profile`,alpha `--scope artifacts`。
-- **切 tag 后必须清构建产物**:`lib/` 被 gitignore,`git status` 看着干净但残留
-  上一 tag 的产物 → RC2 构建报 `MISSING_EXPORT "principalOf"`(该符号只在 alpha
-  源码)。`git clean -fxd` 清掉孤儿 `lib/` 后通过。
+- **宿主 `scripts/build.ts` 参数不同**：RC2 用 `--profile`，alpha 用 `--scope artifacts`。
+  （构建操作与切 tag 后的清理步骤见 [docs/dev-environment.md](docs/dev-environment.md) §2/§4.3，
+  此处只记接口差异本身。）
 
 ### typert RPC 参数名逐方法不同(三种形态)
 
