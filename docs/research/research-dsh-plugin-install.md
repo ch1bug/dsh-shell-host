@@ -1,6 +1,10 @@
 # Research: how to install a plugin into dsh the built-in way
 
-Primary source: dsh checkout at `<old-work>\deepseek-harness`, tag `dsh-v0.2.0-rc.2`.
+Primary source: the host checkout **on this machine** `C:/msys64/home/<user>/dsh-host-src`, tag
+`dsh-v0.2.0-rc.2`（commit `639ed015`）。锚点、克隆口径与「先读源码树还是 app.asar」的单一来源是
+[`../dev-environment.md` §2 宿主锚点](../dev-environment.md)。
+（本行原写的 `<old-work>\deepseek-harness` 是**另一台机器/旧布局**的路径，本机不存在；
+retro 2026-10-16：信它把一次宿主契约核对逼成了 `app.asar` 逆推，代价见 dev-environment.md §2 的注。）
 All paths below are relative to that checkout unless absolute. Line numbers are approximate (≈).
 
 ## TL;DR
@@ -61,7 +65,7 @@ There is **no Koishi-style `market` registry.json**. "Official" tooling = CLI pl
 
 ## 4. What this means for dsh-shell-host
 
-`<old-work>\dsh-shell-host\package.json` **already declares** `dsh.bundle.patch: ./cordis.patch.yml`, `dsh.client` (inject list + `platform: web`), `main`/`exports` to `lib/`, and pinned `@deepseek-ai/dsh-*` peers at `0.2.0-rc.2`. So the official path needs almost nothing structural:
+`<repo>\package.json` **already declares** `dsh.bundle.patch: ./cordis.patch.yml`, `dsh.client` (inject list + `platform: web`), `main`/`exports` to `lib/`, and pinned `@deepseek-ai/dsh-*` peers at `0.2.0-rc.2`. So the official path needs almost nothing structural:
 
 **Recommended path (publish to npm):**
 1. Remove `"private": true`, keep `version` semver-clean; ensure `prepare`/build output (`lib/`) is either committed or built via `prepare` (note pnpm ≥10 build-script approval friction — shipping a built tarball avoids it, `apps/cli/reference/README.md:101`).

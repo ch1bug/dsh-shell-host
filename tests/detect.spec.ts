@@ -4,7 +4,8 @@ import { detectMsysRoot, detectPlainBash, detectPwsh, MSYS2_ROOT_CANDIDATES, PLA
 /**
  * T3 detection tests, fully injected (fake `exists` predicates and PATH
  * strings) so they need no real install — the real-install behavior is
- * covered live in descriptor.spec.ts. Cygwin in particular is not installed
+ * covered live in tests/terminal-machine.spec.ts (resolveLaunchers() probes
+ * every preset, each behind its own skipIf). Cygwin in particular is not installed
  * on the dev host, so its detection is only reachable through these fakes.
  */
 function existsFor(present: string[]) {

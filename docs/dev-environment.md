@@ -89,6 +89,13 @@ export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
 跟随 DSH 运行时 **rc 线**：本仓 `0.2.0-rc.2-r1` ↔ 宿主 tag
 `dsh-v0.2.0-rc.2`（commit `639ed015`）。
 
+**宿主契约核对优先读源码树**：`bundlePatchFiles()`、patch op 语义、profile 组合这类问题，
+直接读 `dsh-host-src` 的 TS 源码（如 `packages/boot/app-boot/src/profile.ts:58-64`）。
+安装目录的 `resources/app.asar`（包内 `dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`）
+只是**源码树不在本机时的退路**：行号对不上源码，引证时别拿它当权威。
+（retro 2026-10-16：一份调研文档把 primary source 指到已不存在的 `<old-work>\deepseek-harness`，
+一次宿主契约核对被逼成 asar 逆推 —— 单条工具输出 54KB。）
+
 **浅克隆默认分支会落到 alpha 系**（实测 `dsh-v0.2.1-alpha.4`），与锚不符 ——
 宿主必须显式 checkout tag：
 

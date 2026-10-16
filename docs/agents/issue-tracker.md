@@ -4,12 +4,15 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 ## Conventions
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
+- **Create an issue**: `gh issue create --title "..." --body-file <file>`（正文先落文件，见下「正文一律用文件写入」）。
+- **Read an issue**: `gh issue view <number> --json number,title,body,labels,comments --jq '{number,title,labels:[.labels[].name],body,comments:[.comments[].body]}'`.
+  **别用 `--comments` 取正文**：它**只输出评论**（实测 gh 2.96：0 评论 → **0 字节 + exit 0**），而本仓的权威契约在
+  **正文**（agent brief 就写在正文里，很多票根本没有评论）。空输出是**读失败**，不是"票面空"。
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Comment on an issue**: `gh issue comment <number> --body "..."`
+- **Comment on an issue**: `gh issue comment <number> --body-file <file>`（同上）。
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
-- **Close**: `gh issue close <number> --comment "..."`
+- **Close**: 关闭评论先落文件再发 —— `gh issue comment <number> --body-file <file>`，然后 `gh issue close <number> --reason completed`。
+  （`gh issue close` **没有 `--body-file`**，实测 `unknown flag: --body-file`；`--comment "..."` 又绕回 shell 转义坑，见下。）
 
 ### Triage disclaimer (required on every AI-authored issue artefact)
 
@@ -81,7 +84,7 @@ Create a GitHub issue.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> --comments`.
+Run `gh issue view <number> --json number,title,body,labels,comments --jq '{number,title,labels:[.labels[].name],body,comments:[.comments[].body]}'` —— **不要用 `--comments`**：它不给正文，0 评论时还返回 0 字节 + exit 0（见上面 §Conventions 的读票命令）。
 
 ## Ready frontier（可开工票集合）
 
