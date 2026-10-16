@@ -7,7 +7,7 @@
 ## 0. 权威工作树 vs 部署副本
 
 **权威工作树 = `<repo>`（本仓库）。** msys2 侧的源码树
-（`/home/<user>/dsh-shellhost-src`）只是**只读部署副本**。
+（`~/dsh-shellhost-src`，即 msys2 家目录下的 `dsh-shellhost-src`）只是**只读部署副本**。
 
 | 动作 | 位置 |
 |---|---|
@@ -17,8 +17,8 @@
 副本单向同步（权威 → 副本）：
 
 ```bash
-git -C /c/msys64/home/<user>/dsh-shellhost-src fetch <repo> main
-git -C /c/msys64/home/<user>/dsh-shellhost-src merge --ff-only FETCH_HEAD
+git -C ~/dsh-shellhost-src fetch <repo> main
+git -C ~/dsh-shellhost-src merge --ff-only FETCH_HEAD
 ```
 
 **两边的 `main` 必须同提交。** 不同即说明有人在副本里提交了 —— 停下核对。
@@ -70,7 +70,7 @@ export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
 
 | 资源 | 桌面端 | 相邻工作区（matt 工作流） | **本区（shell-host）** |
 |---|---|---|---|
-| DSH_HOME | `C:\Users/<user>\.dsh` | `/home/<user>/dsh-matt-home` | `/home/<user>/dsh-shellhost-home` |
+| DSH_HOME | `%USERPROFILE%\.dsh` | `~/dsh-matt-home` | `~/dsh-shellhost-home` |
 | profile | `desktop` | `matt-dev` | **`dsh-host-dev`**（常驻实例） |
 | 端口 | 19387（GUI） | 19501 | **19502** |
 | 源码树 | 安装版 | `dsh-matt-src` | 部署副本 `dsh-shellhost-src` + 宿主 `dsh-host-src` |
@@ -118,22 +118,22 @@ cd <src> && git fetch --depth 1 origin tag dsh-v0.2.0-rc.2 && git checkout dsh-v
 
 ```bash
 # 宿主（自建，不复用相邻工作区的树）
-git clone https://github.com/deepseek-ai/deepseek-harness.git /home/<user>/dsh-host-src
-cd /home/<user>/dsh-host-src
+git clone https://github.com/deepseek-ai/deepseek-harness.git ~/dsh-host-src
+cd ~/dsh-host-src
 git fetch --depth 1 origin tag dsh-v0.2.0-rc.2 && git checkout dsh-v0.2.0-rc.2
 pnpm install --ignore-scripts --package-import-method=copy   # 见 §4.1
 git clean -fxd && pnpm install --ignore-scripts --package-import-method=copy
 pnpm build                                                   # 见 §4.2/§4.3（约 290s）
 
 # 本插件（部署副本）
-git clone <repo> /home/<user>/dsh-shellhost-src
-cd /home/<user>/dsh-shellhost-src && pnpm install && pnpm build
+git clone <repo> ~/dsh-shellhost-src
+cd ~/dsh-shellhost-src && pnpm install && pnpm build
 ```
 
 # 把插件挂进 profile —— 官方两步命令，顺序固定
-export PATH="/c/msys64/home/<user>/.corepack/bin:$PATH"       # dsh plugin 会调 pnpm
+export PATH="$HOME/.corepack/bin:$PATH"                      # dsh plugin 会调 pnpm
 dsh --profile dsh-host-dev --from-default-profile web --dump-config   # ① 播种 profile
-dsh plugin --profile dsh-host-dev add /home/<user>/dsh-shellhost-src   # ② 注册 + pnpm 安装
+dsh plugin --profile dsh-host-dev add ~/dsh-shellhost-src             # ② 注册 + pnpm 安装
 ```
 
 **完整规则与理由见 [profile-install.md](agents/profile-install.md)**（为何 ① 不能省、

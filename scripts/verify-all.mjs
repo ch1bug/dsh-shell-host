@@ -244,6 +244,47 @@ function runLane(lane) {
   return { exitCode: run.status, out: `${run.stdout ?? ''}${run.stderr ?? ''}` }
 }
 
+/**
+ * 环表宣告行：`=== <档名> rings (…) ===`。
+ *
+ * 它是**约定**（不是巧合）：谁在报告里打环表，就用这一行开头，汇总层才收得到。
+ * 目前两档 e2e（`e2e-tarball-machine` / `e2e-real-llm-machine`）都是这个形状。
+ */
+const RINGS_HEADING = /^=== .*\brings\b.* ===$/u
+
+/**
+ * 环表读数行：`  ✓ <环>` / `  ✗ <环>` / `  – <说明>`。
+ *
+ * 末尾的 `(?!\|)` 是必需的：vitest 自己的逐文件行同样以两空格 + `✓` 开头
+ * （`  ✓ |machine| tests/x.spec.ts`），不排除就会把汇总行当成读数。
+ */
+const RING_ROW = /^ {2}(?:✓|✗|–) (?!\|)/u
+
+/**
+ * 从车道原始输出里收集**环表读数**：每块 = 宣告行 + 紧随其后的读数行。
+ *
+ * 为什么汇总层要收：`collectLane` 只为 FAIL 留输出（`output` 字段），而「清理读数
+ * 在成功与失败两条路径都出现」这类 AC 的**成功路径**证据恰恰只在绿路径的输出里 ——
+ * #89 与 #97 都因此被迫补跑一次单档，其中 #97 那次是一次真实端点调用。读数只有在
+ * **唯一验收入口**里看得见，才谈得上"读数"。
+ *
+ * @param output 车道输出（vitest stdout+stderr 拼接）
+ * @returns `[{ heading, rows }]`，按出现顺序；无宣告行 / 无读数行时为 `[]`
+ */
+export function readingBlocks(output) {
+  const lines = String(output ?? '').split('\n')
+  const blocks = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const heading = lines[i]
+    if (!RINGS_HEADING.test(heading)) continue
+    const rows = []
+    for (let j = i + 1; j < lines.length && RING_ROW.test(lines[j]); j += 1) rows.push(lines[j])
+    if (rows.length > 0) blocks.push({ heading, rows })
+    i += rows.length // 已收的行不再当宣告行看
+  }
+  return blocks
+}
+
 /** CLI 主体：跑车道（默认全部；`--lane` 只跑一个）→ 纯函数汇总 → 打印 + exit code。 */
 export function main(argv = process.argv.slice(2)) {
   const parsed = parseVerifyArgs(argv)
@@ -254,8 +295,11 @@ export function main(argv = process.argv.slice(2)) {
   const selected = parsed.lane === undefined ? LANES : LANES.filter((l) => l.name === parsed.lane)
   const iterationOnly = parsed.lane !== undefined
   const results = []
+  const readings = []
   for (const lane of selected) {
-    results.push(...collectLane({ lane, run: runLane(lane), results }))
+    const run = runLane(lane)
+    readings.push(...readingBlocks(run.out))
+    results.push(...collectLane({ lane, run, results }))
   }
 
   console.log('\n=== verify-all ===')
@@ -278,6 +322,16 @@ export function main(argv = process.argv.slice(2)) {
 
   for (const r of results) {
     console.log(formatEntry(r))
+  }
+
+  // 环表读数：**绿路径也打**（`collectLane` 只为 FAIL 留输出，见 `readingBlocks`）。
+  // 放在失败摘录之前 —— 读数是"哪个环节"，摘录是失败细节：先定位，再细节。
+  if (readings.length > 0) {
+    console.log('\n--- 环表读数（每块 = 宣告行 + 该档读数；绿 / 红路径都收）---')
+    for (const block of readings) {
+      console.log(block.heading)
+      for (const row of block.rows) console.log(row)
+    }
   }
 
   for (const failed of results.filter((r) => r.status === 'FAIL')) {

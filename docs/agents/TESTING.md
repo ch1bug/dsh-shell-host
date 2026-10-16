@@ -24,6 +24,18 @@
 - **验收口径的套件必须在最后一次写入之后起跑**（`node --run test` / `test:release`）：
   跑完 `git diff` 为空（或起跑前后文件 hash 一致）才采信输出。跑着的时候改文件 =
   跑的那份不是要交付的那份，只能重跑 —— 2026-10-16 实测踩过一次（多烧一轮全量套件）。
+  **且等其它 agent / 子代理静默之后再跑**：并发负载会扰动真实层（#97 会话唯一一次真实
+  端点 `TRANSPORT` 恰好落在两个复核 subagent 与全量套件并跑的窗口里，此后未并跑的四次
+  真实回合全绿 —— n=1 的观察，当**顺序纪律**用，别当因果结论）。
+- **实验标记要死掉再提交**：变异 / 调试探针一律带唯一前缀（`[DEBUG-…]`；变异用
+  `[MUTATION-…]`），口径见 `.claude/skills/diagnosing-bugs/SKILL.md` 的 Phase 4「Tag every
+  debug log」与 Phase 6 清单 —— 提交前 grep 前缀应为 **0 命中**。`.githooks/pre-commit`
+  已在 `tests/**`、`src/**` 的新增行上机械拦这一条（本仓修复类票的常规取证手段就是变异，
+  漏回滚 = 提交物与被跑过的树不是同一份）。
+- **回收要读总账**：跑完扫一眼临时目录（`Get-ChildItem $env:TEMP -Directory -Filter
+  'dsh-shellhost-*'`），**本轮那几个档名**不应新增；残留里可能带复制的
+  `.credentials.yaml`，看到先解释来源再删（本机曾长期躺着 9 个来源不可考的
+  `dsh-shellhost-verify-*`）。
 - **探测自检：0 命中先解释，再采信。** "回读/核对"用的探针本身会**静默**给假阴性，
   值不值得信要看**探测方法**，不是看结论顺不顺眼。两个同族实测形态（2026-10-16）：
   - 原生命令（`gh … --json body` 一类）的输出在 PowerShell 里**按行成数组**，
@@ -99,7 +111,7 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 
 | 项 | 桌面 GUI | 隔壁（matt） | **本区（shell-host）** |
 |---|---|---|---|
-| DSH_HOME | `C:\Users/<user>\.dsh` | `/home/<user>/dsh-matt-home` | `/home/<user>/dsh-shellhost-home` |
+| DSH_HOME | `%USERPROFILE%\.dsh` | `~/dsh-matt-home` | `~/dsh-shellhost-home` |
 | profile | `desktop` | `matt-dev` | `dsh-host-dev` |
 | 宿主源码树 | 安装版 | `dsh-matt-src` | `dsh-host-src` |
 | 端口 | 19387 | 19501 | 19502 |
@@ -162,6 +174,10 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 `DSH_E2E_PNPM_DIR`（三套件），
 `DSH_E2E_REAL_CREDENTIALS_SOURCE` / `DSH_E2E_REAL_PROVIDER` / `DSH_E2E_REAL_MODEL` /
 `DSH_E2E_REAL_PROMPT`（真实层）。
+
+> **环表读数进汇总**（retro 2026-10-16）：`verify-all.mjs` 会按宣告行 `=== … rings … ===`
+> 收集各档环表并在汇总里单独一段打印（**绿路径也打** —— `collectLane` 只为 FAIL 留输出）。
+> 打环表的档请照这个宣告行写，否则汇总里收不到；往汇总里加"读数"面时先看这条。
 
 > 装箱交付档的「`cordis.patch.yml`」在**两处**判：插件树有它 = 跳过条件（缺它组合不出
 > 行），**产物**有它 = 环 1 的失败断言。两处都当跳过条件的话，「打包器把文件丢了」

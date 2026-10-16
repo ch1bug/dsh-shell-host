@@ -33,6 +33,7 @@ import {
   partialBanner,
   partialSummaryNote,
   perFileEntries,
+  readingBlocks,
   summarize,
   summaryLine,
 } from "../scripts/verify-all.mjs";
@@ -349,6 +350,96 @@ describe("failureExcerpt", () => {
 
   it("returns the tail for empty output instead of crashing", () => {
     expect(failureExcerpt("")).toBe("");
+  });
+});
+
+describe("readingBlocks（环表读数进汇总）", () => {
+  // 真实宣告行（两档 e2e 各一条，逐字取自 spec 的 console.log）。
+  const HEADING = "=== packed-delivery rings (pack → install → config → boot → turn → cleanup) ===";
+  const REAL_HEADING = "=== real-LLM tier rings (install → credentials → boot → auth → session+model → turn → cleanup) ===";
+  /** vitest 在每段 console 输出前打的标记行（读数块就挂在它后面）。 */
+  const marker = (file: string) => `stdout | ${file} > suite > case`;
+
+  it("collects the rows under a rings heading, verbatim and in order", () => {
+    const out = [
+      marker("tests/e2e-tarball-machine.spec.ts"),
+      "",
+      HEADING,
+      "  ✓ 1 pack: the artifact carries the install face — 15 files unpacked",
+      "  ✓ 2 install: the tarball is the recorded source",
+      "  – Z cleanup: instance stopped — no instance was started",
+      "  ✓ Z cleanup: temp tree removed — C:/Users/x/AppData/Local/Temp/dsh-shellhost-tarball-abc",
+      "",
+      " Test Files  1 passed (1)",
+    ].join("\n");
+    expect(readingBlocks(out)).toEqual([
+      {
+        heading: HEADING,
+        rows: [
+          "  ✓ 1 pack: the artifact carries the install face — 15 files unpacked",
+          "  ✓ 2 install: the tarball is the recorded source",
+          "  – Z cleanup: instance stopped — no instance was started",
+          "  ✓ Z cleanup: temp tree removed — C:/Users/x/AppData/Local/Temp/dsh-shellhost-tarball-abc",
+        ],
+      },
+    ]);
+  });
+
+  it("THE POINT: green-path readings survive even though collectLane drops passing output", () => {
+    // #97/#89 的 AC（「清理读数在成功与失败两条路径都出现」）只有绿路径的输出能证；
+    // 而 collectLane 对通过的文件把 output 置空 —— 读数必须由 readingBlocks 单独收。
+    const out = [
+      line("✓", "machine", "tests/e2e-real-llm-machine.spec.ts", "(1 test) 13102ms"),
+      marker("tests/e2e-real-llm-machine.spec.ts"),
+      "",
+      REAL_HEADING,
+      "  ✓ 1 install: the official commands leave all three faces",
+      "  ✓ Z cleanup: temp tree removed — C:/Users/x/AppData/Local/Temp/dsh-shellhost-real-abc",
+    ].join("\n");
+    const entries = collectLane({ lane: MACHINE, run: run(0, out), results: [] });
+    expect(entries[0]?.output).toBeUndefined(); // 反证：汇总条目里没有它
+    expect(readingBlocks(out)).toEqual([
+      {
+        heading: REAL_HEADING,
+        rows: [
+          "  ✓ 1 install: the official commands leave all three faces",
+          "  ✓ Z cleanup: temp tree removed — C:/Users/x/AppData/Local/Temp/dsh-shellhost-real-abc",
+        ],
+      },
+    ]);
+  });
+
+  it("never mistakes vitest's own per-file rows for readings", () => {
+    // 逐文件行也是「两空格 + ✓」，靠 `✓` 后必须不是 `|` 区分；红/绿都一样。
+    const out = [
+      line("✓", "machine", "tests/e2e-real-llm-machine.spec.ts", "(1 test) 13102ms"),
+      line("×", "unit", "tests/broken.spec.ts", "(1 test)"),
+      line("↓", "machine", "tests/ssh-pty-live.spec.ts", "(4 tests | 4 skipped)"),
+    ].join("\n");
+    expect(readingBlocks(out)).toEqual([]);
+  });
+
+  it("skips a heading with no rows and keeps several blocks in order", () => {
+    const empty = ["=== empty tier rings (nothing) ===", "", " Test Files  no test files found"].join("\n");
+    expect(readingBlocks(empty)).toEqual([]);
+
+    const two = [
+      HEADING,
+      "  ✓ 1 pack: the artifact carries the install face",
+      REAL_HEADING,
+      "  ✗ 6 real turn: provider billed — the model attempt reported no failure",
+      "  ✓ Z cleanup: instance stopped — SIGTERM → exit",
+    ].join("\n");
+    const blocks = readingBlocks(two);
+    expect(blocks.map((b: { heading: string }) => b.heading)).toEqual([HEADING, REAL_HEADING]);
+    expect(blocks[1]?.rows).toHaveLength(2);
+    expect(blocks[1]?.rows[0]).toContain("✗ 6 real turn");
+  });
+
+  it("returns nothing when there is no rings heading (and never throws)", () => {
+    expect(readingBlocks("")).toEqual([]);
+    expect(readingBlocks("  ✓ |unit| tests/a.spec.ts (1 test)")).toEqual([]);
+    expect(readingBlocks(undefined)).toEqual([]);
   });
 });
 

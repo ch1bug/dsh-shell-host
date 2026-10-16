@@ -42,9 +42,12 @@ Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See
 ### 环境与安装（细节见文档，勿在此复述）
 
 - **权威工作树**：`<repo>` 是唯一提交处；msys2 侧检出（如
-  `/home/<user>/dsh-shellhost-src`，跑 19502 实例）是**只读部署副本**，
+  `~/dsh-shellhost-src`，跑 19502 实例）是**只读部署副本**，
   用 `fetch` + `merge --ff-only` 单向同步。两边 `main` 必须同提交；本仓不
   `checkout` tag（`dsh-v0.2.0-rc.2` 是**宿主**树的锚点）。
+- **本仓是 PUBLIC 仓**：文档 / 代码 / 提交信息里不得出现**个人绝对路径**（本机用户名、
+  家目录）；用 `~` / `$HOME` / `%USERPROFILE%` / `DSH_E2E_*` 覆盖或占位符
+  （`me` / `x` / `<user>`）。机械守卫：`tests/no-personal-identifiers.spec.ts`。
 - **环境事实唯一来源 / 隔离契约 / 源码部署 / 构建坑**：`docs/dev-environment.md`
 - **插件安装与注册**（官方两步 CLI；手工 symlink 不算安装）：`docs/agents/profile-install.md`
 
@@ -64,7 +67,7 @@ node --run test:release   # build + verify:pack（装箱面：exports 指针与�
 No CI (maintainer decision 2026-09-30; boundaries in ADR-0014): verification is local.
 Do not propose adding ci.yml. Local guardrails ARE allowed — enable once per clone:
 
-    git config core.hooksPath .githooks      # pre-commit: detached HEAD + lockfile + typecheck
+    git config core.hooksPath .githooks      # pre-commit: detached HEAD + lockfile + typecheck + 实验标记
     # bypass deliberately: SKIP_HOOKS=1 git commit …
 ```
 

@@ -58,4 +58,15 @@ fi
 echo "pre-commit: $NODE --run typecheck"
 "$NODE" --run typecheck || fail "typecheck 未通过 —— 修掉再提交，或用 SKIP_HOOKS=1 明确跳过"
 
+# 4. 提交里不许留下实验标记（`[DEBUG-…` / `[MUTATION-…`）。
+# 标记死了才叫实验：留下来的话，"被跑过的那棵树"与"提交物"不是同一份，而 typecheck
+# 照样过。标记纪律见 .claude/skills/diagnosing-bugs（Phase 4 打唯一前缀 / Phase 6 grep 清掉），
+# 变异实验走同一条（修复类票的常用取证手段，见 docs/agents/TESTING.md 的指针）。
+# 只看 tests/ 与 src/ 的**新增行** —— 文档里叙述这套做法不算。
+MARKERS=$(git diff --cached -U0 -- 'tests/*' 'src/*' | grep -nE '^\+.*\[(DEBUG|MUTATION)-' || true)
+if [ -n "$MARKERS" ]; then
+  echo "$MARKERS" | head -5
+  fail "staged diff 里还有实验标记（[DEBUG-… / [MUTATION-…）—— 清掉标记再提交，或用 SKIP_HOOKS=1 明确跳过"
+fi
+
 echo "pre-commit: 本地守卫通过（完整验收请跑 node --run test）"

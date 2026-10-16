@@ -20,19 +20,23 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { findPacker, untarGz } from "../../scripts/verify-pack.mjs";
 
 /** Windows node runs the host plus the native pieces (B1 posture); msys2 node
  * cannot load the rolldown/node-pty bindings. Overridable for other layouts. */
 export const NODE = process.env.DSH_E2E_NODE ?? "C:/Program Files/nodejs/node.exe";
+/** msys2 侧的家目录在 Windows 视角是 `C:/msys64/home/<用户名>`：用户名**运行时取**，
+ * 不写进仓库（本仓是 PUBLIC 仓 —— 见 AGENTS.md 与 tests/no-personal-identifiers.spec.ts）。 */
+const MSYS2_HOME = join("C:/msys64/home", userInfo().username);
 /** The plugin checkout under test (must be built: lib/*.js present). */
-export const PLUGIN_DIR = process.env.DSH_E2E_PLUGIN_DIR ?? "C:/msys64/home/<user>/dsh-shellhost-src";
+export const PLUGIN_DIR = process.env.DSH_E2E_PLUGIN_DIR ?? join(MSYS2_HOME, "dsh-shellhost-src");
 /** The DSH host source checkout providing apps/cli/src/bin.ts. */
-export const HOST_DIR = process.env.DSH_E2E_HOST_DIR ?? "C:/msys64/home/<user>/dsh-host-src";
+export const HOST_DIR = process.env.DSH_E2E_HOST_DIR ?? join(MSYS2_HOME, "dsh-host-src");
 /** Directory holding the `pnpm` shim: `dsh plugin` shells out to pnpm, so the
  * command fails outright ("'pnpm' is not recognized") without it on PATH. */
-export const PNPM_BIN_DIR = process.env.DSH_E2E_PNPM_DIR ?? "C:/msys64/home/<user>/.corepack/bin";
+export const PNPM_BIN_DIR = process.env.DSH_E2E_PNPM_DIR ?? join(MSYS2_HOME, ".corepack/bin");
 
 const HOST_BIN = "apps/cli/src/bin.ts";
 

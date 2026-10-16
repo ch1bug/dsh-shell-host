@@ -72,7 +72,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { stopChild } from "./helpers/e2e-chain.ts";
 import {
@@ -87,8 +87,10 @@ import {
 const PROFILE = "dsh-host-real";
 
 /** Account-device credentials source (read-only). Only the account records are
- * copied, into a temp home that is removed when the suite ends. */
-const ACCOUNT_SOURCE = process.env.DSH_E2E_REAL_CREDENTIALS_SOURCE ?? "C:/Users/<user>/.dsh/.credentials.yaml";
+ * copied, into a temp home that is removed when the suite ends. The default is
+ * the desktop home's credentials file — resolved at runtime, never spelled as an
+ * absolute personal path in this PUBLIC repo. */
+const ACCOUNT_SOURCE = process.env.DSH_E2E_REAL_CREDENTIALS_SOURCE ?? join(homedir(), ".dsh", ".credentials.yaml");
 const ACCOUNT_PREFIX = "deepseek-account-platform/";
 
 const API_KEY = process.env.DEEPSEEK_API_KEY;

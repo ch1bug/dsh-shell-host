@@ -1,6 +1,6 @@
 # Research: how to install a plugin into dsh the built-in way
 
-Primary source: the host checkout **on this machine** `C:/msys64/home/<user>/dsh-host-src`, tag
+Primary source: the host checkout **on this machine** (`~/dsh-host-src`, msys2 家目录下), tag
 `dsh-v0.2.0-rc.2`（commit `639ed015`）。锚点、克隆口径与「先读源码树还是 app.asar」的单一来源是
 [`../dev-environment.md` §2 宿主锚点](../dev-environment.md)。
 （本行原写的 `<old-work>\deepseek-harness` 是**另一台机器/旧布局**的路径，本机不存在；
