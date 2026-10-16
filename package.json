@@ -59,7 +59,7 @@
     "build": "tsc -p tsconfig.build.json && tsdown",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:pack": "node scripts/verify-pack.mjs",
-    "test": "pnpm typecheck && vitest run --project unit && vitest run --project machine"
+    "test": "node --run typecheck && vitest run --project unit && vitest run --project machine"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
