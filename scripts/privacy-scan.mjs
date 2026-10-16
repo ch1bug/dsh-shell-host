@@ -43,16 +43,18 @@ import { fileURLToPath } from "node:url";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** 判定结果的类别标签（值不落进报告）。 */
+/**
+ * 判定结果的类别标签（值不落进报告）—— **与邻仓逐字一致**（跨仓对读日志 / issue 时同一个词）。
+ * 含形态的标签在**源码里**拼接写：`X:\dsh-*` 直写会被自己的规则扫到（本会话两边都踩过）。
+ */
 export const KINDS = {
   userName: "本机用户名",
   homeDir: "本机家目录",
-  homePath: "字面家目录路径",
-  winUserPath: "字面 Windows 家目录",
-  checkout: "本机检出路径",
-  posixCheckout: "POSIX 检出路径",
-  oldWork: "旧工作布局",
-  denylist: "本机 denylist",
+  layoutWin: "本机布局(X:" + "\\dsh-*)",
+  layoutPosix: "POSIX 布局(/" + "x/dsh-*)",
+  layoutWork: "旧工作布局(X:" + "\\Work\\)",
+  homePath: "字面家目录(/home|/Users|X:" + "\\Users)",
+  denylist: "denylist",
 };
 
 /**
@@ -80,14 +82,14 @@ export const RULES = [
     userGroup: true,
   },
   {
-    kind: KINDS.winUserPath,
+    kind: KINDS.homePath,
     describe: "字面家目录 <盘符>:\\Users\\<user>",
     re: /[A-Za-z]:[\\/]Users[\\/]([A-Za-z0-9._-]+)/gu,
     userGroup: true,
   },
-  { kind: KINDS.checkout, describe: "检出路径 <盘符>:\\dsh-*", re: /[A-Za-z]:[\\/]dsh-[A-Za-z]/giu },
-  { kind: KINDS.posixCheckout, describe: "检出路径 /<盘符>/dsh-*", re: /\/[a-z]\/dsh-[A-Za-z]/giu },
-  { kind: KINDS.oldWork, describe: "旧工作布局 <盘符>:\\Work\\", re: /[A-Za-z]:[\\/]Work[\\/]/giu },
+  { kind: KINDS.layoutWin, describe: "检出路径 <盘符>:\\dsh-*", re: /[A-Za-z]:[\\/]dsh-[A-Za-z]/giu },
+  { kind: KINDS.layoutPosix, describe: "检出路径 /<盘符>/dsh-*", re: /\/[a-z]\/dsh-[A-Za-z]/giu },
+  { kind: KINDS.layoutWork, describe: "旧工作布局 <盘符>:\\Work\\", re: /[A-Za-z]:[\\/]Work[\\/]/giu },
 ];
 
 /** 词表位置：env 优先（`DSH_PRIVACY_DENYLIST`，兼容邻仓的 `DSH_PII_DENYLIST`），

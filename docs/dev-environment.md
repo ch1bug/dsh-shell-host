@@ -48,6 +48,8 @@ git -C ~/dsh-shellhost-src merge --ff-only FETCH_HEAD
   （`tests/doc-references.spec.ts` 会挡下一次写错）；**commit 信息内**的旧哈希不改
   （历史不可追改），解析不到时以 `git log -S <符号>` 或备份镜像为准。
 - 备份镜像（重写前完整历史，本机、不进仓）：`<repo>-backup-<date>.git`。
+- **平台侧残留（human 2026-10-16 拍板不处理）**：GitHub 上旧对象仍可按旧 SHA 直接访问
+  （本仓 0 fork / 0 PR）；彻底清除需向 GitHub Support 申请 purge —— **不申请**。
 - **部署副本这一次不能用 `merge --ff-only`**：先 `git fetch` 再一次性
   `git reset --hard origin/main`；之后恢复正常同步口径。
 - 防复发：`scripts/privacy-scan.mjs`（本机身份运行时取 + 三种布局形态 + home 下的 denylist），

@@ -116,9 +116,8 @@ describe("scanText：判定语义（合成样本）", () => {
       { kind: KINDS.homePath, line: 1 },
       { kind: KINDS.userName, line: 2 },
       { kind: KINDS.homeDir, line: 2 },
-      // 正斜杠形态同时命中两条家目录规则（`/Users/` 落在 `C:/Users/` 里）——规则重叠是**有意的**。
+      // `/Users/` 落在 `C:/Users/` 里 → 与 Windows 家目录规则同属一类（规则重叠是有意的）。
       { kind: KINDS.homePath, line: 2 },
-      { kind: KINDS.winUserPath, line: 2 },
       { kind: KINDS.denylist, line: 3 },
     ]);
   });
@@ -131,10 +130,10 @@ describe("scanText：判定语义（合成样本）", () => {
     const work = "C:" + "\\Work" + "\\code";
     expect(scanText([home, winHome, checkout, posix, work].join("\n"), [])).toEqual([
       { kind: KINDS.homePath, line: 1 },
-      { kind: KINDS.winUserPath, line: 2 },
-      { kind: KINDS.checkout, line: 3 },
-      { kind: KINDS.posixCheckout, line: 4 },
-      { kind: KINDS.oldWork, line: 5 },
+      { kind: KINDS.homePath, line: 2 },
+      { kind: KINDS.layoutWin, line: 3 },
+      { kind: KINDS.layoutPosix, line: 4 },
+      { kind: KINDS.layoutWork, line: 5 },
     ]);
   });
 
@@ -205,7 +204,7 @@ describe("发布面：真 git 夹具（逐面钉死）", () => {
       },
     });
     const { findings } = scanRepo({ root, tokens: [] });
-    expect(kindsOn(findings, "file")).toEqual([KINDS.homePath, KINDS.winUserPath]);
+    expect(kindsOn(findings, "file")).toEqual([KINDS.homePath, KINDS.homePath]);
   });
 
   it("F4 提交消息面：消息里的词表 token（大小写不敏感）", () => {
@@ -271,7 +270,7 @@ describe("轨迹面（纯函数；gh 只是取件薄壳）", () => {
       ],
       [{ kind: KINDS.denylist, value: "secretname" }],
     );
-    expect(findings.map((f) => `${f.surface}:${f.kind}`).sort()).toEqual(["comment:本机 denylist", "issue:字面家目录路径"]);
+    expect(findings.map((f) => `${f.surface}:${f.kind}`).sort()).toEqual([`comment:${KINDS.denylist}`, `issue:${KINDS.homePath}`]);
   });
 });
 

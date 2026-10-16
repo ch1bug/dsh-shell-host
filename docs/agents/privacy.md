@@ -41,6 +41,15 @@ git log --all --format=%B | grep -inE '<类别词>'             # 提交信息
 **一份规则文件、一遍重写。** 分几遍做的代价是重复：改哈希 → 重修引用 → 重新验收
 （2026-10-16 实测跑了三遍，约 100 次工具调用）。
 
+### 占位符白名单（两边守卫都放行，新增写法随手补进来）
+
+`~` / `$HOME` / `%USERPROFILE%` / `$(whoami)` / `%USERNAME%` / `${USER}` / `<user>` /
+`<用户名>` / `<repo>` / `<sibling-repo>` / `<old-work>` / `<work>` / `<src>` / `<盘符>`，
+以及通用账户段：`me` / `u` / `x` / `you` / `user` / `username` / `your-user` / `agent` /
+`runner` / `example` / `name` / `foo` / `bar` / `test` / `shared` / `public` / `default`，
+外加夹具用的合成身份（如 `alice`）——它们进的是 `ALLOWED_USERS` 白名单与
+`DYNAMIC_USER` 派生判定，**不是**漏判。两仓判据同步改，跨仓跑才不会互报红。
+
 ## 2. 飞行前
 
 - **工作树必须干净**（`git status --porcelain` 为空）：`filter-repo` 会 **reset 工作树**，
@@ -110,7 +119,8 @@ python -m git_filter_repo --force \
   `gh api --method PATCH repos/<o>/<r>/issues/comments/<id> --input payload.json`；
   改完**回读**（tracker 是权威表示，写坏没有第二份）。
 - **平台侧边界**：被重写掉的旧提交在 GitHub 上**仍可按旧 SHA 直接访问** —— force-push 不会
-  立即回收对象 / 缓存。要彻底抹除需向 GitHub Support 申请；有 fork 时先处理 fork。
+  立即回收对象 / 缓存。彻底抹除需向 GitHub Support 申请 purge；**human 2026-10-16 拍板不申请**
+  （本仓 0 fork / 0 PR，接受该残留）。有 fork 时先处理 fork。
 
 ## 6. 防复发（已就位）
 
@@ -120,6 +130,9 @@ python -m git_filter_repo --force \
   判据三面：本机运行时身份 + 结构性形态（字面家目录 / 检出 / 旧布局，占位符与
   `$(whoami)` 这类运行期派生豁免）+ `<DSH_HOME>/privacy-denylist.txt`（**大小写不敏感**）。
   只报 `发布面:文件:行 命中<类别>`，**不回显 token 与行文**（输出也是发布面）。
+  **类别标签与邻仓逐字一致**（`本机用户名` / `本机家目录` / `denylist`，以及三个布局标签
+  与 `字面家目录` —— 它们的**形态在源码里用 `<盘符>` / `X:` 这类中性写法描述**，免得守卫
+  扫到自己：直写具体盘符会被自己的规则命中，两边都踩过）。跨仓对读日志与 issue 时同一个词。
 - `.githooks/pre-commit` 第 5 步跑它（误报才 `SKIP_HOOKS=1`）；`tests/privacy-scan.spec.ts`
   共用同一份判据，并用**真 git 夹具**逐面钉死（文件 / 消息 / 身份 / ref / 待提交消息 +
   CLI 退出码 + 非 git 目录响亮跳过），最后一条是**常驻守卫**（真实仓三个面全 0）。
