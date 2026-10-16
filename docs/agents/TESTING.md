@@ -51,6 +51,25 @@ else bad('失败归咎于本仓新增行', blamed.join(', '))
 `skipping profile bundle: cannot resolve`，但**实例照样起得来、会话照样建得成**——
 此时任何"请求里出现 `pty_open`"的断言都会**假绿**（那字符串可能是测试自己塞的）。
 
+### e2e 的安装必须走官方命令（不许手工 symlink）
+
+测试里装插件用**官方两步**，顺序固定：
+
+```bash
+dsh --profile <p> --from-default-profile web --dump-config   # ① 播种 profile
+dsh plugin --profile <p> add <绝对路径>                       # ② 注册 + pnpm 安装
+```
+
+- **① 不能省**：它才写出 `cordis.yml` / `pnpm-workspace.yaml`。只跑 ② 的 profile
+  随后 `dsh web` 启动**毫无输出**（实测 120s 超时、stdout/stderr 皆空）。
+- **② 不许用手写注册记录 + 手工 `symlink` 代替**（[profile-install.md](profile-install.md)
+  写明那**不是安装**）。手工做法额外丢掉两样：pnpm 对 `link:` 依赖的 **peer 解析检查**
+  （本仓 10 个 peer 靠它暴露），以及 `.plugin-manager/logs/` **诊断面**。
+- 断言"装好了"要看**三处**：`dsh.profile.bundles` 含插件名、
+  `dependencies` 有该条目、`node_modules/<pkg>/package.json` 存在。
+
+`tests/helpers/e2e-install.ts` 封装了这套流程与门禁，两个 e2e 套件共用。
+
 ### 工具面断言的正确写法
 
 必须断言 **实例真实请求体里的 `tools` 数组**含有本仓工具，
@@ -163,13 +182,14 @@ git -C /c/msys64/home/<user>/dsh-shellhost-src merge --ff-only FETCH_HEAD
 | 入口 | 层 | 覆盖 | 门禁 |
 |---|---|---|---|
 | `pnpm test` | ①②③ | typecheck + unit + machine（本仓常规套件） | 无 |
-| `tests/e2e-tool-call-machine.spec.ts` | **mock 层** | 安装（注册记录 + 真实链接）→ 配置（组合树含两行、无 pending）→ 启动（真实 `dsh web`，OS 临时端口，stderr 干净）→ `session/create` → `prompt` → mock provider 要求 `pty_open` → 实例执行 → `tool_result` 回灌 | 插件树 + 宿主树（缺失则响亮跳过） |
+| `tests/e2e-tool-call-machine.spec.ts` | **mock 层** | 官方安装（`--from-default-profile` + `dsh plugin add`）→ 配置（组合树含两行、无 pending）→ 启动（真实 `dsh web`，OS 临时端口，stderr 干净）→ `session/create` → `prompt` → mock provider 要求 `pty_open` → 实例执行 → `tool_result` 回灌 | 插件树 + 宿主树 + pnpm shim（缺失则响亮跳过） |
 | `tests/e2e-real-llm-machine.spec.ts` | **真实层**（opt-in） | 同一链路打**真实端点**：供应商接受（计费 usage）、真实模型行为、真实凭据路径 | 上述 + `DEEPSEEK_API_KEY` 或含 `deepseek-account-platform/*` 的凭据源（缺失则响亮跳过） |
 
 两个 e2e 套件都在 **machine 车道**（串行，`fileParallelism` off），隔离用临时
 `DSH_HOME`（`os.tmpdir`）+ `--port 0`，**不占任何固定端口**（19387 / 19501 / 19502）。
 
-可选 env：`DSH_E2E_PLUGIN_DIR` / `DSH_E2E_HOST_DIR` / `DSH_E2E_NODE`（两套件），
+可选 env：`DSH_E2E_PLUGIN_DIR` / `DSH_E2E_HOST_DIR` / `DSH_E2E_NODE` /
+`DSH_E2E_PNPM_DIR`（两套件），
 `DSH_E2E_REAL_CREDENTIALS_SOURCE` / `DSH_E2E_REAL_PROVIDER` / `DSH_E2E_REAL_MODEL` /
 `DSH_E2E_REAL_PROMPT`（真实层）。
 

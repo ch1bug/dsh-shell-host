@@ -14,7 +14,9 @@
  * a tool call and the instance REALLY executed it.
  *
  * GATES (loud skip, never a silent pass — unset gates print why):
- *   DSH_E2E_NODE / DSH_E2E_PLUGIN_DIR / DSH_E2E_HOST_DIR  (as in the mock tier)
+ *   DSH_E2E_NODE / DSH_E2E_PLUGIN_DIR / DSH_E2E_HOST_DIR / DSH_E2E_PNPM_DIR
+ *     (as in the mock tier; DSH_E2E_PNPM_DIR must hold a pnpm shim because
+ *      `dsh plugin add` shells out to pnpm)
  *   credentials, one of:
  *     a) DEEPSEEK_API_KEY                     — a real key, passed via env ONLY,
  *                                               never written to disk;
@@ -39,15 +41,19 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  HOST_DIR,
+  NODE,
+  PLUGIN_DIR,
+  hostEnv,
+  installPlugin,
+  missingEnvironment,
+} from "./helpers/e2e-install.ts";
 
-const NODE = process.env.DSH_E2E_NODE ?? "C:/Program Files/nodejs/node.exe";
-const PLUGIN_DIR = process.env.DSH_E2E_PLUGIN_DIR ?? "C:/msys64/home/<user>/dsh-shellhost-src";
-const HOST_DIR = process.env.DSH_E2E_HOST_DIR ?? "C:/msys64/home/<user>/dsh-host-src";
 const PROFILE = "dsh-host-real";
-const PROFILE_BUNDLES = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-shell-host"];
 
 /** Account-device credentials source (read-only). Only the account records are
  * copied, into a temp home that is removed when the suite ends. */
@@ -82,19 +88,11 @@ function accountRecordsBlock(text: string): string | null {
 const accountBlock = hasKey ? null : await readFile(ACCOUNT_SOURCE, "utf8").then(accountRecordsBlock).catch(() => null);
 const usesAccount = !hasKey && accountBlock !== null;
 
-function missingEnvironment(): string[] {
-  return [
-    !existsSync(PLUGIN_DIR) ? `plugin tree ${PLUGIN_DIR}` : null,
-    !existsSync(join(PLUGIN_DIR, "lib/pty/index.js")) ? `built artifact ${PLUGIN_DIR}/lib/pty/index.js` : null,
-    !existsSync(join(HOST_DIR, "apps/cli/src/bin.ts")) ? `DSH host tree ${HOST_DIR}` : null,
-    !existsSync(NODE) ? `node executable ${NODE}` : null,
-    !hasKey && !usesAccount
-      ? `credentials: DEEPSEEK_API_KEY or a source with ${ACCOUNT_PREFIX}* (tried ${ACCOUNT_SOURCE})`
-      : null,
-  ].filter((v): v is string => v !== null);
-}
-
-const absent = missingEnvironment();
+const absent = missingEnvironment([
+  !hasKey && !usesAccount
+    ? `credentials: DEEPSEEK_API_KEY or a source with ${ACCOUNT_PREFIX}* (tried ${ACCOUNT_SOURCE})`
+    : null,
+]);
 const skipReason = `real-LLM tier needs: ${absent.join(" / ")} — provider acceptance and real-model behaviour stay UNVERIFIED without it`;
 
 interface SessionEvent {
@@ -186,33 +184,28 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
   it("runs a real turn whose tool call the instance really executes", { timeout: 300_000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-shellhost-real-"));
     const dshHome = join(root, ".dsh");
-    const profileDir = join(dshHome, "profiles", PROFILE);
-    await mkdir(profileDir, { recursive: true });
 
-    await writeFile(
-      join(profileDir, "package.json"),
-      JSON.stringify(
-        {
-          name: `dsh-profile-${PROFILE}`,
-          private: true,
-          dependencies: { "dsh-shell-host": `link:${PLUGIN_DIR}` },
-          dsh: { profile: { bundles: PROFILE_BUNDLES } },
-        },
-        null,
-        2,
-      ),
-    );
-    await writeFile(join(profileDir, "cordis.yml"), "[]\n");
-    await writeFile(join(profileDir, "pnpm-workspace.yaml"), "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n");
-    await writeFile(join(profileDir, "cordis.patch.yml"), "[]\n");
-    const linkPath = join(profileDir, "node_modules", "dsh-shell-host");
-    await mkdir(join(profileDir, "node_modules"), { recursive: true });
-    try { await symlink(PLUGIN_DIR, linkPath, "junction"); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
+    // ── install: through the OFFICIAL plugin commands ───────────────────────
+    // `--from-default-profile web` seeds the profile (writes cordis.yml etc.);
+    // `plugin add` then registers the bundle and runs pnpm. A hand-made
+    // node_modules symlink is explicitly NOT an installation — and it would skip
+    // the peer-resolution check pnpm runs against the linked package.
+    const installed = await installPlugin(dshHome, PROFILE);
+    expect(installed.code, `dsh plugin add succeeded (output: ${installed.out.slice(-500)})`).toBe(0);
+    const profileDir = join(dshHome, "profiles", PROFILE);
+    // All three faces of a real installation (TESTING.md): a registration record
+    // alone still boots and still creates sessions, so assert every face.
+    const record = JSON.parse(await readFile(join(profileDir, "package.json"), "utf8")) as any;
+    expect(record?.dsh?.profile?.bundles, "bundle registered in dsh.profile.bundles").toContain("dsh-shell-host");
+    expect(record?.dependencies?.["dsh-shell-host"], "plugin recorded as a profile dependency").toBeTruthy();
+    expect(
+      existsSync(join(profileDir, "node_modules", "dsh-shell-host", "package.json")),
+      "pnpm resolved the plugin into the profile node_modules",
+    ).toBe(true);
 
     // Credentials: account route copies ONLY the account records, into a home
     // that is deleted with the temp root. The key route writes nothing at all.
+    // Written AFTER the install so the profile seed cannot overwrite the file.
     if (usesAccount) {
       const original = await readFile(ACCOUNT_SOURCE, "utf8");
       const versionLine = original.split("\n").find((l) => l.startsWith("version:")) ?? "version: 1";
@@ -224,12 +217,7 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
       ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", PROFILE, "--no-open", "--port", "0"],
       {
         cwd: HOST_DIR,
-        env: {
-          ...process.env,
-          DSH_HOME: dshHome,
-          DSH_TELEMETRY_DISABLED: "1",
-          ...(hasKey ? { DEEPSEEK_API_KEY: API_KEY } : {}),
-        },
+        env: hostEnv(dshHome, hasKey ? { DEEPSEEK_API_KEY: API_KEY } : {}),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );

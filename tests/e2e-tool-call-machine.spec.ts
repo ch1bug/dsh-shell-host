@@ -28,40 +28,30 @@ import { afterAll, describe, expect, it } from "vitest";
 import { createServer, request as httpRequest } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-/** Windows node runs the host + the native pieces (B1 posture); msys2 node
- * cannot load rolldown/node-pty bindings. Overridable for other layouts. */
-const NODE = process.env.DSH_E2E_NODE ?? "C:/Program Files/nodejs/node.exe";
-/** The plugin checkout under test (built: lib/*.js must exist). */
-const PLUGIN_DIR = process.env.DSH_E2E_PLUGIN_DIR ?? "C:/msys64/home/<user>/dsh-shellhost-src";
-/** The DSH host source checkout that provides apps/cli/src/bin.ts. */
-const HOST_DIR = process.env.DSH_E2E_HOST_DIR ?? "C:/msys64/home/<user>/dsh-host-src";
+import {
+  HOST_DIR,
+  NODE,
+  PLUGIN_DIR,
+  hostEnv,
+  installPlugin,
+  missingEnvironment,
+  runHost,
+} from "./helpers/e2e-install.ts";
 
 const PROFILE = "dsh-host-dev";
-const PROFILE_BUNDLES = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-shell-host"];
 
 /** The bundle's own loader rows (ADR-0007/0012): a failure must never blame
  * these — they are the rows this repo adds (TESTING.md failure attribution). */
 const MY_ROWS = ["pty", "terminal"];
 
-/** Skip loudly with the precise missing piece; never a silent pass. */
-function missingEnvironment(): string[] {
-  return [
-    !existsSync(PLUGIN_DIR) ? `plugin tree ${PLUGIN_DIR}` : null,
-    !existsSync(join(PLUGIN_DIR, "lib/pty/index.js")) ? `built artifact ${PLUGIN_DIR}/lib/pty/index.js` : null,
-    !existsSync(join(HOST_DIR, "apps/cli/src/bin.ts")) ? `DSH host tree ${HOST_DIR}` : null,
-    !existsSync(NODE) ? `node executable ${NODE}` : null,
-  ].filter((v): v is string => v !== null);
-}
-
 const absent = missingEnvironment();
 /** Named in every skip so the report says WHY nothing ran. */
 const skipReason =
   `e2e mock-LLM tier needs: ${absent.join(" / ")} — ` +
-  `override with DSH_E2E_PLUGIN_DIR / DSH_E2E_HOST_DIR / DSH_E2E_NODE`;
+  `override with DSH_E2E_PLUGIN_DIR / DSH_E2E_HOST_DIR / DSH_E2E_NODE / DSH_E2E_PNPM_DIR`;
 
 /** Anthropic-style SSE frames — the shape the host's Messages client parses. */
 function sseFrames(content: Record<string, unknown>, stopReason: string): string {
@@ -149,13 +139,10 @@ function startInstance(dshHome: string, mockPort: number) {
     ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", PROFILE, "--no-open", "--port", "0"],
     {
       cwd: HOST_DIR,
-      env: {
-        ...process.env,
-        DSH_HOME: dshHome,
-        DSH_TELEMETRY_DISABLED: "1",
+      env: hostEnv(dshHome, {
         DEEPSEEK_BASE_URL: `http://127.0.0.1:${mockPort}`,
         DEEPSEEK_API_KEY: "mock-key-nonempty",
-      },
+      }),
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -209,48 +196,32 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
   it("delivers the full chain and feeds the tool_result back", { timeout }, async () => {
     const root = await mkdtemp(join(tmpdir(), "dsh-shellhost-e2e-"));
     const dshHome = join(root, ".dsh");
-    const profileDir = join(dshHome, "profiles", PROFILE);
-    await mkdir(profileDir, { recursive: true });
 
-    // ── install: registration record AND a real link ────────────────────────
-    // The record alone is not an installation: without the link the loader logs
-    // `skipping profile bundle ... cannot resolve` while the instance still
-    // boots — which is exactly the shape that produces a FALSE GREEN if the
-    // tool-surface assertion is written loosely.
-    await writeFile(
-      join(profileDir, "package.json"),
-      JSON.stringify(
-        {
-          name: `dsh-profile-${PROFILE}`,
-          private: true,
-          dependencies: { "dsh-shell-host": `link:${PLUGIN_DIR}` },
-          dsh: { profile: { bundles: PROFILE_BUNDLES } },
-        },
-        null,
-        2,
-      ),
-    );
-    await writeFile(join(profileDir, "cordis.yml"), "[]\n");
-    await writeFile(join(profileDir, "pnpm-workspace.yaml"), "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n");
-    await writeFile(join(profileDir, "cordis.patch.yml"), "[]\n");
-    const linkPath = join(profileDir, "node_modules", "dsh-shell-host");
-    await mkdir(join(profileDir, "node_modules"), { recursive: true });
-    try {
-      await symlink(PLUGIN_DIR, linkPath, "junction");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-    expect(existsSync(join(linkPath, "package.json")), "plugin linked into the profile").toBe(true);
+    // ── install: through the OFFICIAL plugin command ────────────────────────
+    // `dsh plugin --profile <p> add <path>` is the only installation route
+    // (docs/agents/profile-install.md): it writes BOTH registration records and
+    // runs the pnpm stage. A hand-made node_modules symlink is explicitly NOT
+    // an installation — and hand-rolling it here would also skip the
+    // peer-resolution check pnpm performs on the linked package, which is
+    // exactly what a "link:" plugin needs to surface. The command also creates
+    // the profile directory itself, so no mkdir precedes it.
+    const installed = await installPlugin(dshHome, PROFILE);
+    expect(
+      installed.code,
+      `dsh plugin add succeeded (output: ${installed.out.slice(-500)})`,
+    ).toBe(0);
+
+    const profileDir = join(dshHome, "profiles", PROFILE);
+    // The command must leave all three faces behind; a missing one is the
+    // silent shape that still boots and still creates sessions.
+    const record = JSON.parse(await readFile(join(profileDir, "package.json"), "utf8")) as any;
+    expect(record?.dsh?.profile?.bundles, "bundle registered in dsh.profile.bundles").toContain("dsh-shell-host");
+    expect(record?.dependencies?.["dsh-shell-host"], "plugin recorded as a profile dependency").toBeTruthy();
+    expect(existsSync(join(profileDir, "node_modules", "dsh-shell-host", "package.json")), "plugin linked into the profile").toBe(true);
 
     // ── config: the composed tree carries this bundle's rows ────────────────
-    const dump = spawn(NODE, ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", PROFILE, "--dump-config"], {
-      cwd: HOST_DIR,
-      env: { ...process.env, DSH_HOME: dshHome, DSH_TELEMETRY_DISABLED: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let dumpOut = "";
-    dump.stdout?.on("data", (c: Buffer) => { dumpOut += c.toString(); });
-    await new Promise<void>((resolve) => { dump.once("exit", () => { resolve(); }); });
+    const dumped = await runHost(dshHome, ["--profile", PROFILE, "--dump-config"]);
+    const dumpOut = dumped.out;
     expect(dumpOut, "composed tree carries dsh-shell-host/pty").toContain("dsh-shell-host/pty");
     expect(dumpOut, "composed tree carries dsh-shell-host/terminal").toContain("dsh-shell-host/terminal");
     expect(dumpOut, "no row is left pending on a missing service").not.toMatch(/waiting for service|Missing services/u);

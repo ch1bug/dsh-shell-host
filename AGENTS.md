@@ -1,5 +1,12 @@
 # AGENTS.md
 
+**与人沟通一律用中文。** 面向用户的一切输出 —— 汇报、提问、总结、最终答复、
+提交信息、issue 正文与评论、新建文档 —— 全部写中文。
+
+> 例外：代码标识符、命令、文件路径、上游 API/字段名、以及引用既有英文文本时
+> 保持原样（翻译它们会破坏可执行性与可检索性）。既有英文文档按需局部改写为
+> 中文，不做整篇重写式改动。
+
 This workspace is a DSH bundle repo (`dsh-shell-host`) built with the Matt
 Pocock AI-coding workflow. Route work through the flow skills (grill →
 to-spec → to-tickets → implement).
@@ -32,23 +39,14 @@ Default five-role vocabulary (`needs-triage`, `needs-info`,
 Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See
 `docs/agents/domain.md`.
 
-### Profile install & debugging
+### 环境与安装（细节见文档，勿在此复述）
 
-Plugin not found / composition errors / how this repo reaches a live DSH
-profile (symlink, registration records, restart semantics): see
-`docs/agents/profile-install.md`. Install only via the plugin manager — a
-hand-made node_modules symlink is not a registration.
-
-### Authoritative worktree (commit only here)
-
-`<repo>` is the **only** authoritative worktree. Any msys2-side
-checkout (e.g. `/home/<user>/dsh-shellhost-src`, used to run the `dsh-host-dev`
-instance on port 19502) is a **read-only deployment copy**: change code, commit,
-and push **here**; sync that copy forward with `fetch` + `merge --ff-only`.
-Both `main`s must point at the same commit — if they differ, someone committed
-in the copy: stop and reconcile. Do not `checkout` tags in this repo; the
-`dsh-v0.2.0-rc.2` anchor belongs to the **host** source tree only (a tag
-checkout here just creates a detached HEAD). See `docs/agents/TESTING.md`.
+- **权威工作树**：`<repo>` 是唯一提交处；msys2 侧检出（如
+  `/home/<user>/dsh-shellhost-src`，跑 19502 实例）是**只读部署副本**，
+  用 `fetch` + `merge --ff-only` 单向同步。两边 `main` 必须同提交；本仓不
+  `checkout` tag（`dsh-v0.2.0-rc.2` 是**宿主**树的锚点）。
+- **环境事实唯一来源 / 隔离契约 / 源码部署 / 构建坑**：`docs/dev-environment.md`
+- **插件安装与注册**（官方两步 CLI；手工 symlink 不算安装）：`docs/agents/profile-install.md`
 
 ## Project context
 
