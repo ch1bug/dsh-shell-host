@@ -59,9 +59,13 @@ export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
 | 资源 | 桌面端 | 相邻工作区（matt 工作流） | **本区（shell-host）** |
 |---|---|---|---|
 | DSH_HOME | `C:\Users/<user>\.dsh` | `/home/<user>/dsh-matt-home` | `/home/<user>/dsh-shellhost-home` |
-| profile | `desktop` | `matt-dev` | **`dsh-host-dev`** |
+| profile | `desktop` | `matt-dev` | **`dsh-host-dev`**（常驻实例） |
 | 端口 | 19387（GUI） | 19501 | **19502** |
 | 源码树 | 安装版 | `dsh-matt-src` | 部署副本 `dsh-shellhost-src` + 宿主 `dsh-host-src` |
+
+两个 e2e 套件另用**临时** profile（`os.tmpdir` 下的临时 DSH_HOME + `--port 0`，
+跑完即删），不占上表任何资源：mock 层用 `dsh-host-dev`，真实层用
+`dsh-host-real`（同名不同 home，互不干扰）。
 
 - **`DSH_PROFILE` / `DSH_PROFILE_DIR` 不是启动选择器**：它们是 shell-env 插件每次
   模型 shell 调用**注入给模型的输出事实**。拿它们做隔离判断是错的。
@@ -107,35 +111,16 @@ git clone <repo> /home/<user>/dsh-shellhost-src
 cd /home/<user>/dsh-shellhost-src && pnpm install && pnpm build
 ```
 
-# 把插件挂进 profile —— 必须走官方命令，两步顺序固定
+# 把插件挂进 profile —— 官方两步命令，顺序固定
 export PATH="/c/msys64/home/<user>/.corepack/bin:$PATH"       # dsh plugin 会调 pnpm
 dsh --profile dsh-host-dev --from-default-profile web --dump-config   # ① 播种 profile
 dsh plugin --profile dsh-host-dev add /home/<user>/dsh-shellhost-src   # ② 注册 + pnpm 安装
 ```
 
-**① 不能省**：`--from-default-profile web` 才会写出 `cordis.yml` / `pnpm-workspace.yaml`
-与基础 entry list。只跑 ② 得到的 profile 缺这些文件，随后 `dsh web` 启动**毫无输出**
-（实测 120s 超时、stdout 与 stderr 皆空）。
-
-**② 不能用「手写注册记录 + 手工 symlink」代替**：[profile-install.md](agents/profile-install.md)
-写明手工丢进 `node_modules` 的 symlink **不是安装**。手工做法还跳过两样东西：
-
-- pnpm 对 `link:` 依赖的 **peer 解析检查**（会打出 `will not resolve the peer
-  dependencies from the target node_modules` 警告 —— 本仓 10 个 peer 正靠它暴露）
-- `.plugin-manager/logs/operation-*/pnpm.log` **诊断面**（出问题时的第一现场）
-
-注册真身 = `package.json` 的两处记录（`dsh.profile.bundles` + `dependencies`）**加上**
-pnpm 装出来的 `node_modules/<pkg>`。三处齐了才叫装好。
-
-**验证必须 dump 组合树**，不能只看命令 exit 0：
-
-```bash
-dsh --profile dsh-host-dev --dump-config | grep -A2 'dsh-shell-host'
-# 期望看到 - id: pty / name: dsh-shell-host/pty 与 terminal 行
-```
-
-只写注册记录而没真装时，loader 会 `skipping profile bundle: cannot resolve`，
-**而实例照常起来、会话照常建得成** —— 这是最危险的假绿形态。
+**完整规则与理由见 [profile-install.md](agents/profile-install.md)**（为何 ① 不能省、
+为何不许手工 symlink、三处断言、dump 组合树验证）。此处只记部署侧要点：
+`dsh plugin` 需要 PATH 上有 pnpm shim，而 corepack 装 shim 要避开 Program Files
+权限（写进去会 EPERM）—— 用上方那个 `--install-directory` 路径即可。
 
 ## 4. 工具链结论（全部实测，别重复试错）
 

@@ -56,16 +56,22 @@ grill-locked decisions (D1–D8) this repo is built on.
 ## Build & verify
 
 ```bash
-pnpm typecheck   # one facade: tsconfig.json (source paths)
-pnpm build       # tsc -p tsconfig.build.json (declarations, lib/types/*.d.ts) → tsdown (lib/*.js)
-pnpm test        # typecheck (tests-inclusive) then vitest unit + machine; ssh-pty-live cases skip without DSH_SSH_LIVE_HOST
+node --run typecheck      # tsc --noEmit -p tsconfig.json
+node --run build          # tsc -p tsconfig.build.json → tsdown (lib/*.js)
+node --run test           # typecheck + scripts/verify-all.mjs（**唯一检查入口**）
+node --run test:release   # build + verify:pack（装箱面：exports 指针与产物）
 
-No CI (maintainer decision 2026-09-30): verification is local (typecheck/test + issue evidence). Do not propose adding ci.yml.
+No CI (maintainer decision 2026-09-30; boundaries in ADR-0014): verification is local.
+Do not propose adding ci.yml. Local guardrails ARE allowed — enable once per clone:
+
+    git config core.hooksPath .githooks      # pre-commit: detached HEAD + lockfile + typecheck
+    # bypass deliberately: SKIP_HOOKS=1 git commit …
 ```
 
-Verification layering, evidence discipline, and the loud-skip / failure-attribution
-rules (synced with the adjacent matt workspace):
-see `docs/agents/TESTING.md`.
+`node --run test` 的汇总里 **`PASS*` 表示该用例含 loud skip，其环境侧断言未验证**
+（绿 != 全验过）；`SKIP` 表示门禁未开。看汇总先看 `PASS*` 数量。
+
+分层、证据纪律、失败归因规则见 `docs/agents/TESTING.md`。
 
 Gotchas (learned the hard way):
 

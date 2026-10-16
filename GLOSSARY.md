@@ -106,9 +106,55 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **lane 布局事实**:容器内不可在 /repo 挂载点直接 npm install(Windows pnpm node_modules 污染解析)——把 src/ + 脚本拷进容器内干净目录再装依赖。
 - **mac 实机节 PENDING**(无 mac 机器;#26 待实测项 ① 留待有机器时并入 lane)。
 
+## #82 RC 锚 vs alpha 的宿主接口差异(2026-10-16,实测)
+
+本仓锚 **RC 线**(ADR-0008):`version` = `0.2.0-rc.2-r1` ↔ 宿主 tag
+`dsh-v0.2.0-rc.2`(commit `639ed015`)。**浅克隆默认分支会落到 alpha 系**
+(实测 `dsh-v0.2.1-alpha.4`),必须显式 checkout tag。两系接口实测差异:
+
+- **`session/initializeDefaultModel` 只存在于 alpha**。RC2 的会话 RPC 全集 =
+  `list`/`search`/`create`/`selectModel`/`modelCatalog`/`openWorkspacePath`/
+  `workspacePathApplications`/`rename`/`fork`/`prompt`/`attachment`/`updateQueue`/
+  `cancel`/`page`/`projections`。RC 上选模型走 **`selectModel`**。
+- **`@deepseek-ai/dsh-tools` 的 peer 集不同**:RC 版**多一个
+  `@deepseek-ai/dsh-invariants`**,且 `cordis ~4.0.4` / `schemastery ~3.18.4`
+  (与 alpha 的 `~4.0.5-alpha.1` / `~3.18.5-alpha.1` 不同)。照 alpha 抄 peer 会
+  **漏声明**(#82 即此)。
+- **宿主 `scripts/build.ts` 参数不同**:RC2 用 `--profile`,alpha `--scope artifacts`。
+- **切 tag 后必须清构建产物**:`lib/` 被 gitignore,`git status` 看着干净但残留
+  上一 tag 的产物 → RC2 构建报 `MISSING_EXPORT "principalOf"`(该符号只在 alpha
+  源码)。`git clean -fxd` 清掉孤儿 `lib/` 后通过。
+
+### typert RPC 参数名逐方法不同(三种形态)
+
+网关按**方法 descriptor**校验参数名,猜错一律 `gateway/arguments-invalid`:
+
+| 形态 | 方法 | payload.args |
+|---|---|---|
+| 有 `request` 形参 | `create`/`prompt`/`selectModel`/`page`/`projections` | `{ request: … }` |
+| `_request` 命名 | `list` | `{ _request: {} }` |
+| 纯空对象 | `modelCatalog` | `{}`(传 `_request` 报 `unexpected "_request"`) |
+
+### 会话证据只走 RPC,不读会话文件
+
+`session/list` 的 `projections`(含 `asOfSeq` 游标)+ `session/page`
+(`address = {kind:'session',sessionId}`,`throughSeq` 取 `asOfSeq`;超出游标报
+`through seq N is past cursor M`)。**不要**读 `session.v4.jsonl.zstd`:事件**批量
+落盘**,成功的 turn 也可能只留 header,据此判断会得"turn 没跑成"的**假红**。
+同理本宿主上 `llmMs`/`toolMs` **可能为 0 而 turn 已完成** —— 计费证据看
+`tokenUsage`,执行证据看 `tool/result` 事件。
+
+### 凭据与模型路由必须配对
+
+账号记录(`deepseek-account-platform/*`)配 **`deepseek-account`** 路由;
+`DEEPSEEK_API_KEY` 配 **`deepseek-official`** 路由。配错是**静默失败**:
+`turn/end` 正常落、stderr 为空、`usage=0`,唯一痕迹是会话事件里一条
+`assistant/attempt → finish → { code: "MISSING_CREDENTIAL" }`。
+且**必须先 `selectModel` 再 `prompt`**(乱序则 turn 不起)。
+
 ## #68 POSIX launcher 预设行事实(2026-10-11)
 
-- **launcher 预设 lane 传递依赖**:launchers.ts 经 pty/index 引 `composeSshCommand`,容器 lane 装 `@lydell/node-pty` 外还需 `@deepseek-ai/schemastery@~3.18.4` + `@deepseek-ai/dsh-tools@0.2.1-alpha.1`(npm range/钉源锚均可)。
+- **launcher 预设 lane 传递依赖**:launchers.ts 经 pty/index 引 `composeSshCommand`,容器 lane 装 `@lydell/node-pty` 外还需 `@deepseek-ai/schemastery@~3.18.4` + `@deepseek-ai/dsh-tools@0.2.0-rc.2`(npm range/钉源锚均可)。**【2026-10-16 修订】**原记 `dsh-tools@0.2.1-alpha.1`,与 ADR-0008 的 RC 锚不符(本仓 `version` = `0.2.0-rc.2-r1`),已改锚 RC;RC 与 alpha 的**接口差异**见下条。
 - **POSIX 预设行实机绿**:podman node:24-bookworm lane(.scratch/issue68-posix-launcher-verify.mjs,一条命令见脚本头)8 项 ALL GREEN——bash 行 resolved(/etc/shells 匹配行,候选全在盘)、zsh/fish 缺席姿态进 absent(probed 列 /etc/shells 匹配行;bookworm 容器无 fish 行故 probed 空)、win32 门控完全休眠、argv 单一出处、shell_open 同构回环。
 
 ## D13 (ADR-0013, 2026-10-16, human 拍板 B:执行器 world 整体移除)

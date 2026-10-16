@@ -1,0 +1,61 @@
+#!/bin/sh
+# .githooks/pre-commit —— 本仓无 CI（ADR-0014），本地守卫即提交前的唯一自动检查。
+#
+# 启用（每个 clone 一次）：git config core.hooksPath .githooks
+# 绕过（明确知道在跳什么时）：SKIP_HOOKS=1 git commit …
+#
+# 只做**快、确定、无外部依赖**的检查。环境侧的重活（构建、e2e、真实实例）不在此，
+# 它们由 `node --run test` 覆盖；缺环境的检查一律**响亮跳过**，不阻断提交。
+[ -n "$SKIP_HOOKS" ] && { echo "pre-commit: SKIP_HOOKS 已设 —— 跳过全部本地守卫（本次提交未经验证）"; exit 0; }
+
+# 找 node：msys 的 bash 与 Windows 侧 PATH 不同，缺工具链时响亮跳过（ADR-0014）。
+NODE=$(command -v node 2>/dev/null)
+for c in "/c/Program Files/nodejs/node.exe" "/ucrt64/bin/node.exe" "/usr/bin/node"; do
+  [ -n "$NODE" ] && break
+  [ -x "$c" ] && NODE="$c"
+done
+if [ -z "$NODE" ]; then
+  echo "pre-commit: 找不到 node —— 跳过本地守卫（本次提交未经验证）"
+  exit 0
+fi
+# `node --run` 会在**子进程**的 PATH 上再找一次 node，所以光有绝对路径不够，
+# 必须把它所在目录前置进 PATH（本会话实测：否则报 'node' is not recognized）。
+NODE_DIR=$(dirname "$NODE")
+case ":$PATH:" in
+  *":$NODE_DIR:"*) ;;
+  *) PATH="$NODE_DIR:$PATH"; export PATH ;;
+esac
+
+fail() { echo "pre-commit: $1"; exit 1; }
+
+# 1. 不允许 detached HEAD（--ff-only 与副本同步都依赖分支形态；本会话踩过）。
+if ! git symbolic-ref -q HEAD >/dev/null; then
+  fail "HEAD 处于 detached 状态 —— 先 git switch <branch> 再提交"
+fi
+
+# 2. lockfile 必须与 package.json 一致（#82 的第一层：干净检出装不上）。
+# 用 `node <pnpm.mjs>` 而非 PATH 上的 `pnpm`：Windows 上是 .cmd shim，msys 的 bash
+# 直接调用会挂住（实测）。找不到 pnpm.mjs 就响亮跳过。
+PNPM_MJS=""
+# corepack 装的版本化路径（例：$HOME/.corepack/v1/pnpm/11.28.5/bin/pnpm.mjs）
+for c in "$HOME"/.corepack/v1/pnpm/*/bin/pnpm.mjs; do
+  [ -f "$c" ] && { PNPM_MJS="$c"; break; }
+done
+if [ -z "$PNPM_MJS" ]; then
+  # DSH bundled 运行时自带的 pnpm
+  for c in /c/Users/*/.dsh/dsh-runtimes/*/dependencies/pnpm/bin/pnpm.mjs; do
+    [ -f "$c" ] && { PNPM_MJS="$c"; break; }
+  done
+fi
+if [ -n "$PNPM_MJS" ]; then
+  "$NODE" "$PNPM_MJS" install --frozen-lockfile --ignore-scripts >/dev/null 2>&1 ||
+    fail "pnpm-lock.yaml 与 package.json 不一致 —— 跑一次 install 并把 lockfile 一起提交"
+else
+  echo "pre-commit: 找不到 pnpm.mjs —— 跳过 lockfile 一致性检查"
+fi
+
+# 3. typecheck（快、确定、只依赖本仓 node_modules）。
+echo "pre-commit: $NODE --run typecheck"
+"$NODE" --run typecheck || fail "typecheck 未通过 —— 修掉再提交，或用 SKIP_HOOKS=1 明确跳过"
+
+echo "pre-commit: 本地守卫通过（完整验收请跑 node --run test）"

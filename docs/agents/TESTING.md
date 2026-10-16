@@ -152,30 +152,29 @@ git -C /c/msys64/home/<user>/dsh-shellhost-src merge --ff-only FETCH_HEAD
 > **插件仓库不要 checkout tag** —— 本仓 `main` 就是工作线，切 tag 只会制造
 > detached HEAD。
 
-## 实测踩坑（写进规则，避免重复踩）
+## 写测试时会踩的坑
 
-1. **tsdown tsconfig 路径双拼**（msys2 下）：`D:\x/D:\x\tsconfig.json` → 见 #80
-2. **rolldown 在 ucrt64 node 下要 `win32-x64-gnu`**（npm 无此包）→ 构建走 Windows node，见 #81
-3. **`@deepseek-ai/dsh-tools` 的 10 个 peer 必须显式声明**，否则 clean checkout 装不上也测不了 → 见 #82
-4. **切 tag 后必须清理构建产物**：`lib/` 被 gitignore，`git status` 干净但残留旧产物 →
-   构建报 `MISSING_EXPORT "principalOf"`（该符号只存在于 alpha 源码）。用 `git clean -fxd`。
-5. **typert RPC 参数名逐方法不同，共三种形态**：
-   - 带 `request` 形参的方法（`create` / `prompt` / `selectModel` / `page` / `projections`）→ `payload.args.request`
-   - `list` → `payload.args._request`
-   - `modelCatalog` → **纯空 `{}`**（传 `_request` 报 `unexpected "_request"`，传 `request` 也报错）
+**领域事实**（RC/alpha 接口差异、typert RPC 参数名三种形态、会话证据只走 RPC、
+凭据与路由配对）→ 见 [GLOSSARY.md](../../GLOSSARY.md) 的「#82 RC 锚 vs alpha 的
+宿主接口差异」。此处不重复，只记**测试自身**会踩的：
 
-   猜错一律 `gateway/arguments-invalid`。无参方法建议**自动纠正**（先 `{}` 再 `_request`）。
-6. **实例会另发"会话标题"轻量请求**：抓 agent 主请求要按 `tools.length > 0` 过滤，
-   不能取 `captured[0]`。
-7. **kill 实例后必须等子进程退出**（`SIGTERM` → await exit → `SIGKILL` 兜底），
+1. **安装必须走官方两步命令**，且**第 ① 步不能省**（否则实例启动毫无输出）。
+   见上文「e2e 的安装必须走官方命令」。
+2. **实例会另发"会话标题"轻量请求**：抓 agent 主请求要按 `tools.length > 0` 过滤，
+   不能取 `captured[0]` —— 取错会把标题请求当第 1 轮（假红）。
+3. **kill 实例后必须等子进程退出**（`SIGTERM` → await exit → `SIGKILL` 兜底），
    否则 libuv 断言噪音 + ECONNRESET 污染输出。预期 ECONNRESET 应静音。
-8. **`pty_open` 必填 `command`**（在 PTY 上 spawn 的命令）；**`shell_open` 必填 `preset`**
-   （launcher preset id）。混淆会得到 `missing required property "command"`。
-9. **RC 锚点与 alpha 的接口差异**（切锚时必查）：RC2 **没有** `initializeDefaultModel`
-   （alpha 才有）；RC2 的 `dsh-tools` peer 集与 alpha **不同**（多 `dsh-invariants`，
-   `cordis`/`schemastery` 区间也不同）。照 alpha 抄 peer 会漏声明。
-10. **凭据必须与路由配对**：账号记录配 `deepseek-account`，`DEEPSEEK_API_KEY` 配
-    `deepseek-official`。配错是**静默失败**（`turn/end` 正常、stderr 空、`usage=0`）。
+4. **`pty_open` 必填 `command`**（在 PTY 上 spawn 的命令）；**`shell_open` 必填 `preset`**
+   （launcher preset id）。混淆会得到 `missing required property "command"`
+   —— 这是**测试传错参**，不是插件缺陷。
+5. **无参 RPC 方法建议自动纠正参数名**（先 `{}` 再 `_request`），别把信封琐事
+   变成用例失败。
+6. **构建期限制**（tsdown 路径双拼、rolldown 需 Windows node）见
+   [#80](https://github.com/ch1bug/dsh-shell-host/issues/80) /
+   [#81](https://github.com/ch1bug/dsh-shell-host/issues/81) 与
+   [dev-environment.md](../dev-environment.md) §4。
+
+## 实测踩坑（写进规则，避免重复踩）
 
 ## 本仓现有验证入口
 
@@ -193,27 +192,15 @@ git -C /c/msys64/home/<user>/dsh-shellhost-src merge --ff-only FETCH_HEAD
 `DSH_E2E_REAL_CREDENTIALS_SOURCE` / `DSH_E2E_REAL_PROVIDER` / `DSH_E2E_REAL_MODEL` /
 `DSH_E2E_REAL_PROMPT`（真实层）。
 
-### 真实层凭据与路由必须配对（实测静默失败）
+### 真实层的断言取舍（领域事实见 GLOSSARY）
 
-持有**账号记录**却把会话路由到 **api-key** provider 时，实例**不报错**：
-`turn/end` 正常落、stderr 为空、`usage=0`，唯一痕迹是会话事件里一条
+三条**静默失败**形态决定了真实层怎么写断言 —— 事实与成因见
+[GLOSSARY.md](../../GLOSSARY.md)「#82 RC 锚 vs alpha 的宿主接口差异」：
 
-```
-assistant/attempt → finish → { code: "MISSING_CREDENTIAL" }
-```
-
-故真实层显式断言两条：`usage > 0` 且 **`assistant/attempt` 无 failure**；
-账号路线还额外断言选中的 provider 是 `deepseek-account`（非 `deepseek-official`）。
-
-### 模型路由必须在 prompt 之前显式选择
-
-`session/create` 后必须 `session/modelCatalog` → `session/selectModel` → 再 `prompt`。
-跳过或乱序的形态：turn 不起、会话文件只有 header、stderr 空。
-
-### 会话证据只走 RPC，不读会话文件
-
-`session/list` 的 `projections`（含 `asOfSeq` 游标）与 `session/page`
-（`address = {kind:'session',sessionId}`，`throughSeq` 取 `asOfSeq`）。
-**不要**读 `session.v4.jsonl.zstd`：事件批量落盘，**成功的 turn 也可能只留 header**，
-据此判断会得到"turn 没跑成"的假红。同理 `llmMs` / `toolMs` 在本宿主上**可能为 0
-而 turn 已完成**——计费证据看 `tokenUsage`，执行证据看 `tool/result` 事件。
+1. **凭据与路由配错** → 实例不报错（`turn/end` 正常、stderr 空、`usage=0`）。
+   故断言两条：`usage > 0`，且 **`assistant/attempt` 无 failure**；账号路线额外断言
+   选中的 provider 是 `deepseek-account`（非 `deepseek-official`）。
+2. **模型路由必须先选再发**（`create` → `modelCatalog` → `selectModel` → `prompt`）。
+   乱序的形态是 turn 不起 —— 且**没有错误可断言**，只能靠超时暴露。
+3. **证据只走 RPC，不读会话文件**，且别拿 `llmMs`/`toolMs` 当完成判据
+   （本宿主上可能为 0 而 turn 已完成）。计费看 `tokenUsage`，执行看 `tool/result`。
