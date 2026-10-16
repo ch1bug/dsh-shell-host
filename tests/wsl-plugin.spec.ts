@@ -268,7 +268,7 @@ describe('win_* tool behavior through the fake shell seam', () => {
     // bash dies with "unexpected EOF" and the tool returned empty drives.
     // A fake shell cannot observe that interaction; a live fixture on the real
     // seam pinned it (`tests/wsl-plugin-live.spec.ts` [History: dropped in
-    // 06ded1e]). Here we pin the class itself: the command carries no `$` at all.
+    // c74b2d5]). Here we pin the class itself: the command carries no `$` at all.
     const { ctx, registered, calls } = fakeCtx(() => fakeRun(''))
     wslPlugin.apply(ctx as any)
     const tool = registered.find((t) => t.name === 'win_drives')!

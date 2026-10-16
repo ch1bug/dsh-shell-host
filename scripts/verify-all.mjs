@@ -77,7 +77,7 @@ export function entryStatus({ mark, detail, loud = false }) {
  *
  * 判定范围必须是**本车道**的条目（`results.filter(r => r.lane === lane.name)`）：
  * 用全局 `results` 会让先行车道的 FAIL 掩盖后行车道的车道级失败（反之亦然），
- * 结果随车道执行顺序漂移（e96479b 修的正是这处）。
+ * 结果随车道执行顺序漂移（8e8fa9f 修的正是这处）。
  */
 export function laneLevelFailure({ lane, exitCode, output, results }) {
   const laneResults = results.filter((r) => r.lane === lane.name)

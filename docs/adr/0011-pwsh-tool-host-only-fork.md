@@ -79,7 +79,7 @@ Two evidence notes recorded for the record:
 1. The ruling framed this as narrowing the scope from "whole-row takeover";
    in this repo the fork already was that narrow (it never touched
    `ctx.shell`), and the `tool-pwsh` row has been enabled on win32 since the
-   original commit (c6ffc25) — including the shipped `0.2.0-rc.2-r1` tgz.
+   original commit (657d72b) — including the shipped `0.2.0-rc.2-r1` tgz.
    The #72 report's premise ("the takeover row defaults to disabled") does
    not match the artifact evidence; the deployed 44.0.0 bash-fallback
    observation remains unexplained by it (tracked on #72).

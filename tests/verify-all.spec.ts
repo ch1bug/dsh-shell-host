@@ -4,13 +4,13 @@
  * 只测纯函数那半截（构造 vitest 输出文本 → 断言四态）；跑车道的 CLI 半截要真实环境
  * （spawn vitest 两个 project），属 `node --run test` 自身覆盖，不由本套件覆盖。
  *
- * 核心回归锁（`e96479b` **之前**的缺陷）：车道级失败判定原先用**全局** `results`，
+ * 核心回归锁（`8e8fa9f` **之前**的缺陷）：车道级失败判定原先用**全局** `results`，
  * 于是先行车道的 FAIL 会挡住后行车道的车道级失败（反之亦然）——
  * 汇总结果**随车道执行顺序漂移**（本会话实测 12/14 vs 13/14，条目总数都不变）。
  * 另一处同源缺陷：「无收集到用例」分支漏了 `lane` 字段。
  *
- * 另守 `16b49e3` 的诊断行为：FAIL 时按标记提取失败块，而非盲切输出末尾
- * （票面把该修复记在 `a2bd029` 名下，但 `git log -S failureExcerpt` 指向的是 `16b49e3`——以 git 为准）。
+ * 另守 `8094b0d` 的诊断行为：FAIL 时按标记提取失败块，而非盲切输出末尾
+ * （票面把该修复记在 `629398c` 名下，但 `git log -S failureExcerpt` 指向的是 `8094b0d`——以 git 为准）。
  *
  * @module tests/verify-all.spec.ts
  */
@@ -317,7 +317,7 @@ describe("formatEntry", () => {
 
 describe("failureExcerpt", () => {
   it("pulls the failure block out of the middle instead of tailing blindly", () => {
-    // 16b49e3：vitest 把失败详情印在中段，末尾是汇总与耗时——
+    // 8094b0d：vitest 把失败详情印在中段，末尾是汇总与耗时——
     // 盲切末尾 25 行看不到「哪条断言挂了」。
     const out = [
       " RUN  v4.1.8 <cwd>",

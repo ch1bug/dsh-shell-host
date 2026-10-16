@@ -6,7 +6,7 @@
 
 #55 交付的 `./terminal` entry（shell_open）依赖 `./pty`，`./pty` inject
 `terminals` 缝（`TerminalSessionService`）。#55 桌面安装流程实测两组件
-「等待依赖」，e2290a0 将 pty/terminal 两 patch 行撤下，等待挂载前提成立。
+「等待依赖」，08b9ec7 将 pty/terminal 两 patch 行撤下，等待挂载前提成立。
 #60 的任务：核实上游 profile 形态是否已满足恢复前提；满足则恢复两行，
 不满足则确立上游 blocked 结论。
 
@@ -17,7 +17,7 @@
    provide 代码。挂载该包名不产出任何服务。
 2. **全 asar 无构造点**：`new TerminalSessionService` 零命中；唯一引用方
    `dsh-terminal-bash` 只 import 符号（后端实现）。`terminals` 仅在 agent
-   执行世界内部构造（世界级 child context），e2290a0 结论成立且加强。
+   执行世界内部构造（世界级 child context），08b9ec7 结论成立且加强。
 3. **desktop profile 未装该包**（profile node_modules 无 dsh-terminal），
    bundle yml 全文无 world/plugin-world 挂载声明机制（候选路径 2 证伪）。
 4. **对照组**：headless alpha 线的 `dsh-pty-session` bundle（0.2.1-alpha.1-r1）

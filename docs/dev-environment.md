@@ -36,20 +36,30 @@ git -C ~/dsh-shellhost-src merge --ff-only FETCH_HEAD
 
 ### 0.0 历史重写（2026-10-16，隐私）
 
-本仓是 **PUBLIC** 仓，而 2026-10-16 之前的历史里带着本机个人绝对路径（用户名 + 家目录，
-6 个文件共 21 处，其中一个文件还写出凭据文件的**位置**）。处置：**历史重写**。
+本仓是 **PUBLIC** 仓，而 2026-10-16 之前的历史里带着个人 / 本机环境串（机主用户名与家目录、
+检出与旧布局路径、个人署名与邮箱、一条旧提交信息里的真机名与内网 IP）。处置：**历史重写**
+（口径由 human 拍板：**个人用户名 + 本机布局路径**；与相邻工作区同一套做法）。
 
-- 工具与口径：`git filter-repo --replace-text/--replace-message`（个人路径 → 占位符），
-  随后 `push --force-with-lease`。**既有提交的 SHA 全部改变**（未受影响的早提交除外）。
-- 现树（HEAD）在重写**之前**就已占位化并提交，所以重写后树对象与重写前一致（内容未变）。
-- **旧 SHA 不可再解析**：文档 / 注释里对旧提交的引用已按 filter-repo 的 commit-map
-  重映射；更早写进 **commit 信息**里的引用仍是旧 SHA（历史信息不可追改）——解析不到时
-  以 `git log -S <符号>` 或重写前的备份镜像为准。
-- 备份镜像（含重写前的完整历史，本机、不进仓）：`<repo>-backup-<date>.git`（同日会话记录里有确切路径）。
+- 工具：`python -m git_filter_repo`（本机 `git filter-repo` 子命令不在 PATH，pip 装的是
+  user site），一次跑齐 `--replace-text` / `--replace-message` / `--mailmap`，
+  并带 `--prune-empty=never --prune-degenerate=never`（别让 tag 或提交被顺手裁掉）。
+- **先 `--dry-run` 再计数做门禁**：比对 `.git/filter-repo/fast-export.original` 与
+  `.fast-export.filtered` 里各个人 / 环境串的出现次数，**filtered 全 0 才跑正式的那遍**。
+- **重写前工作树必须干净**：filter-repo 会 reset 工作树 —— 未提交的改动会**丢**（本会话
+  实测丢过一次引用修正，重做了一遍）。要留下的先 `git commit`。
+- 覆盖范围：blob 内容、**提交信息**、**提交身份**（author/committer 一律归到
+  `ch1bug <ch1bug@users.noreply.github.com>`；本机 `git config user.name/email` 已同步）。
+  **既有提交的 SHA 全部改变**（未受影响的早提交除外）；两个 `dsh-*` tag 随重写重指。
+- **旧 SHA 不可再解析**：文档 / 注释里对旧提交的引用已逐条重映射到**重写后的终态**
+  （逐个 `git cat-file -t` 验过）；变更前写入 **commit 信息**里的引用仍是旧 SHA
+  （历史信息不可追改）——解析不到时以 `git log -S <符号>` 或重写前的备份镜像为准。
+- 备份镜像（重写前完整历史，本机、不进仓）：`<repo>-backup-<date>.git`；同日会话还留了
+  baseline SHA 存证。
 - **部署副本这一次不能用 `merge --ff-only`**：历史分叉了，先 `git fetch` 再一次性
   `git reset --hard origin/main`；之后恢复正常同步口径。
-- 防复发：`tests/no-personal-identifiers.spec.ts`（判据取本机用户名 / 家目录，扫
-  `git ls-files`）+ AGENTS.md 的硬规则。
+- 防复发：`tests/no-personal-identifiers.spec.ts`（本机用户名 / 家目录取自运行时，另认三种
+  布局形态，扫 `git ls-files`）+ AGENTS.md 的硬规则。**探针要大小写不敏感** ——
+  本会话第一次扫描用了全大写，漏掉文件里的小写写法（`git grep -i` 才是对的）。
 
 ## 0.1 msys2 会话引导（否则工具链会静默错位）
 

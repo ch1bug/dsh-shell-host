@@ -2,14 +2,14 @@
  * patch 形状守卫：`cordis.patch.yml` 只允许**自有 id 的 insert 行**（`#77`；红线 = ADR-0012）。
  *
  * 为什么存在：这条红线此前**纯人肉守**——全仓唯一碰 `cordis.patch` 的断言随 ADR-0012/0013
- * 与 `tests/descriptor.spec.ts` 一起消失（[History: `06ded1e`]；那条是**正向钉住当时仍存在
+ * 与 `tests/descriptor.spec.ts` 一起消失（[History: `c74b2d5`]；那条是**正向钉住当时仍存在
  * 的接管行** —— 断言 `terminal-controller` 行的 config ——外加一句单 id 黑名单），此后
  * `tests/*.ts` 里 `cordis.patch` 零命中。它守的是 AGENTS.md 列出的高危面之一（loader 行 /
  * 组合树：*"Never mount a loader row that takes over an upstream row id (ADR-0012)"*）：
  * patch 顶层 `id` 行 = 同 id 接管上游 loader 行或重配其 config（ADR-0012 逐个点名清掉的
  * 三处接管就是这两种形状），本 bundle 只允许 `- insert:` 自有行（GLOSSARY D12/D13）。
  *
- * 红线有两种真实形状（`06ded1e~1:cordis.patch.yml` 里两种都在）：
+ * 红线有两种真实形状（`c74b2d5~1:cordis.patch.yml` 里两种都在）：
  *   - **顶层 `id` 行**：`terminal-controller` 行 = 重配上游行的 config；
  *   - **以本包 entry 名 insert 一个上游行 id**：`permission` / `tool-pwsh` 两行 = 同 group
  *     同 id 后行覆盖（它们的 `name` 前缀是合规的，故只有口径 2 的行 id 集合能接住）。
@@ -190,7 +190,7 @@ describe("形状检查器自身的边界（合成文本）", () => {
   });
 
   it("以本包 entry 名 insert 上游行 id 的接管被行集合棘轮接住（`permission` 形状）", () => {
-    // ADR-0012 清掉的另两处接管就是这个形状（`06ded1e~1:cordis.patch.yml`）：op 是 `- insert:`、
+    // ADR-0012 清掉的另两处接管就是这个形状（`c74b2d5~1:cordis.patch.yml`）：op 是 `- insert:`、
     // `name` 前缀也合规，故本用例里开火的**只有**口径 2 的行 id 集合（`name` 写成外来值的
     // 变体由后面的前缀用例接住）。
     const sameIdTakeover = [
