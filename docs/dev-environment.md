@@ -6,7 +6,11 @@
 
 ## 0. 权威工作树 vs 部署副本
 
-**权威工作树 = `<repo>`（本仓库）。** msys2 侧的源码树
+> 占位符约定（本文件与全仓）：`<repo>` = 本仓检出的权威副本、`<sibling-repo>` = 相邻工作区
+> 检出、`<old-work>` = 旧工作布局根；`~` / `$HOME` / `%USERPROFILE%` 照 shell 语义。
+> 本仓是 **PUBLIC** 仓，真实个人 / 本机路径不进仓（守卫：`tests/no-personal-identifiers.spec.ts`）。
+
+**权威工作树 = `<repo>`（本仓库的检出）。** msys2 侧的源码树
 （`~/dsh-shellhost-src`，即 msys2 家目录下的 `dsh-shellhost-src`）只是**只读部署副本**。
 
 | 动作 | 位置 |
@@ -17,7 +21,7 @@
 副本单向同步（权威 → 副本）：
 
 ```bash
-git -C ~/dsh-shellhost-src fetch <repo> main
+git -C ~/dsh-shellhost-src fetch origin main
 git -C ~/dsh-shellhost-src merge --ff-only FETCH_HEAD
 ```
 
@@ -29,6 +33,23 @@ git -C ~/dsh-shellhost-src merge --ff-only FETCH_HEAD
 
 **本仓不要 `checkout` tag** —— `dsh-v0.2.0-rc.2` 锚点属于**宿主**源码树；本仓
 `main` 就是工作线，切 tag 只会制造 detached HEAD。
+
+### 0.0 历史重写（2026-10-16，隐私）
+
+本仓是 **PUBLIC** 仓，而 2026-10-16 之前的历史里带着本机个人绝对路径（用户名 + 家目录，
+6 个文件共 21 处，其中一个文件还写出凭据文件的**位置**）。处置：**历史重写**。
+
+- 工具与口径：`git filter-repo --replace-text/--replace-message`（个人路径 → 占位符），
+  随后 `push --force-with-lease`。**既有提交的 SHA 全部改变**（未受影响的早提交除外）。
+- 现树（HEAD）在重写**之前**就已占位化并提交，所以重写后树对象与重写前一致（内容未变）。
+- **旧 SHA 不可再解析**：文档 / 注释里对旧提交的引用已按 filter-repo 的 commit-map
+  重映射；更早写进 **commit 信息**里的引用仍是旧 SHA（历史信息不可追改）——解析不到时
+  以 `git log -S <符号>` 或重写前的备份镜像为准。
+- 备份镜像（含重写前的完整历史，本机、不进仓）：`<repo>-backup-<date>.git`（同日会话记录里有确切路径）。
+- **部署副本这一次不能用 `merge --ff-only`**：历史分叉了，先 `git fetch` 再一次性
+  `git reset --hard origin/main`；之后恢复正常同步口径。
+- 防复发：`tests/no-personal-identifiers.spec.ts`（判据取本机用户名 / 家目录，扫
+  `git ls-files`）+ AGENTS.md 的硬规则。
 
 ## 0.1 msys2 会话引导（否则工具链会静默错位）
 

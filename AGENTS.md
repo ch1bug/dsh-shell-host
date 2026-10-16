@@ -41,7 +41,7 @@ Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See
 
 ### 环境与安装（细节见文档，勿在此复述）
 
-- **权威工作树**：`<repo>` 是唯一提交处；msys2 侧检出（如
+- **权威工作树**：`<repo>`（本仓检出，唯一提交处）；msys2 侧检出（如
   `~/dsh-shellhost-src`，跑 19502 实例）是**只读部署副本**，
   用 `fetch` + `merge --ff-only` 单向同步。两边 `main` 必须同提交；本仓不
   `checkout` tag（`dsh-v0.2.0-rc.2` 是**宿主**树的锚点）。

@@ -27,7 +27,7 @@ import { findPacker, untarGz } from "../../scripts/verify-pack.mjs";
 /** Windows node runs the host plus the native pieces (B1 posture); msys2 node
  * cannot load the rolldown/node-pty bindings. Overridable for other layouts. */
 export const NODE = process.env.DSH_E2E_NODE ?? "C:/Program Files/nodejs/node.exe";
-/** msys2 侧的家目录在 Windows 视角是 `C:/msys64/home/<用户名>`：用户名**运行时取**，
+/** msys2 侧的家目录在 Windows 视角是 `C:/msys64/home/<user>`：用户名**运行时取**，
  * 不写进仓库（本仓是 PUBLIC 仓 —— 见 AGENTS.md 与 tests/no-personal-identifiers.spec.ts）。 */
 const MSYS2_HOME = join("C:/msys64/home", userInfo().username);
 /** The plugin checkout under test (must be built: lib/*.js present). */
