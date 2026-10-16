@@ -26,6 +26,28 @@ apply to the human's own writing, nor to commit messages. The reason is
 provenance: a reader must be able to tell machine-written triage from a
 maintainer's own words without checking the author field.
 
+### Labels are part of filing, not a later step
+
+`gh issue create` writes **no labels**. An issue filed without them enters the
+tracker as *never triaged* and has to be found and classified separately — so
+**every issue an AI session files must carry exactly one category label and one
+state label at creation time**:
+
+```bash
+gh issue create --title "..." --label bug --label needs-triage --body "..."
+```
+
+- **Category** (exactly one): `bug` (something is broken) or `enhancement`
+  (new feature/improvement).
+- **State** (exactly one): `needs-triage` · `needs-info` · `ready-for-agent` ·
+  `ready-for-human` · `wontfix`. A freshly self-diagnosed issue with a confirmed
+  root cause and reproduction normally starts at `ready-for-agent`.
+- If the right state is genuinely unclear, use `needs-triage` — never file with
+  no label at all. An unlabelled issue is invisible to state-based queries.
+
+The label vocabulary and its canonical-role mapping live in
+[triage-labels.md](triage-labels.md).
+
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
 ## Pull requests as a triage surface
