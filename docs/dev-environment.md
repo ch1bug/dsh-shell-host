@@ -22,11 +22,23 @@
 副本单向同步（权威 → 副本）：
 
 ```bash
-git -C ~/dsh-shellhost-src fetch origin main
+git -C ~/dsh-shellhost-src fetch --prune --tags --force origin
 git -C ~/dsh-shellhost-src merge --ff-only FETCH_HEAD
 ```
 
 **两边的 `main` 必须同提交。** 不同即说明有人在副本里提交了 —— 停下核对。
+
+**实测教训（2026-10-17）：tag 也要同步，且要 `--force`。** 只 `fetch origin main` 时 tag
+**根本不进同步面**：不报错、退出码 0、`git status` 干净，副本静默停在旧 tag。补 `--tags`
+后才碰 tag，但**已存在的 tag 默认 refuse clobber** —— git 打一行
+`! [rejected] <tag> -> <tag> (would clobber existing tag)` 便**略过该 tag**（其余 ref 照常
+更新；该次 fetch 退出码非 0）。**判别与后果**：`main` 同提交、工作树干净，**只有 tag 停在
+旧对象** —— 落后的 tag 让**重写前**的提交仍经 `refs/tags/*` 可达，`git log --all` 于是扫出
+重写前的旧个人身份，副本侧隐私守卫（`tests/privacy-scan.spec.ts` 活体扫描）判红：看着干净的
+副本判不出绿。**处置**：`git tag -d <两个 tag>` + `git fetch --tags --force origin` 把 tag
+落到 origin 的对象；之后按 [privacy.md](agents/privacy.md) §4 第 3 条清掉留下的本机悬挂旧对象
+（`git reflog expire --expire=now --all` + `git gc --prune=now`），别把它留在副本里。
+**与 §0.0 的分工**：那条管历史分叉后的一次性 `reset --hard`，本条是 tag 面的常规口径。
 
 **实测教训（2026-10-16）**：为搭部署环境建克隆后顺手在克隆里开发并提交，结果出现
 「两个都叫 `main`、内容不同」的仓库，权威树落后 3 个提交；又叠加 `git checkout <tag>`
