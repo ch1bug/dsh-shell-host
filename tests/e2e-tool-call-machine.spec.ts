@@ -11,7 +11,11 @@
  *
  * What this CANNOT prove (deliberately out of scope here):
  *   provider acceptance, real-model behaviour, real credentials. Those belong
- *   to the opt-in real-LLM tier.
+ *   to the opt-in real-LLM tier. The install SOURCE here is the checkout
+ *   directory, which pnpm links without going through `files` at all — so this
+ *   tier cannot see a packaging omission either; that is
+ *   `tests/e2e-tarball-machine.spec.ts` (#89), which runs the same chain from
+ *   the packed tarball.
  *
  * Gates (loud skip, never a silent pass): the suite needs a built plugin tree
  * and a built DSH host tree. Both are discoverable via env; when absent every
@@ -21,21 +25,21 @@
  * never occupies the fixed dev ports (19387 desktop / 19501 neighbor / 19502
  * this workspace's resident instance).
  *
+ * The chain plumbing itself (mock provider, instance boot, RPC envelope) is
+ * shared with the packed tier and lives in `tests/helpers/e2e-chain.ts`.
+ *
  * @module tests/e2e-tool-call-machine
  */
 
 import { afterAll, describe, expect, it } from "vitest";
-import { createServer, request as httpRequest } from "node:http";
-import { spawn, type ChildProcess } from "node:child_process";
+import { request as httpRequest } from "node:http";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MY_ROWS, rpc, startInstance, startMockLlm } from "./helpers/e2e-chain.ts";
 import {
-  HOST_DIR,
-  NODE,
   PLUGIN_DIR,
-  hostEnv,
   installPlugin,
   missingEnvironment,
   runHost,
@@ -43,152 +47,11 @@ import {
 
 const PROFILE = "dsh-host-dev";
 
-/** The bundle's own loader rows (ADR-0007/0012): a failure must never blame
- * these — they are the rows this repo adds (TESTING.md failure attribution). */
-const MY_ROWS = ["pty", "terminal"];
-
 const absent = missingEnvironment();
 /** Named in every skip so the report says WHY nothing ran. */
 const skipReason =
   `e2e mock-LLM tier needs: ${absent.join(" / ")} — ` +
   `override with DSH_E2E_PLUGIN_DIR / DSH_E2E_HOST_DIR / DSH_E2E_NODE / DSH_E2E_PNPM_DIR`;
-
-/** Anthropic-style SSE frames — the shape the host's Messages client parses. */
-function sseFrames(content: Record<string, unknown>, stopReason: string): string {
-  return [
-    { type: "message_start", message: { id: "e2e-msg", model: "deepseek-v4-pro", usage: { input_tokens: 3, output_tokens: 0 } } },
-    { type: "content_block_start", index: 0, content_block: content },
-    { type: "content_block_stop", index: 0 },
-    { type: "message_delta", delta: { stop_reason: stopReason }, usage: { output_tokens: 1 } },
-    { type: "message_stop" },
-  ].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
-}
-
-interface Captured {
-  readonly body: Record<string, any>;
-  /** True only for agent requests: the host also sends lightweight requests
-   * (e.g. session titling) that must NOT be mistaken for the agent turn. */
-  readonly isAgent: boolean;
-}
-
-/** Local mock provider. Turn 1 (agent) demands a tool call; turn 2 answers. */
-async function startMockLlm() {
-  const captured: Captured[] = [];
-  const sockets = new Set<import("node:net").Socket>();
-  let agentTurns = 0;
-  const server = createServer((req, res) => {
-    let raw = "";
-    req.on("data", (c) => { raw += c; });
-    req.on("error", () => { /* instance shutdown resets sockets — expected */ });
-    res.on("error", () => { /* same */ });
-    req.on("end", () => {
-      let body: Record<string, any> = {};
-      try { body = JSON.parse(raw) as Record<string, any>; } catch { /* keep raw */ }
-      const isAgent = Array.isArray(body.tools) && body.tools.length > 0;
-      captured.push({ body, isAgent });
-      let content: Record<string, unknown>;
-      let stopReason: string;
-      if (isAgent) {
-        agentTurns += 1;
-        if (agentTurns === 1) {
-          // pty_open's REQUIRED argument is `command` (shell_open's is `preset`).
-          // pty_open is chosen deliberately: it sits behind no approval gate, so
-          // this tier can prove the tool surface is wired without entering the
-          // approval/sandbox path (which the real-LLM tier owns).
-          content = { type: "tool_use", id: "toolu_e2e_1", name: "pty_open", input: { command: "cmd.exe /c echo verify-ok", autoClose: true } };
-          stopReason = "tool_use";
-        } else {
-          content = { type: "text", text: "done" };
-          stopReason = "end_turn";
-        }
-      } else {
-        content = { type: "text", text: "title" };
-        stopReason = "end_turn";
-      }
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(sseFrames(content, stopReason));
-    });
-  });
-  await new Promise<void>((resolve) => {
-    server.on("connection", (socket) => {
-      sockets.add(socket);
-      socket.on("close", () => sockets.delete(socket));
-      socket.on("error", () => { /* expected on shutdown */ });
-    });
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  const port = typeof address === "object" && address !== null ? address.port : 0;
-  return {
-    port,
-    captured,
-    agentRequests: (): Captured[] => captured.filter((c) => c.isAgent),
-    agentTurns: () => agentTurns,
-    async close() {
-      for (const s of sockets) s.destroy();
-      sockets.clear();
-      await new Promise<void>((resolve) => { server.close(() => { resolve(); }); });
-    },
-  };
-}
-
-/** Boot the real `dsh web` CLI and wait for its authenticated launch URL. */
-function startInstance(dshHome: string, mockPort: number) {
-  const child: ChildProcess = spawn(
-    NODE,
-    ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", PROFILE, "--no-open", "--port", "0"],
-    {
-      cwd: HOST_DIR,
-      env: hostEnv(dshHome, {
-        DEEPSEEK_BASE_URL: `http://127.0.0.1:${mockPort}`,
-        DEEPSEEK_API_KEY: "mock-key-nonempty",
-      }),
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  let stdout = "";
-  let stderr = "";
-  const ready = new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`instance not ready in 120s\nstdout=${stdout}\nstderr=${stderr}`));
-    }, 120_000);
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-      const match = /http:\/\/127\.0\.0\.1:\d+\/\?token=[^\s]+/u.exec(stdout);
-      if (match?.[0] !== undefined) { clearTimeout(timer); resolve(match[0]); }
-    });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`instance exited early (${String(code)})\n${stderr}`)); });
-  });
-  return { child, ready, stderr: () => stderr };
-}
-
-/** One typert Remote envelope. Args are NAMED (`payload.args.request`). */
-function rpc(port: number, cookie: string | undefined, method: string, args: unknown) {
-  const body = JSON.stringify({ type: "client-request", rpcId: `e2e-${method}`, method, payload: { args } });
-  return new Promise<{ status: number; text: string }>((resolve) => {
-    const req = httpRequest(
-      {
-        hostname: "127.0.0.1",
-        port,
-        path: `/api/${method}`,
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(body),
-          ...(cookie === undefined ? {} : { cookie }),
-        },
-      },
-      (res) => {
-        let text = "";
-        res.on("data", (c: Buffer) => { text += c.toString(); });
-        res.on("end", () => { resolve({ status: res.statusCode ?? 0, text }); });
-      },
-    );
-    req.on("error", (e: NodeJS.ErrnoException) => { resolve({ status: 0, text: `__rpc_error__ ${e.code ?? e.message}` }); });
-    req.end(body);
-  });
-}
 
 describe.skipIf(absent.length > 0)("e2e: install → config → boot → session → tool call (mock LLM tier)", () => {
   const timeout = 180_000;
@@ -228,7 +91,10 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
 
     // ── boot: real instance, OS-assigned port, clean stderr ────────────────
     const mock = await startMockLlm();
-    const inst = startInstance(dshHome, mock.port);
+    const inst = startInstance(PROFILE, dshHome, {
+      DEEPSEEK_BASE_URL: `http://127.0.0.1:${mock.port}`,
+      DEEPSEEK_API_KEY: "mock-key-nonempty",
+    });
     let launchUrl: string;
     try {
       launchUrl = await inst.ready;

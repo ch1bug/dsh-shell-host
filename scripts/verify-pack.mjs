@@ -17,8 +17,10 @@
  * `!! SKIP (loud)`) rather than reporting an unearned pass.
  *
  * 结构（#86）：`entryTargets` / `manifestTargets` / `untarGz` / `isDirectInvocation` 是**纯函数**
- * （导出，见 `tests/verify-pack.spec.ts` 的离线单测），顶层流程收进 `main()` —— **只有直接执行
- * 才跑 CLI**，import 本模块零副作用（改前顶层 `await` 会直接打包 + 写 `.scratch/`）。
+ * （导出，见 `tests/verify-pack.spec.ts` 的离线单测）；`findPacker` 亦导出但**非纯**（碰文件系统与
+ * PATH 探针）：装箱交付链 e2e 现场打包时复用它，否则打包器候选顺序会有第二份。顶层流程收进
+ * `main()` —— **只有直接执行才跑 CLI**，import 本模块零副作用（改前顶层 `await` 会直接打包 +
+ * 写 `.scratch/`）。
  * @module dsh-shell-host/scripts/verify-pack
  */
 
@@ -76,8 +78,11 @@ export function untarGz(tarball, destination) {
  * issue #79 exists), so the search falls back to the conventional Windows node
  * install. Returns null when nothing is found — the caller then skips LOUDLY
  * rather than reporting a pass it did not earn.
+ *
+ * 导出（#89）：装箱交付链 e2e 要对**同一个**插件树现场打包，复用这份候选顺序；
+ * 第二份实现在两处各漂一次就是等着「这个宿主找得到打包器、那个找不到」。
  */
-function findPacker() {
+export function findPacker() {
   const candidates = [
     join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
     join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),

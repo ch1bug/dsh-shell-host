@@ -75,9 +75,9 @@ export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
 | 端口 | 19387（GUI） | 19501 | **19502** |
 | 源码树 | 安装版 | `dsh-matt-src` | 部署副本 `dsh-shellhost-src` + 宿主 `dsh-host-src` |
 
-两个 e2e 套件另用**临时** profile（`os.tmpdir` 下的临时 DSH_HOME + `--port 0`，
-跑完即删），不占上表任何资源：mock 层用 `dsh-host-dev`，真实层用
-`dsh-host-real`（同名不同 home，互不干扰）。
+三个 e2e 套件另用**临时** profile（`os.tmpdir` 下的临时 DSH_HOME + `--port 0`，
+跑完即删），不占上表任何资源：mock 层用 `dsh-host-dev`，装箱交付层用
+`dsh-host-tarball`，真实层用 `dsh-host-real`（同名不同 home，互不干扰）。
 
 - **`DSH_PROFILE` / `DSH_PROFILE_DIR` 不是启动选择器**：它们是 shell-env 插件每次
   模型 shell 调用**注入给模型的输出事实**。拿它们做隔离判断是错的。

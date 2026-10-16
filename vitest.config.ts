@@ -33,11 +33,14 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // e2e-tool-call-machine boots REAL `dsh web` instances (host + mock provider),
 // so it belongs to the serial lane as well: it must never share a worker pool
 // with the unit suites, and it skips loudly when its trees are absent.
+// e2e-tarball-machine (#89) runs the same chain from an `npm pack` artifact and
+// carries that same cost, so it is in the serial lane for the same reason.
 const machineLane = [
   'tests/ssh-pty-live.spec.ts',
   'tests/terminal-machine.spec.ts',
   'tests/e2e-tool-call-machine.spec.ts',
   'tests/e2e-real-llm-machine.spec.ts',
+  'tests/e2e-tarball-machine.spec.ts',
 ]
 // Explicit exclusion outlet: a spec listed here is exempt from the unit lane,
 // each with its reason. machineLane files are excluded because the serial
