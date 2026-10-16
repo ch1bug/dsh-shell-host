@@ -8,6 +8,7 @@
  *
  * `PENDING` 是**显式欠账单**：每项带票号与理由。名单与事实**逐字相等**（棘轮）——
  * 新增未覆盖脚本会让本用例红；补上 spec 后也必须回来删条目，否则同样红。
+ * **目前名单为空**：唯一的欠账（`verify-pack.mjs`）已由 `#86` 补齐并在此处销账。
  *
  * @module tests/scripts-coverage.spec.ts
  */
@@ -19,10 +20,8 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
-/** 尚未配对 spec 的脚本 → 欠账理由（修完必须删条目，见文件头注）。 */
-const PENDING: Record<string, string> = {
-  "verify-pack.mjs": "#86 装箱检查器无测试，且 import 即执行（待按 #83 模式拆分后补测）",
-};
+/** 尚未配对 spec 的脚本 → 欠账理由（修完必须删条目，见文件头注）；现为空 = 没有欠账。 */
+const PENDING: Record<string, string> = {};
 
 /** 目录下按后缀收集文件名（递归；只取 basename，spec 放子目录也算配对）。 */
 function names(dir: string, suffix: string): string[] {
@@ -38,11 +37,9 @@ describe("scripts/ ↔ tests/ 位置约定", () => {
     const uncovered = names("scripts", ".mjs").filter(
       (name) => !specs.has(`${name.replace(/\.mjs$/, "")}.spec.ts`),
     );
-    const debt = Object.entries(PENDING)
-      .map(([name, why]) => `${name}: ${why}`)
-      .join("\n  ");
-    expect(uncovered, `仍有脚本没有 spec（显式欠账）:\n  ${debt}`).toEqual(
-      Object.keys(PENDING).sort(),
-    );
+    expect(
+      uncovered,
+      "仍有脚本没有 spec：新脚本请配对 tests/<base>.spec.ts；确属欠账才登记进 PENDING（见文件头注）",
+    ).toEqual(Object.keys(PENDING).sort());
   });
 });
