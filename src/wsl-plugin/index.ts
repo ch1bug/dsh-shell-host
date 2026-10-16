@@ -10,17 +10,17 @@
  *
  * Registers win_ls / win_read / win_write / win_run / win_open / win_path /
  * win_drives as model tools via the official defineTool + ctx.tools.register.
- * Everything runs through the host `shell` service with the calling
- * session's sandbox policy — the same seam the built-in bash tool uses.
+ * Everything runs through the host `shell` service (provided by the platform
+ * shell executors — ADR-0013: this package provides no executor) with the
+ * calling session's sandbox policy.
  *
- * Two layers, deliberately not merged (ADR-0007 redundancy check): the
- * plugin entry's internal toWslPath/toWinPath helpers are its own simplified
- * converters (relative paths pass through, backslashes normalized); the
- * in-backend `src/wsl-bridge.ts` (ADR-0003 decision 5) is the wsl backend's
- * strict cross-VM mapping layer (relative paths throw loudly, `\\wsl$` UNC
- * handled). The plugin entry keeps its own helpers so tool behavior is
- * unchanged from the source repo — adopting the strict mapping here would
- * change tool behavior, which a pure move must not.
+ * Self-contained path helpers (ADR-0013 note): the entry's internal
+ * toWslPath/toWinPath converters are its own simplified converters (relative
+ * paths pass through, backslashes normalized). [History: ADR-0007 kept them
+ * separate from the wsl backend's strict cross-VM mapping layer
+ * (`src/wsl-bridge.ts`, deleted with the executor world) so tool behavior
+ * stayed unchanged from the source repo — a pure move must not change
+ * behavior.]
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'

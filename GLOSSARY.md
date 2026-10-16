@@ -127,7 +127,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   supersede;0007/0008 收窄有效(所有 entry 均为插件层)。T5 e2e 执行器清单
   与执行器/registry/backend 测试面随删;machine lane = terminal + ssh-pty live。
 
-## D12 (#ADR-0012, 2026-10-16, human 拍板:只保留独立插件注册)
+## D12 (#ADR-0012, 2026-10-16, human 拍板:只保留独立插件注册)【行清单已被 D13 收窄:现挂载面 = `pty` + `terminal`,无 `shell-host`】
 
 - **改上游路径全部摒弃,挂载形态 = 自有 id 插件行**:patch 只允许自有 id 的
   insert 行(`shell-host` / `pty` / `terminal`);同 id 接管上游 loader 行、

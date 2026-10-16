@@ -343,7 +343,8 @@ const renderSshOption = (option: SshOption): string =>
  * tool names so agent-facing surfaces read coherently.
  *
  * Division of labor (README-documented): one-shot remote commands belong to
- * the ssh BACKEND (#23 `backends/ssh.ts`, ControlMaster) — this instance is
+ * the remote one-shot world — the standalone `dsh-shell-remote` plugin since
+ * ADR-0013 (route C; formerly this package's ssh backend) — this instance is
  * for sessions a human/agent converses with.
  *
  * Reconnect semantics (issue AC): explicit RECONNECT-NO — a dead session

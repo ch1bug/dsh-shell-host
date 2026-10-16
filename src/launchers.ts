@@ -1,11 +1,11 @@
 /**
  * Launcher preset layer (issue #54, ADR-0008): the declarative
  * `(transport × shell-env)` startup units behind the `./terminal` entry (T3,
- * #55). A preset is a REUSE VIEW of the backend descriptor layer — the
- * interactive argv templates and PATH-prefix shape come from
- * `src/backends.ts` (single source, no second argv table), the executable
- * candidates from `src/detect.ts` runtime scans — plus pure-data rows for
- * the shells the descriptor layer has no view of (git-bash/cmd/python-repl).
+ * #55). A preset is a declarative startup unit (ADR-0013: the backend
+ * descriptor layer is gone) — the interactive argv templates and PATH-prefix
+ * shape are declared HERE (single source, no second argv table), the
+ * executable candidates from `src/detect.ts` runtime scans — plus pure-data
+ * rows for shells with no probe (git-bash/cmd/python-repl).
  * ssh is the transport dimension, not a preset: `composeSshLaunch` rides the
  * pty entry's `composeSshCommand` (keepalive defaults + suppression inherit,
  * ADR-0008 decision 1).
@@ -34,8 +34,8 @@ import {
 } from './detect.ts'
 import { composeSshCommand, type SshLaunchArgs, type SshOptionInput } from './pty/index.ts'
 
-// Launcher argv/prefix constants (ADR-0013: moved here from the removed
-// backends.ts — the launcher layer is their only consumer now). Single source
+// Launcher argv/prefix constants (ADR-0013: formerly in the removed
+// backends.ts — this module is their single home now). Single source
 // the launcher views derive from — no second hardcoded argv table.
 export const MSYS2_INTERACTIVE_ARGV: readonly string[] = ['--login', '-i']
 export const PWSH_INTERACTIVE_ARGV: readonly string[] = ['-l', '-noexit']
@@ -166,7 +166,7 @@ function wslDistros(deps: LauncherDeps, env: NodeJS.ProcessEnv): readonly string
   return (deps.listDistros ?? defaultListDistros)(wslExe)
 }
 
-/** The real distro discovery: `wsl.exe --list --quiet` (UTF-16LE) — the backends layer's parser. */
+/** The real distro discovery: `wsl.exe --list --quiet` (UTF-16LE) — uses this module's parser. */
 function defaultListDistros(wslExe: string): readonly string[] {
   return parseWslDistroList(execFileSync(wslExe, ['--list', '--quiet'], { encoding: 'utf16le' }))
 }

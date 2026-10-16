@@ -1,8 +1,8 @@
 /**
  * Shared POSIX single-quote helper (issue #37 smells cleanup): one
- * implementation for the two former copies — the remote executor's
- * `shellQuote` (payload composition over the ssh transport) and the pty
- * plugin's `quotePosix` (env `export` lines on shell-type backends).
+ * implementation shared by the pty plugin's `quotePosix` (env `export` lines
+ * on shell-type sessions) and other SSH command-composition sites. [ADR-0013:
+ * the former remote-executor consumer left with the executor world.]
  * INTERNAL shared module, not an ADR-0007 entry — no package export address.
  */
 

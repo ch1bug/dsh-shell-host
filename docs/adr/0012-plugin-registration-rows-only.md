@@ -28,9 +28,13 @@ that existed solely to back it:
   to upstream defaults, including the bare `bash` candidate (the WSL stub on
   stock Windows PATHs).
 
-What remains in `cordis.patch.yml` are own-id insert rows only: `shell-host`
-(the executor, default disabled), `pty`, `terminal`. The backends pwsh
-descriptor (`src/backends.ts`) is the executor dimension and is untouched.
+What remained in `cordis.patch.yml` were own-id insert rows only: `shell-host`
+(the executor, default disabled), `pty`, `terminal`; the backends pwsh
+descriptor (`src/backends.ts`) was the executor dimension and was untouched.
+[2026-10-16, ADR-0013: the executor world — including the `shell-host` row and
+`src/backends.ts` — has since left the package; this patch surface is now
+`pty` + `terminal` only. ADR-0013 is written on top of this ADR and refines
+its "what remains" list.]
 
 ## Superseded scope
 

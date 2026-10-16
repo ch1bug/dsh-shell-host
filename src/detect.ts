@@ -42,7 +42,7 @@ export const MSYS2_ROOT_CANDIDATES: readonly string[] = [
  * 4. `%HOMEDRIVE%\cygwin64` and `%HOMEDRIVE%\cygwin`.
  *
  * Then a full MSYS2 install — a superset of VS Code, usable through the
- * `subsystem: 'none'` plain surface. The caller (`backends.ts`) joins this
+ * `subsystem: 'none'` plain surface. Consumers (launchers.ts) join this
  * list into the loud-failure message, so it always names the real probe
  * points. Folded from VS Code's `source`-type ordered-path profile; the
  * ordering semantics are equivalent.
