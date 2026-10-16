@@ -2,7 +2,7 @@
  * verify-all.mjs —— 本仓**唯一检查入口**（retro 落地，对齐相邻工作区）。
  *
  * 为什么存在：本仓无 CI（维护者决定 2026-09-30），本地套件即唯一验收通道，
- * 但此前 `pnpm test` 只跑 vitest 两个项目，**汇总层看不出"哪些是通过、哪些是
+ * 但此前 `test` 脚本只跑 vitest 两个项目，**汇总层看不出"哪些是通过、哪些是
  * 带 loud skip 的通过"**——而这两者的证据强度完全不同（见 docs/agents/TESTING.md）。
  *
  * 本脚本把两个车道串起来并按 TESTING.md 的口径如实汇总：
@@ -11,7 +11,7 @@
  *   FAIL   —— 失败（附末尾输出）
  *   SKIP   —— 用例按门禁整体跳过（如 ssh-pty-live 无 DSH_SSH_LIVE_HOST）
  *
- * 用法：node scripts/verify-all.mjs   （等价：pnpm test / node --run test）
+ * 用法：node scripts/verify-all.mjs   （`node --run test` = 先 typecheck 再跑本脚本）
  *
  * 注意：**summary 里的 PASS* 数量是要看的数字**。它比"全绿"更有信息量。
  *

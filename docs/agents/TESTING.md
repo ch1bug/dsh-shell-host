@@ -130,13 +130,12 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
    [#81](https://github.com/ch1bug/dsh-shell-host/issues/81) 与
    [dev-environment.md](../dev-environment.md) §4。
 
-## 实测踩坑（写进规则，避免重复踩）
-
 ## 本仓现有验证入口
 
 | 入口 | 层 | 覆盖 | 门禁 |
 |---|---|---|---|
-| `pnpm test` | ①②③ | typecheck + unit + machine（本仓常规套件） | 无 |
+| `node --run test` | ①②③ | typecheck + unit + machine（本仓常规套件） | 无 |
+| `tests/doc-references.spec.ts` | ①② | 引用腐烂：注释里的仓内路径必须存在；本仓脚本一律写 `node --run`（历史提及在该注释/该行标 `[History: …]`） | 无 |
 | `tests/e2e-tool-call-machine.spec.ts` | **mock 层** | 官方安装（`--from-default-profile` + `dsh plugin add`）→ 配置（组合树含两行、无 pending）→ 启动（真实 `dsh web`，OS 临时端口，stderr 干净）→ `session/create` → `prompt` → mock provider 要求 `pty_open` → 实例执行 → `tool_result` 回灌 | 插件树 + 宿主树 + pnpm shim（缺失则响亮跳过） |
 | `tests/e2e-real-llm-machine.spec.ts` | **真实层**（opt-in） | 同一链路打**真实端点**：供应商接受（计费 usage）、真实模型行为、真实凭据路径 | 上述 + `DEEPSEEK_API_KEY` 或含 `deepseek-account-platform/*` 的凭据源（缺失则响亮跳过） |
 

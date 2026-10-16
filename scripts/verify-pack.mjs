@@ -8,7 +8,7 @@
  *   3. every packed target is present in the tarball.
  *
  * Exit 0 = all pointers resolvable. **Requires a prior build** (`node --run build`),
- * so it is not part of `pnpm test`; run it via `node --run test:release`, which
+ * so it is not part of `node --run test`; run it via `node --run test:release`, which
  * builds first. When no packer is reachable it skips LOUDLY (exit 0, printing
  * `!! SKIP (loud)`) rather than reporting an unearned pass.
  * @module dsh-shell-host/scripts/verify-pack

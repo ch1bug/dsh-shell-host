@@ -266,9 +266,9 @@ describe('win_* tool behavior through the fake shell seam', () => {
     // a parsed command line, so any `$'` inside the command (e.g. a grep
     // pattern ending in `$`) opens ANSI-C quoting and unbalances the quotes —
     // bash dies with "unexpected EOF" and the tool returned empty drives.
-    // A fake shell cannot observe that interaction; the machine lane asserts
-    // the mechanism on the real seam (tests/wsl-plugin-live.spec.ts). Here we
-    // pin the class itself: the command carries no `$` at all.
+    // A fake shell cannot observe that interaction; a live fixture on the real
+    // seam pinned it (`tests/wsl-plugin-live.spec.ts` [History: dropped in
+    // 06ded1e]). Here we pin the class itself: the command carries no `$` at all.
     const { ctx, registered, calls } = fakeCtx(() => fakeRun(''))
     wslPlugin.apply(ctx as any)
     const tool = registered.find((t) => t.name === 'win_drives')!
@@ -284,8 +284,9 @@ describe('path helpers (the plugin entry keeps its own converters — two layers
     const tool = registered.find((t) => t.name === 'win_ls')!
     await tool.execute({ path: 'relative\\dir' }, {})
     // The plugin's simplified toWslPath passes a relative path through
-    // (slashes normalized) — src/wsl-bridge.ts would throw loudly. The two
-    // converters are deliberately NOT merged (pure move; ADR-0007).
+    // (slashes normalized) — `src/wsl-bridge.ts` [History: ADR-0013 removed it]
+    // would throw loudly. The two converters are deliberately NOT merged
+    // (pure move; ADR-0007).
     expect(calls[0].command).toBe(`ls -la --time-style=long-iso 'relative/dir'`)
   })
 })

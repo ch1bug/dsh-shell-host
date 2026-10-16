@@ -42,7 +42,7 @@ const SCRIPT_PATH = fileURLToPath(SCRIPT_URL);
 const UNIT = { name: "unit", why: "纯逻辑与类型面" };
 const MACHINE = { name: "machine", why: "串行；碰真实终端 / 真实实例 / 可选真实 LLM" };
 
-/** 造一行 vitest 逐文件输出（真实形态：`  ✓ |unit| tests/a.spec.ts (7 tests) 20ms`）。 */
+/** 造一行 vitest 逐文件输出（真实形态：`  ✓ |unit| tests/<file>.spec.ts (7 tests) 20ms`）。 */
 function line(mark: string, lane: string, file: string, detail = "") {
   return `  ${mark} |${lane}| ${file}${detail === "" ? "" : ` ${detail}`}`;
 }

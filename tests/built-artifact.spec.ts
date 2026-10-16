@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
  * rejected them as a syntax error at import time — the row composed in the
  * profile but the plugin never activated. tsdown.config.ts now lowers
  * standard decorators via tsdown-plugin.ts; this smoke imports the BUILT pty
- * artifact (skip on a fresh checkout before `pnpm build`) and asserts it
+ * artifact (skip on a fresh checkout before `node --run build`) and asserts it
  * loads in plain Node.
  */
 const artifactPath = fileURLToPath(new URL('../lib/pty/index.js', import.meta.url))

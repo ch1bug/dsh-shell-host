@@ -16,7 +16,7 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 
 // #34 (extended by #32): the suites whose live cases spawn real wsl.exe (5–8s per case,
 // VM/process-start bound) run as their own project with file parallelism
-// OFF, and `pnpm test` schedules the unit project FIRST and the machine
+// OFF, and `node --run test` schedules the unit project FIRST and the machine
 // project SECOND (sequential `&&` invocations, so the lanes can never
 // interleave in a shared worker pool). Under full-suite concurrency the
 // concurrent WSL spawns jittered past their timeouts with a different

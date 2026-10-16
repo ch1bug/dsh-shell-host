@@ -7,7 +7,7 @@
 
 - Profile 根：`$DSH_HOME/profiles/<name>`（如 `C:\Users\<user>\.dsh\profiles\desktop`）
 - 插件安装面：`<profile>\node_modules\<pkg>` —— 由 **pnpm 安装**产生（`link:` 协议下
-  指向工作检出），故本仓 `pnpm build` 在 profile 重启后即生效。
+  指向工作检出），故本仓 `node --run build` 在 profile 重启后即生效。
 - Profile 状态文件（**注册真身**）：
   - `<profile>\package.json` 的 `dependencies` 必须含该插件
     （`"dsh-shell-host": "link:<repo>"`），**且**
