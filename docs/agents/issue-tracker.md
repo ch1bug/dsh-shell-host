@@ -114,6 +114,11 @@ node scripts/frontier.mjs --json           # 排批输入：frontier + gated（�
 由 `tests/frontier.spec.ts` 离线断言；CLI 那半截需要 PATH 上有已登录的 `gh`，
 任何 gh 失败都**响亮退出** —— 绝不把"接口挂了"伪装成"没有阻塞"。
 
+**经符号链接调用也照常跑**：`frontier.mjs` 这类入口守卫按 `realpath` 归一（共用的
+`scripts/script-entry.mjs`，`#85`）。这条曾经是缺陷面 —— 早先按字面路径比对，链接调用会
+**静默 `exit 0`**，排批消费者把「没跑」读成「没有阻塞」。链接形态有离线断言守着
+（`tests/script-entry.spec.ts` 走真子进程），改动入口守卫时先跑它。
+
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.

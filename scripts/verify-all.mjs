@@ -20,9 +20,9 @@
  * 只有 `runLane()` 与 `main()` 碰真实环境。判定逻辑曾随车道顺序漂移（#83）。
  */
 import { spawnSync } from 'node:child_process'
-import { realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isDirectInvocation } from './script-entry.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const VITEST = join(REPO, 'node_modules', 'vitest', 'vitest.mjs')
@@ -348,20 +348,10 @@ export function main(argv = process.argv.slice(2)) {
 /**
  * 是否**直接执行**（而非被 import）——被 import 时不跑 CLI。
  *
- * 路径按 `realpath` 归一：符号链接 / 正反斜杠等等价写法都算直接执行。不归一时
- * 这类调用会失配 → 静默不跑却 exit 0（对"唯一检查入口"就是假绿）。
+ * 真正实现在 `scripts/script-entry.mjs`（#85 的单一来源：realpath 归一 + 纯函数 + spec）。
+ * 这里**原样转出**，让既有调用面与其它脚本共用同一份守卫，不再各写一套。
  */
-export function isDirectInvocation(argv1, moduleUrl) {
-  if (argv1 === undefined) return false
-  let script
-  try {
-    script = fileURLToPath(moduleUrl)
-    return realpathSync(argv1) === realpathSync(script)
-  } catch {
-    // 路径异常（不存在 / 非 file: URL）时退回字面比对：守卫自身崩掉（= 入口崩）比失配更糟。
-    return script !== undefined && resolve(argv1) === script
-  }
-}
+export { isDirectInvocation }
 
 // 只有**直接执行**才跑 CLI：被单测 import 时不得递归跑整套套件。
 if (isDirectInvocation(process.argv[1], import.meta.url)) main()

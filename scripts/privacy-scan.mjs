@@ -41,6 +41,8 @@ import { homedir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isDirectInvocation } from "./script-entry.mjs";
+
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
@@ -282,16 +284,6 @@ export function trackerItems() {
   ];
 }
 
-/** 直接执行才跑 CLI（被 spec import 时不扫）。 */
-function isDirectInvocation(argv1, moduleUrl) {
-  if (argv1 === undefined) return false;
-  try {
-    return resolve(argv1) === fileURLToPath(moduleUrl);
-  } catch {
-    return false;
-  }
-}
-
 /** CLI 主体：`--root` / `--no-history` / `--gh` / `--denylist <file>` / `--verbose`。 */
 export function main(argv = [], root = process.cwd()) {
   const arg = (name) => {
@@ -341,6 +333,8 @@ export function main(argv = [], root = process.cwd()) {
   return 1;
 }
 
+// 直接执行才跑 CLI（被 spec import 时不扫）。守卫共用 `script-entry.mjs`（#85：本处原先按
+// **字面路径**比对，经符号链接调用会静默 exit 0 —— 隐私守卫"没跑"被读成"干净"）。
 if (isDirectInvocation(process.argv[1], import.meta.url)) {
   process.exit(main(process.argv.slice(2), REPO));
 }

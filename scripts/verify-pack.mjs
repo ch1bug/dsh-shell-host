@@ -16,21 +16,23 @@
  * builds first. When no packer is reachable it skips LOUDLY (exit 0, printing
  * `!! SKIP (loud)`) rather than reporting an unearned pass.
  *
- * 结构（#86）：`entryTargets` / `manifestTargets` / `untarGz` / `isDirectInvocation` 是**纯函数**
- * （导出，见 `tests/verify-pack.spec.ts` 的离线单测）；`findPacker` 亦导出但**非纯**（碰文件系统与
- * PATH 探针）：装箱交付链 e2e 现场打包时复用它，否则打包器候选顺序会有第二份。顶层流程收进
- * `main()` —— **只有直接执行才跑 CLI**，import 本模块零副作用（改前顶层 `await` 会直接打包 +
- * 写 `.scratch/`）。
+ * 结构（#86）：`entryTargets` / `manifestTargets` / `untarGz` 是**纯函数**（导出，见
+ * `tests/verify-pack.spec.ts` 的离线单测）；`findPacker` 亦导出但**非纯**（碰文件系统与
+ * PATH 探针）：装箱交付链 e2e 现场打包时复用它，否则打包器候选顺序会有第二份。
+ * `isDirectInvocation` **原样转出**自 `scripts/script-entry.mjs`（#85 的单一来源，本文件不再自带
+ * 一份实现）。顶层流程收进 `main()` —— **只有直接执行才跑 CLI**，import 本模块零副作用
+ * （改前顶层 `await` 会直接打包 + 写 `.scratch/`）。
  * @module dsh-shell-host/scripts/verify-pack
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { access, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync } from 'node:zlib'
+import { isDirectInvocation } from './script-entry.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -264,25 +266,13 @@ async function main() {
 /**
  * 是否**直接执行**（而非被 import）——被 import 时不跑 CLI。
  *
- * 路径按 `realpath` 归一：符号链接 / 正反斜杠等等价写法都算直接执行。不归一时这类调用
- * 会失配 → 直接跑也不进 `main()`，却 exit 0（对装箱检查器就是**假绿**）。
+ * 真正实现在 `scripts/script-entry.mjs`（`#85` 收敛成的单一来源：realpath 归一 + 纯函数 + spec）。
+ * 这里**原样转出**，让既有调用面与其它脚本共用同一份守卫。
  *
- * 与 `scripts/verify-all.mjs` 的同名守卫同形（#83 的配方：realpath 归一 + 纯函数 + spec）。
  * ADR-0014 那句「守卫与唯一检查入口共用同一份逻辑」讲的是**门禁判据**（pre-commit 就是靠
- * 调 `node --run typecheck` 复用），入口守卫不是判据；而"三处守卫要不要收敛成共用单一实现"
- * 是已开票的 #85 的决策面（它正处理 frontier 侧同一守卫的口径漂移），本票不擅自改别的脚本。
+ * 调 `node --run typecheck` 复用）；而入口守卫的单一来源由 `#85` 落地为 `script-entry.mjs`。
  */
-export function isDirectInvocation(argv1, moduleUrl) {
-  if (argv1 === undefined) return false
-  let script
-  try {
-    script = fileURLToPath(moduleUrl)
-    return realpathSync(argv1) === realpathSync(script)
-  } catch {
-    // 路径异常（不存在 / 非 file: URL）时退回字面比对：守卫自身崩掉（= 入口崩）比失配更糟。
-    return script !== undefined && resolve(argv1) === script
-  }
-}
+export { isDirectInvocation }
 
 // 只有**直接执行**才跑 CLI：被单测 import 时不得打包、不得写 `.scratch/`、不得 spawn 打包器。
 if (isDirectInvocation(process.argv[1], import.meta.url)) await main()

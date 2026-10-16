@@ -26,8 +26,7 @@
  * 纯逻辑 `readyFrontier()` 与 gh I/O 分离，便于离线单测。
  */
 import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isDirectInvocation } from './script-entry.mjs'
 
 /** 默认 frontier 的 label。 */
 export const DEFAULT_LABEL = 'ready-for-agent'
@@ -143,5 +142,5 @@ export function main(argv = process.argv.slice(2)) {
 }
 
 // 只有**直接执行**才跑 CLI：被 import（离线单测）时只暴露纯函数。
-const invokedDirectly = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-if (invokedDirectly) main()
+// 守卫归 realpath（共用的 script-entry.mjs，#85）：符号链接调用照常跑，不再静默 exit 0。
+if (isDirectInvocation(process.argv[1], import.meta.url)) main()
