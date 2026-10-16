@@ -112,15 +112,25 @@ python -m git_filter_repo --force \
 
 ## 5. Tracker 口径
 
-- 本仓**不追改历史 issue 正文 / 评论**：GitHub 的编辑不可公开对读，改掉等于动他人可见的原文。
-  惯例是**补一条隐私说明评论**，把处置、验证与未清面写清楚（现行未清面见 #97 的隐私跟进评论）。
-- 若 human 决定要清：`gh issue list --state all --json number,body,comments` 逐条判；
-  正文 `gh issue edit <n> --body-file <file>`，评论
-  `gh api --method PATCH repos/<o>/<r>/issues/comments/<id> --input payload.json`；
-  改完**回读**（tracker 是权威表示，写坏没有第二份）。
+**2026-10-16 human 拍板：清。** 本仓 issue 正文 / 评论已按机械替换清理完（14 篇正文 +
+17 条评论，`--gh` 复扫 0 命中）；替换**只落在个人 / 环境串上**，正文其余部分一字不动。
+
+- 审计工作清单：`node scripts/privacy-scan.mjs --gh` —— 逐条给
+  `issue:#N:行` / `comment:<id> (#N):行 命中<类别>`。
+- 改写（走 API，`--input -` 读 stdin，省掉临时文件与引号地狱）：
+  正文 `gh api --method PATCH repos/<o>/<r>/issues/<n> --input -`、
+  评论 `gh api --method PATCH repos/<o>/<r>/issues/comments/<id> --input -`，
+  JSON 体 = `{"body": "<改写后的全文>"}`。
+- 替换表（**盘符无关**，别只写自己那台的盘符；实测漏过 `<盘符>:\Work\…` 与 `<盘符>:\dsh-*`）：
+  用户名 → `<user>`、家目录 → `~` / `%USERPROFILE%`、
+  `<盘符>:\dsh-*` → `<repo>`、`<盘符>:\dsh-matt*` → `<sibling-repo>`、
+  `<盘符>:\Work` → `<old-work>`、邮箱 → `<email>`、内网地址 → `<lan-ip>`。
+- **改完必须回读**：`--gh` 再扫 + 抽读一两篇看占位是否合理（tracker 是权威表示，
+  写坏没有第二份）。新评论 / 回复里**不复述串本身**（复述等于再公开一次）。
+- 惯例：落地说明按 tracker 的 AI 免责声明口径单独发一条评论；不复改他人可见的**原文以外**内容。
 - **平台侧边界**：被重写掉的旧提交在 GitHub 上**仍可按旧 SHA 直接访问** —— force-push 不会
   立即回收对象 / 缓存。彻底抹除需向 GitHub Support 申请 purge；**human 2026-10-16 拍板不申请**
-  （本仓 0 fork / 0 PR，接受该残留）。有 fork 时先处理 fork。
+  （本仓 0 fork / 0 PR，接受该残留），见 `dev-environment.md` §0.0。有 fork 时先处理 fork。
 
 ## 6. 防复发（已就位）
 

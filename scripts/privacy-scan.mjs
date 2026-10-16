@@ -324,7 +324,7 @@ export function main(argv = [], root = process.cwd()) {
   }
 
   const { surfaces } = scanned;
-  const scope = `files=${String(surfaces.files)} messages=${String(surfaces.messages)} identities=${String(surfaces.identities)} refs=${String(surfaces.refs)}`;
+  const scope = `files=${String(surfaces.files)} messages=${String(surfaces.messages)} identities=${String(surfaces.identities)} refs=${String(surfaces.refs)}${argv.includes("--gh") ? " tracker=on" : ""}`;
   if (terms.length === 0) {
     console.log(`  !! SKIP (loud) — 词表缺失（${file}）：只跑了结构性规则与运行时身份，个人 token 未核对`);
   }
