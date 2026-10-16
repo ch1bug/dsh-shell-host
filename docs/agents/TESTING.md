@@ -149,14 +149,14 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 | `tests/doc-references.spec.ts` | ①② | 引用腐烂：注释里的仓内路径必须存在；本仓脚本一律写 `node --run`（历史提及在该注释/该行标 `[History: …]`） | 无 |
 | `tests/e2e-tool-call-machine.spec.ts` | **mock 层** | 官方安装（`--from-default-profile` + `dsh plugin add` 源目录）→ 配置（组合树含两行、无 pending）→ 启动（真实 `dsh web`，OS 临时端口，stderr 干净）→ `session/create` → `prompt` → mock provider 要求 `pty_open` → 实例执行 → `tool_result` 回灌 | 插件树 + 宿主树 + pnpm shim（缺失则响亮跳过） |
 | `tests/e2e-tarball-machine.spec.ts` | **mock 层（装箱交付，#89）** | **同一条链，起点换成现场 `npm pack` 的 tarball**：环 1 打包并断言**产物**里有 `cordis.patch.yml`（#88 的运行期版本）→ 环 2 官方安装且注册记录指向 `.tgz`（不是源目录）→ 环 3–5 同上；目录安装不经过 `files`，所以这条链是唯一能看到打包漏项的那条 | 上述 + 插件树有 `cordis.patch.yml` + 本机有可用打包器（缺失则响亮跳过） |
-| `tests/e2e-real-llm-machine.spec.ts` | **真实层**（opt-in） | 同一链路打**真实端点**：供应商接受（计费 usage）、真实模型行为、真实凭据路径 | 上述 + `DEEPSEEK_API_KEY` 或含 `deepseek-account-platform/*` 的凭据源（缺失则响亮跳过） |
+| `tests/e2e-real-llm-machine.spec.ts` | **真实层**（opt-in） | 同一链路打**真实端点**：供应商接受（计费 usage）、真实模型行为、真实凭据路径；环级报告含 `Z cleanup` 两条读数（实例停 + 临时树删，**失败路径同样出读数**，#97） | 上述 + `DEEPSEEK_API_KEY` 或含 `deepseek-account-platform/*` 的凭据源（缺失则响亮跳过） |
 
 三个 e2e 套件都在 **machine 车道**（串行，`fileParallelism` off），隔离用临时
 `DSH_HOME`（`os.tmpdir`）+ `--port 0`，**不占任何固定端口**（19387 / 19501 / 19502）。
 两个 mock 层套件共用同一份链挂具（mock provider / 实例启动与收尾 / RPC 信封，见
 `tests/helpers/e2e-chain.ts`）；安装与环境门禁在 `tests/helpers/e2e-install.ts`
 （装箱交付档多两件：`packTarball()` / `tarballFiles()`）。真实层是另一条
-（自有供应商路由与凭据形态），不吃这份挂具。
+（自有供应商路由与凭据形态），只共用收尾挂具 `stopChild()`（#97）。
 
 可选 env：`DSH_E2E_PLUGIN_DIR` / `DSH_E2E_HOST_DIR` / `DSH_E2E_NODE` /
 `DSH_E2E_PNPM_DIR`（三套件），
