@@ -51,24 +51,16 @@ else bad('失败归咎于本仓新增行', blamed.join(', '))
 `skipping profile bundle: cannot resolve`，但**实例照样起得来、会话照样建得成**——
 此时任何"请求里出现 `pty_open`"的断言都会**假绿**（那字符串可能是测试自己塞的）。
 
-### e2e 的安装必须走官方命令（不许手工 symlink）
+### e2e 的安装必须走官方命令
 
-测试里装插件用**官方两步**，顺序固定：
+规则与理由（为何 ① 不能省、为何手工 symlink 不算安装）见
+[profile-install.md](profile-install.md)。测试里只多两条自有约定：
 
-```bash
-dsh --profile <p> --from-default-profile web --dump-config   # ① 播种 profile
-dsh plugin --profile <p> add <绝对路径>                       # ② 注册 + pnpm 安装
-```
-
-- **① 不能省**：它才写出 `cordis.yml` / `pnpm-workspace.yaml`。只跑 ② 的 profile
-  随后 `dsh web` 启动**毫无输出**（实测 120s 超时、stdout/stderr 皆空）。
-- **② 不许用手写注册记录 + 手工 `symlink` 代替**（[profile-install.md](profile-install.md)
-  写明那**不是安装**）。手工做法额外丢掉两样：pnpm 对 `link:` 依赖的 **peer 解析检查**
-  （本仓 10 个 peer 靠它暴露），以及 `.plugin-manager/logs/` **诊断面**。
-- 断言"装好了"要看**三处**：`dsh.profile.bundles` 含插件名、
-  `dependencies` 有该条目、`node_modules/<pkg>/package.json` 存在。
-
-`tests/helpers/e2e-install.ts` 封装了这套流程与门禁，两个 e2e 套件共用。
+- **断言"装好了"要看三处**：`dsh.profile.bundles` 含插件名、`dependencies` 有该
+  条目、`node_modules/<pkg>/package.json` 存在。只看一条会漏掉"注册了但没装"的
+  假绿形态。
+- **用共享挂具** `tests/helpers/e2e-install.ts`（两个 e2e 套件共用：安装流程、
+  host env 组装、loud-skip 门禁），不要在 spec 里各写一套。
 
 ### 工具面断言的正确写法
 
@@ -103,54 +95,18 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 
 **宿主锚点统一 = `dsh-v0.2.0-rc.2`（`639ed015`）**，ADR-0008 口径。
 
-## 权威工作树 vs 部署副本（**提交只在权威树**）
+## 权威工作树 vs 部署副本
 
-**权威工作树 = `<repo>`（本仓库）。** 任何 msys2 侧的源码树
-（如 `/home/<user>/dsh-shellhost-src`）都是**只读部署副本**。
+**提交只在权威工作树 `<repo>`**；任何 msys2 侧检出都是只读部署副本。
+分工表、同步命令、`core.autocrlf` 对齐与实测教训见
+[dev-environment.md](../dev-environment.md) §0（**唯一来源**）。
 
-| 动作 | 位置 |
-|---|---|
-| 改代码 / `git add` / `git commit` / `git push` | ✅ **只在 `<repo>`** |
-| 跑实例、跑 B1 构建（原生件走 Windows node）、部署验证 | 部署副本 |
-| 临时探针脚本（未跟踪、不提交） | 部署副本 |
+测试相关的两条推论：
 
-**实测教训（2026-10-16）**：为搭 msys2 部署环境建克隆后，顺手**在克隆里开发并提交**，
-结果出现「两个都叫 `main`、内容不同」的仓库，权威树落后 3 个提交；又叠加
-`git checkout <sha>` 造成的 detached HEAD，需 `merge --ff-only` 补救。
-**根因是把"部署副本"和"开发工作树"混为一个。**
-
-**两边的 `main` 必须同提交。** 不同即说明有人又在副本里提交了 —— 停下核对：
-
-```bash
-git -C <repo> rev-parse HEAD
-git -C /c/msys64/home/<user>/dsh-shellhost-src rev-parse HEAD   # 必须相同
-```
-
-副本同步（单向，权威 → 副本）：
-
-```bash
-git -C /c/msys64/home/<user>/dsh-shellhost-src fetch <repo> main
-git -C /c/msys64/home/<user>/dsh-shellhost-src merge --ff-only FETCH_HEAD
-```
-
-> **同步前先统一 `core.autocrlf`**：本仓为 `true`，而 msys2 侧 git **不继承**
-> Windows 侧配置。未设时同一个工作区会被两套 git 判出**全量行尾差异**
-> （实测 123 个文件 "modified"，`git diff --ignore-cr-at-eol` 后为空），
-> 于是 `merge --ff-only` 报
-> 「您对下列文件的本地修改将被合并操作覆盖 / 请在合并前提交或储藏您的修改」。
-> 一次性对齐：
->
-> ```bash
-> git -C /c/msys64/home/<user>/dsh-shellhost-src config core.autocrlf true
-> git -C /c/msys64/home/<user>/dsh-shellhost-src checkout -- .   # 丢弃纯行尾噪音
-> ```
->
-> **判别**：`git status` 一片 "M" 时，先跑 `git diff --ignore-cr-at-eol --stat`。
-> **为空**即纯行尾噪音，可安全 `checkout -- .`；**非空**才是真实改动，须先弄清来源。
-
-> 宿主的 tag 锚点（`dsh-v0.2.0-rc.2`）**只切在宿主源码树** `dsh-host-src`；
-> **插件仓库不要 checkout tag** —— 本仓 `main` 就是工作线，切 tag 只会制造
-> detached HEAD。
+- **e2e 用临时 DSH_HOME**（`os.tmpdir` + `--port 0`），不碰常驻实例，也不碰副本的
+  profile —— 所以跑测试不需要先同步副本。
+- **副本不同步就跑 e2e** 会测到旧代码：`tests/` 与 `lib/` 都来自副本自己的树。
+  跑 e2e 前先确认两边 `main` 同提交。
 
 ## 写测试时会踩的坑
 
