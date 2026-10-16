@@ -61,6 +61,7 @@ for (const lane of LANES) {
     // 没有逐文件行：整个车道没收集到用例，或提前崩了。
     results.push({
       label: `project ${lane.name}`,
+      lane: lane.name,
       status: run.exitCode === 0 ? 'SKIP' : 'FAIL',
       detail: run.exitCode === 0 ? '无收集到的用例' : `exit ${String(run.exitCode)}`,
       output: run.exitCode === 0 ? undefined : run.out,
@@ -80,13 +81,17 @@ for (const lane of LANES) {
       status,
       detail: file.detail || lane.why,
       output: status === 'FAIL' ? run.out : undefined,
-      laneFailed: run.exitCode !== 0,
     })
   }
   // 车道整体非零但逐文件行都好看：记一条车道级失败，别让退出码被吞。
-  if (run.exitCode !== 0 && !results.some((r) => r.status === 'FAIL')) {
+  // 判断范围必须是**本车道**的条目：用全局 results 会让前一个车道的 FAIL
+  // 掩盖后一个车道的车道级失败（反之亦然），造成结果随执行顺序漂移。
+  const laneResults = results.filter((r) => r.lane === lane.name)
+  const laneHasFailure = laneResults.some((r) => r.status === 'FAIL')
+  if (run.exitCode !== 0 && !laneHasFailure) {
     results.push({
       label: `project ${lane.name} (lane exit)`,
+      lane: lane.name,
       status: 'FAIL',
       detail: `exit ${String(run.exitCode)}`,
       output: run.out,
