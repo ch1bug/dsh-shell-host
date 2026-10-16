@@ -26,6 +26,19 @@ apply to the human's own writing, nor to commit messages. The reason is
 provenance: a reader must be able to tell machine-written triage from a
 maintainer's own words without checking the author field.
 
+### 正文一律用文件写入，发出后回读
+
+写 issue 正文 / 评论时，先用 `write` 工具落成文件，再 `gh issue create|comment --body-file <file>`。
+
+shell（PowerShell 尤甚）的 here-string 会把**反引号当转义符**：`` `tests/x.spec.ts` `` 里的
+`` `t `` 变成 TAB —— `tests` 掉首字母、字面还没了，静默且只在渲染后才发现。
+
+发出后**回读一次**（`gh issue view <n> --json body`）再当它可靠：tracker 是本仓的权威表示，
+写坏了没有第二份。
+
+实测（2026-10-16）：一条 `#83` 跟进评论经 here-string 写入，`tests/verify-all.spec.ts` 掉了
+首字母，靠回读才发现（`gh issue comment --edit-last` 修正）。
+
 ### Labels are part of filing, not a later step
 
 `gh issue create` writes **no labels**. An issue filed without them enters the
