@@ -8,7 +8,8 @@
 
 > 占位符约定（本文件与全仓）：`<repo>` = 本仓检出的权威副本、`<sibling-repo>` = 相邻工作区
 > 检出、`<old-work>` = 旧工作布局根；`~` / `$HOME` / `%USERPROFILE%` 照 shell 语义。
-> 本仓是 **PUBLIC** 仓，真实个人 / 本机路径不进仓（守卫：`tests/no-personal-identifiers.spec.ts`）。
+> 本仓是 **PUBLIC** 仓，真实个人 / 本机路径不进仓（机械守卫：`scripts/privacy-scan.mjs`，
+> pre-commit 跑它）。
 
 **权威工作树 = `<repo>`（本仓库的检出）。** msys2 侧的源码树
 （`~/dsh-shellhost-src`，即 msys2 家目录下的 `dsh-shellhost-src`）只是**只读部署副本**。
@@ -36,30 +37,21 @@ git -C ~/dsh-shellhost-src merge --ff-only FETCH_HEAD
 
 ### 0.0 历史重写（2026-10-16，隐私）
 
-本仓是 **PUBLIC** 仓，而 2026-10-16 之前的历史里带着个人 / 本机环境串（机主用户名与家目录、
-检出与旧布局路径、个人署名与邮箱、一条旧提交信息里的真机名与内网 IP）。处置：**历史重写**
-（口径由 human 拍板：**个人用户名 + 本机布局路径**；与相邻工作区同一套做法）。
+本仓是 **PUBLIC** 仓，2026-10-16 之前的历史里带着个人 / 本机环境串（机主用户名与家目录、
+检出与旧布局路径、个人署名与邮箱、真机名与内网 IP）。**处置 = 历史重写**：现树先占位化并提交，
+再 `filter_repo`（blob 内容 / 提交信息 / 身份 `--mailmap`），最后 `--force-with-lease` 重推
+`main` / 侧分支 / 两个 tag —— 与相邻工作区同一口径。
 
-- 工具：`python -m git_filter_repo`（本机 `git filter-repo` 子命令不在 PATH，pip 装的是
-  user site），一次跑齐 `--replace-text` / `--replace-message` / `--mailmap`，
-  并带 `--prune-empty=never --prune-degenerate=never`（别让 tag 或提交被顺手裁掉）。
-- **先 `--dry-run` 再计数做门禁**：比对 `.git/filter-repo/fast-export.original` 与
-  `.fast-export.filtered` 里各个人 / 环境串的出现次数，**filtered 全 0 才跑正式的那遍**。
-- **重写前工作树必须干净**：filter-repo 会 reset 工作树 —— 未提交的改动会**丢**（本会话
-  实测丢过一次引用修正，重做了一遍）。要留下的先 `git commit`。
-- 覆盖范围：blob 内容、**提交信息**、**提交身份**（author/committer 一律归到
-  `ch1bug <ch1bug@users.noreply.github.com>`；本机 `git config user.name/email` 已同步）。
-  **既有提交的 SHA 全部改变**（未受影响的早提交除外）；两个 `dsh-*` tag 随重写重指。
-- **旧 SHA 不可再解析**：文档 / 注释里对旧提交的引用已逐条重映射到**重写后的终态**
-  （逐个 `git cat-file -t` 验过）；变更前写入 **commit 信息**里的引用仍是旧 SHA
-  （历史信息不可追改）——解析不到时以 `git log -S <符号>` 或重写前的备份镜像为准。
-- 备份镜像（重写前完整历史，本机、不进仓）：`<repo>-backup-<date>.git`；同日会话还留了
-  baseline SHA 存证。
-- **部署副本这一次不能用 `merge --ff-only`**：历史分叉了，先 `git fetch` 再一次性
+- **流程本体**（何时重写、枚举-一遍跑齐、飞行前后检查、tracker 口径、回滚退路）：
+  [privacy.md](agents/privacy.md)。**本节只留这一次的现场事实。**
+- 现场：旧提交 SHA 全部失效；tracked 文件里的引用已按**提交主题**对齐到终态
+  （`tests/doc-references.spec.ts` 会挡下一次写错）；**commit 信息内**的旧哈希不改
+  （历史不可追改），解析不到时以 `git log -S <符号>` 或备份镜像为准。
+- 备份镜像（重写前完整历史，本机、不进仓）：`<repo>-backup-<date>.git`。
+- **部署副本这一次不能用 `merge --ff-only`**：先 `git fetch` 再一次性
   `git reset --hard origin/main`；之后恢复正常同步口径。
-- 防复发：`tests/no-personal-identifiers.spec.ts`（本机用户名 / 家目录取自运行时，另认三种
-  布局形态，扫 `git ls-files`）+ AGENTS.md 的硬规则。**探针要大小写不敏感** ——
-  本会话第一次扫描用了全大写，漏掉文件里的小写写法（`git grep -i` 才是对的）。
+- 防复发：`scripts/privacy-scan.mjs`（本机身份运行时取 + 三种布局形态 + home 下的 denylist），
+  `.githooks/pre-commit` 与 `tests/privacy-scan.spec.ts` 共用；探针要 `-i`（全大写会静默漏小写写法）。
 
 ## 0.1 msys2 会话引导（否则工具链会静默错位）
 

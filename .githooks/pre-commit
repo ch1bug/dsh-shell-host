@@ -69,4 +69,12 @@ if [ -n "$MARKERS" ]; then
   fail "staged diff 里还有实验标记（[DEBUG-… / [MUTATION-…）—— 清掉标记再提交，或用 SKIP_HOOKS=1 明确跳过"
 fi
 
+# 5. 隐私 / 环境串不进仓（本仓是 PUBLIC 仓）。
+# 判据与验收共用 scripts/privacy-scan.mjs：本机身份（运行时取）+ 布局形态 + home 下的
+# denylist（呼号 / 内网 host / 个人邮箱…运行时推不出来的那类）；只看 git 跟踪的文件，
+# 命中即拦。流程与改法见 docs/agents/privacy.md。
+echo "pre-commit: $NODE scripts/privacy-scan.mjs"
+"$NODE" scripts/privacy-scan.mjs ||
+  fail "跟踪文件里出现个人 / 本机环境串 —— 改占位符（见 docs/agents/privacy.md），或用 SKIP_HOOKS=1 明确跳过"
+
 echo "pre-commit: 本地守卫通过（完整验收请跑 node --run test）"

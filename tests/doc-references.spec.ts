@@ -1,10 +1,11 @@
 /**
- * 文档引用腐烂检查（`#78`；第 2 条断言是 `/retro` 2026-10-16 的扩展）。
+ * 文档引用腐烂检查（`#78`；第 2 条断言是 `/retro` 2026-10-16 的扩展，
+ * 第 3 条是**历史重写**同日会话的扩展）。
  *
  * 为什么：两轮 code-review 才扫完 6 处引用"已被 ADR-0013 删掉的文件的注释"
  * （`backends.ts` / `wsl-bridge.ts` / `src/client` / `src/remote` …）。机械模式 → 确定检查。
  *
- * 两条断言：
+ * 三条断言：
  *
  * 1. **仓内路径引用必须存在**（`#78` 的验收面）：扫 `src/**`、`tests/**` 的**注释**，
  *    凡是形如 `src/<path>.ts` / `tests/<path>.ts` 的引用，目标文件必须在仓内。
@@ -12,18 +13,24 @@
  *    换成 `node --run`，却残留 4 处旧写法，本会话靠人肉 grep 才发现。只认**本仓
  *    package.json 的脚本名** —— `pnpm add` / `npm publish` 这类生态命令不在此列
  *    （它们出现在 ADR 与调研文档里是正当的）。
+ * 3. **提交哈希引用必须可解析**（历史重写后的扩展）：历史重写会改写**所有**提交 SHA，
+ *    文档 / 注释里对旧提交的引用会集体失效。人肉逐条 `git cat-file -t` 才发现过 6 处
+ *    （还写错过一轮"中间态"哈希）—— 机械掉它。口径：引用优先写 `git log -S '<符号>'`
+ *    （本仓 handoff 就是这条），要写 SHA 就必须能解；跨仓的引用（宿主锚点）进
+ *    `HASH_ALLOWLIST`，显式留档。
  *
  * **豁免**：历史性提及（被删除的实现、旧命令叙述）在该注释/该行写 `[History: …]`
  * （也接受 `[historical]`）——沿用 `src/wsl-plugin/index.ts` 的既有写法。
  * `docs/adr/**` 是决定记录，整体排除在扫描面外（按惯例不回头改）。
  *
- * 边界：只看**注释**（TS scanner 取 trivia，字符串字面量天然不进来）；`docs/**` 看全文；
- * 排除 `node_modules`、`lib/`；外部检出里的路径（宿主树的 CLI 入口）不算仓内引用。
- * 检查器自身的三条边界有合成文本用例守着，见第一个 describe。
+ * 边界：路径与命令只看**注释**（TS scanner 取 trivia，字符串字面量天然不进来）、
+ * `docs/**` 看全文；排除 `node_modules`、`lib/`；外部检出里的路径（宿主树的 CLI 入口）
+ * 不算仓内引用。检查器自身的边界有合成文本用例守着，见第一个 describe。
  *
  * @module tests/doc-references.spec.ts
  */
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -103,6 +110,19 @@ export function runnerRefsIn(blocks: string[], scripts: string[]): string[] {
   return blocks.flatMap((block) => [...block.matchAll(pattern)].map((m) => m[0]));
 }
 
+/**
+ * 引用哈希的**允许清单**：跨仓引用，本仓历史里必然解析不到，故显式留档。
+ * `639ed015` / `639ed01539` = **宿主**仓的 `dsh-v0.2.0-rc.2` 锚点（见 dev-environment.md §2）。
+ */
+export const HASH_ALLOWLIST = new Set(["639ed015", "639ed01539"]);
+
+/** 文本块里的提交哈希引用（7–40 位 hex；纯数字的版本号片段 / 权限位不算）。 */
+export function hashRefsIn(blocks: string[]): string[] {
+  return blocks.flatMap((block) =>
+    [...block.matchAll(/\b[0-9a-f]{7,40}\b/gu)].map((m) => m[0]).filter((t) => !/^[0-9]+$/u.test(t)),
+  );
+}
+
 /** 递归收集某目录下的相对路径（正斜杠、排除 node_modules 与 lib/）。 */
 function walk(dir: string, exts: string[]): string[] {
   return readdirSync(join(repoRoot, dir), { recursive: true, encoding: "utf8" })
@@ -160,6 +180,14 @@ describe("引用腐烂检查器自身的边界（合成文本）", () => {
     expect(runnerRefsIn(commentBlocks('const cmd = "pnpm test"'), scripts)).toEqual([]);
     expect(runnerRefsIn(commentBlocks("// `pnpm add x` / `npm publish`"), scripts)).toEqual([]);
   });
+
+  it("哈希引用只认 7–40 位 hex；纯数字（版本号片段 / 权限位）不算", () => {
+    expect(hashRefsIn(["见 6ac27a2 与 639ed015；版本 1048576，权限 0000644"])).toEqual([
+      "6ac27a2",
+      "639ed015",
+    ]);
+    expect(hashRefsIn(["无引用"])).toEqual([]);
+  });
 });
 
 describe("文档引用腐烂（活体仓库扫描）", () => {
@@ -188,5 +216,42 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
       runnerRefsIn(blocksOf(rel), scripts).map((hit) => `${rel}: ${hit}`),
     );
     expect(stale, "本该 node --run 的调用写成了 pnpm/npm；历史叙述请加 [historical]").toEqual([]);
+  });
+
+  it("注释 / 文档里引用的提交哈希必须能在本仓解析（历史重写后的回归）", () => {
+    try {
+      execFileSync("git", ["--version"], { cwd: repoRoot, stdio: ["ignore", "pipe", "ignore"] });
+    } catch (error) {
+      // 没有 git 就没法判"能不能解析"：响亮跳过，绝不静默当绿。
+      console.warn(`  !! SKIP (loud) — 本机没有可用的 git（${String(error)}）—— 引用哈希未验证`);
+      return;
+    }
+    const resolvable = (token: string): boolean => {
+      try {
+        execFileSync("git", ["cat-file", "-t", token], { cwd: repoRoot, stdio: ["ignore", "pipe", "ignore"] });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const files = [
+      ...walk("src", [".ts", ".tsx"]),
+      ...walk("tests", [".ts"]),
+      ...walk("scripts", [".mjs"]),
+      // docs/adr/** 是决定记录，整体排除（与上一条同口径）
+      ...walk("docs", [".md"]).filter((p) => !p.startsWith("docs/adr/")),
+      "vitest.config.ts",
+      ...ROOT_DOCS,
+    ];
+    const dangling = files.flatMap((rel) =>
+      hashRefsIn(blocksOf(rel))
+        .filter((token) => !HASH_ALLOWLIST.has(token) && !resolvable(token))
+        .map((token) => `${rel} -> ${token}`),
+    );
+    expect(
+      dangling,
+      "引用了本仓解析不到的提交哈希（历史重写会改写全部 SHA）：重映射到终态、或改用 `git log -S '<符号>'`；" +
+        "跨仓引用（宿主锚点）请登记进 HASH_ALLOWLIST",
+    ).toEqual([]);
   });
 });

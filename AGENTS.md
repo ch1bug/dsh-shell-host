@@ -47,7 +47,10 @@ Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See
   `checkout` tag（`dsh-v0.2.0-rc.2` 是**宿主**树的锚点）。
 - **本仓是 PUBLIC 仓**：文档 / 代码 / 提交信息里不得出现**个人绝对路径**（本机用户名、
   家目录）；用 `~` / `$HOME` / `%USERPROFILE%` / `DSH_E2E_*` 覆盖或占位符
-  （`me` / `x` / `<user>`）。机械守卫：`tests/no-personal-identifiers.spec.ts`。
+  （`me` / `x` / `<user>`）。机械守卫：`scripts/privacy-scan.mjs`（pre-commit 跑它，
+  `tests/privacy-scan.spec.ts` 共用同一份判据）。
+- **脱敏 / 历史重写流程**：`docs/agents/privacy.md`（何时重写、枚举-一遍跑齐、飞行前后检查、
+  tracker 口径、回滚退路）。
 - **环境事实唯一来源 / 隔离契约 / 源码部署 / 构建坑**：`docs/dev-environment.md`
 - **插件安装与注册**（官方两步 CLI；手工 symlink 不算安装）：`docs/agents/profile-install.md`
 
@@ -67,7 +70,7 @@ node --run test:release   # build + verify:pack（装箱面：exports 指针与�
 No CI (maintainer decision 2026-09-30; boundaries in ADR-0014): verification is local.
 Do not propose adding ci.yml. Local guardrails ARE allowed — enable once per clone:
 
-    git config core.hooksPath .githooks      # pre-commit: detached HEAD + lockfile + typecheck + 实验标记
+    git config core.hooksPath .githooks      # pre-commit: detached HEAD + lockfile + typecheck + 实验标记 + 隐私扫描
     # bypass deliberately: SKIP_HOOKS=1 git commit …
 ```
 
