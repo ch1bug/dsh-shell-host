@@ -54,6 +54,10 @@ pnpm test        # typecheck (tests-inclusive) then vitest unit + machine; ssh-p
 No CI (maintainer decision 2026-09-30): verification is local (typecheck/test + issue evidence). Do not propose adding ci.yml.
 ```
 
+Verification layering, evidence discipline, and the loud-skip / failure-attribution
+rules (synced with the adjacent matt workspace):
+see `docs/agents/TESTING.md`.
+
 Gotchas (learned the hard way):
 
 - `!!js` values inside `cordis.patch.yml` that contain a colon-space (`: `)
