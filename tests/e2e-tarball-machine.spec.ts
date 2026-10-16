@@ -94,9 +94,9 @@ const skipReason =
 // file-scope `afterAll` hook (verified: a probe file carrying both prints only
 // the collection-time one), so the reason would never reach the report.
 // TESTING.md requires a skipped gate to say WHAT is missing — this is that.
-// (`e2e-tool-call-machine` / `e2e-real-llm-machine` still carry the hook
-// spelling, so their skip stays silent; that pre-existing gap is reported on
-// #89 rather than folded into its diff.)
+// (The two older tiers carried the hook spelling and stayed silent on a tripped
+// gate; that pre-existing gap is fixed in #98, which copied this spelling. Any
+// future tier must print from here too.)
 if (absent.length > 0) {
   console.warn(`  !! SKIP (loud) — ${skipReason}`);
 }

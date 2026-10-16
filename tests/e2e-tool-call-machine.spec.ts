@@ -31,7 +31,7 @@
  * @module tests/e2e-tool-call-machine
  */
 
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { request as httpRequest } from "node:http";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -52,6 +52,17 @@ const absent = missingEnvironment();
 const skipReason =
   `e2e mock-LLM tier needs: ${absent.join(" / ")} — ` +
   `override with DSH_E2E_PLUGIN_DIR / DSH_E2E_HOST_DIR / DSH_E2E_NODE / DSH_E2E_PNPM_DIR`;
+
+// Printed at COLLECTION time, and deliberately NOT from an `afterAll`: when the
+// gate trips, every case in this file is skipped and vitest 4 never runs a
+// file-scope `afterAll` hook (verified with a probe file carrying both prints:
+// only the collection-time one reaches the report). A gate that silently says
+// nothing turns "not verified" into "looks fine" — the exact shape TESTING.md
+// forbids. Same spelling as `e2e-tarball-machine` (#89), which is the tier this
+// one's silent skip was reported against (#98).
+if (absent.length > 0) {
+  console.warn(`  !! SKIP (loud) — ${skipReason}`);
+}
 
 describe.skipIf(absent.length > 0)("e2e: install → config → boot → session → tool call (mock LLM tier)", () => {
   const timeout = 180_000;
@@ -184,11 +195,4 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
       await rm(root, { recursive: true, force: true });
     }
   });
-});
-
-// Keep the loud skip visible even when the suite is filtered out by the gate.
-afterAll(() => {
-  if (absent.length > 0) {
-    console.warn(`  !! SKIP (loud) — ${skipReason}`);
-  }
 });

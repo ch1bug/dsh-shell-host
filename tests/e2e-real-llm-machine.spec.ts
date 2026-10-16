@@ -68,7 +68,7 @@
  * @module tests/e2e-real-llm-machine
  */
 
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -127,6 +127,15 @@ const absent = missingEnvironment([
     : null,
 ]);
 const skipReason = `real-LLM tier needs: ${absent.join(" / ")} — provider acceptance and real-model behaviour stay UNVERIFIED without it`;
+
+// Printed at COLLECTION time, and deliberately NOT from an `afterAll`: when the
+// gate trips, every case in this file is skipped and vitest 4 never runs a
+// file-scope `afterAll` hook (probe-verified), so the reason never reached the
+// report and a run with no credentials looked green-ish instead of loud. Same
+// spelling as `e2e-tarball-machine` (#89); this file's silent skip is #98.
+if (absent.length > 0) {
+  console.warn(`  !! SKIP (loud) — ${skipReason}`);
+}
 
 interface SessionEvent {
   readonly type?: string;
@@ -553,8 +562,4 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
     // no ring is ever a missing line.
     expect(failures, `real-LLM e2e: ${String(failures.length)} ring(s) red — full table:\n${results.join("\n")}`).toEqual([]);
   });
-});
-
-afterAll(() => {
-  if (absent.length > 0) console.warn(`  !! SKIP (loud) — ${skipReason}`);
 });
