@@ -11,7 +11,8 @@
  *   FAIL   —— 失败（附末尾输出）
  *   SKIP   —— 用例按门禁整体跳过（如 ssh-pty-live 无 DSH_SSH_LIVE_HOST）
  *
- * 用法：node scripts/verify-all.mjs   （`node --run test` = 先 typecheck 再跑本脚本）
+ * 用法：node scripts/verify-all.mjs              （`node --run test` = 先 typecheck 再跑本脚本）
+ *       node scripts/verify-all.mjs --lane unit  （**迭代口径**：只跑一个车道，非验收口径）
  *
  * 注意：**summary 里的 PASS* 数量是要看的数字**。它比"全绿"更有信息量。
  *
@@ -163,6 +164,44 @@ export function formatEntry(entry) {
 }
 
 /**
+ * 解析本脚本的 CLI 参数（纯函数，便于离线单测）。
+ *
+ * `--lane <name>` = **迭代口径**：只跑该车道，省掉另一个车道的墙钟时间。
+ * 非验收口径 —— 输出里必须两道提示（`partialBanner` / `partialSummaryNote`）。
+ *
+ * @returns `{}`（默认跑全部）或 `{ lane }` 或 `{ error }`（交给 main 打 stderr + exit 1）
+ */
+export function parseVerifyArgs(argv) {
+  let lane
+  const errors = []
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--lane') {
+      lane = argv[i + 1]
+      i += 1
+      if (lane === undefined) errors.push('--lane 缺参数')
+    } else {
+      errors.push(`未知参数：${arg}`)
+    }
+  }
+  if (lane !== undefined && !LANES.some((l) => l.name === lane)) {
+    errors.push(`未知车道：${lane}（可选 ${LANES.map((l) => l.name).join(' / ')}）`)
+  }
+  if (errors.length > 0) return { error: errors.join('；') }
+  return lane === undefined ? {} : { lane }
+}
+
+/** 迭代口径的顶部横幅：**别让"只跑了一个车道"被当验收**。 */
+export function partialBanner(laneName) {
+  return `  >> 仅 ${laneName} 车道 —— **迭代口径，非验收口径**；完整验收跑 node --run test`
+}
+
+/** 迭代口径的结尾提示（有人只看汇总末尾时同样看得出来）。 */
+export function partialSummaryNote(laneName) {
+  return `  >> 上面只是 ${laneName} 车道的结论（**迭代口径，非验收口径**）—— 完整验收：node --run test`
+}
+
+/**
  * Pull the lines that actually explain a failure.
  *
  * Blindly tailing the output loses the diagnosis: vitest prints its failure
@@ -205,14 +244,22 @@ function runLane(lane) {
   return { exitCode: run.status, out: `${run.stdout ?? ''}${run.stderr ?? ''}` }
 }
 
-/** CLI 主体：跑两个车道 → 纯函数汇总 → 打印 + exit code。 */
-export function main() {
+/** CLI 主体：跑车道（默认全部；`--lane` 只跑一个）→ 纯函数汇总 → 打印 + exit code。 */
+export function main(argv = process.argv.slice(2)) {
+  const parsed = parseVerifyArgs(argv)
+  if (parsed.error !== undefined) {
+    console.error(`verify-all: ${parsed.error}`)
+    process.exit(1)
+  }
+  const selected = parsed.lane === undefined ? LANES : LANES.filter((l) => l.name === parsed.lane)
+  const iterationOnly = parsed.lane !== undefined
   const results = []
-  for (const lane of LANES) {
+  for (const lane of selected) {
     results.push(...collectLane({ lane, run: runLane(lane), results }))
   }
 
   console.log('\n=== verify-all ===')
+  if (iterationOnly) console.log(partialBanner(parsed.lane))
 
   // 提交前门禁是**每 clone 一次**的本地 git 配置（core.hooksPath 不随 clone 分发）：
   // 没配就是静默没有，而套件照样全绿 —— 与 loud-skip 的"如实告知"口径相反。
@@ -239,6 +286,7 @@ export function main() {
   }
 
   console.log(`\n${summaryLine(results)}`)
+  if (iterationOnly) console.log(partialSummaryNote(parsed.lane))
 
   process.exit(summarize(results).failed > 0 ? 1 : 0)
 }

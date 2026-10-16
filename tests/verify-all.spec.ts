@@ -29,6 +29,9 @@ import {
   isDirectInvocation,
   laneLevelFailure,
   parsePerFileLine,
+  parseVerifyArgs,
+  partialBanner,
+  partialSummaryNote,
   perFileEntries,
   summarize,
   summaryLine,
@@ -386,6 +389,31 @@ describe("isDirectInvocation", () => {
       expect(isDirectInvocation(link, SCRIPT_URL)).toBe(true);
     } finally {
       rmSync(link, { force: true });
+    }
+  });
+});
+
+describe("parseVerifyArgs（--lane 迭代口径）", () => {
+  it("defaults to no lane — the full gate", () => {
+    expect(parseVerifyArgs([])).toEqual({});
+  });
+
+  it("selects a known lane", () => {
+    expect(parseVerifyArgs(["--lane", "unit"])).toEqual({ lane: "unit" });
+    expect(parseVerifyArgs(["--lane", "machine"])).toEqual({ lane: "machine" });
+  });
+
+  it("reports an unknown lane / missing value / unknown flag", () => {
+    expect(parseVerifyArgs(["--lane", "nope"]).error).toContain("未知车道：nope");
+    expect(parseVerifyArgs(["--lane"]).error).toContain("--lane 缺参数");
+    expect(parseVerifyArgs(["--watch"]).error).toContain("未知参数：--watch");
+  });
+
+  it("THE POINT: 迭代口径必须自带两道「非验收」提示", () => {
+    // 只跑一个车道很容易被当成"全绿"——横幅与汇总末尾都要说清口径。
+    for (const notice of [partialBanner("unit"), partialSummaryNote("unit")]) {
+      expect(notice).toContain("非验收口径");
+      expect(notice).toContain("node --run test");
     }
   });
 });
