@@ -5,15 +5,19 @@
  *
  *   1. every concrete `exports` pointer names a real file, and
  *   2. every entry imports under Node self-reference FROM the tarball, and
- *   3. every packed target is present in the tarball.
+ *   3. every packed target is present in the tarball, and
+ *   4. every published-manifest pointer (`main` / `types` / `dsh.bundle.patch` — string or
+ *      ordered array) names a real file AND is present in the tarball: the install face that
+ *      `exports` alone never covered (#88). It adds no new pass — the existence half rides
+ *      criterion 1 (noted 1b below) and the tarball half rides criterion 3.
  *
  * Exit 0 = all pointers resolvable. **Requires a prior build** (`node --run build`),
  * so it is not part of `node --run test`; run it via `node --run test:release`, which
  * builds first. When no packer is reachable it skips LOUDLY (exit 0, printing
  * `!! SKIP (loud)`) rather than reporting an unearned pass.
  *
- * 结构（#86）：`entryTargets` / `untarGz` / `isDirectInvocation` 是**纯函数**（导出，
- * 见 `tests/verify-pack.spec.ts` 的离线单测），顶层流程收进 `main()` —— **只有直接执行
+ * 结构（#86）：`entryTargets` / `manifestTargets` / `untarGz` / `isDirectInvocation` 是**纯函数**
+ * （导出，见 `tests/verify-pack.spec.ts` 的离线单测），顶层流程收进 `main()` —— **只有直接执行
  * 才跑 CLI**，import 本模块零副作用（改前顶层 `await` 会直接打包 + 写 `.scratch/`）。
  * @module dsh-shell-host/scripts/verify-pack
  */
@@ -109,11 +113,57 @@ export function entryTargets(exportsMap, entry = '') {
   return targets
 }
 
-/** CLI 主体（碰真实文件系统 / 打包器，故不导出、不由离线单测覆盖）：装箱 → 解包 → 三条断言。 */
+/** 发布面的**契约指针**（#88）：`main` / `types` / `dsh.bundle.patch` 指向的文件同样必须
+ *  在工作树与 tarball 内 —— 只认 `pkg.exports` 的旧判据对它们视而不见（变异已证实：
+ *  `files` 去掉 `cordis.patch.yml` 仍全绿）。
+ *
+ *  形态以宿主 `bundlePatchFiles()` 为权威（rc.2 发布副本 `dsh-app-boot/lib/index.js:495`）：
+ *  字符串 = 单文件，数组 = **有序**多文件（逐元素校验，label 带下标顺序）。顺序固定为
+ *  `main` → `types` → `dsh.bundle.patch`（先库入口、后装载契约）；数组严格按声明顺序。
+ *
+ *  契约外形态（`main: 42`、数组里夹非字符串）**安静跳过**：本票只守"契约指针指向的文件在不在"
+ *  （triage 口径：不试图证明 tarball 完备，也不做 manifest 形状校验——形状由宿主在装载期响亮拒绝）。
+ *  数组里可用的字符串元素照旧逐个校验，不因兄弟元素形状非法而整条漏检。
+ *
+ *  @returns `[label, target]` 列表；无契约指针时为空。
+ */
+export function manifestTargets(pkg) {
+  const targets = []
+  for (const [label, value] of [['main', pkg.main], ['types', pkg.types]]) {
+    if (typeof value === 'string') targets.push([label, value])
+  }
+  const patch = pkg.dsh?.bundle?.patch
+  if (typeof patch === 'string') targets.push(['dsh.bundle.patch', patch])
+  else if (Array.isArray(patch)) {
+    patch.forEach((file, index) => {
+      if (typeof file === 'string') targets.push([`dsh.bundle.patch[${index}]`, file])
+    })
+  }
+  return targets
+}
+
+/** 逐个契约指针查**工作树**存在性（碰 I/O，故不导出）：返回缺失行 `label -> target`。
+ *
+ *  存在性判据**只此一处** —— exports 指针（判据 1）与 manifest 指针（#88）走同一实现：
+ *  两处各写一遍就是等着口径漂移。哨兵写法沿用本文件既有约定（`access(...).catch(() => 'no')`；
+ *  为什么用 `access` 而不是 `existsSync` 的提醒见 `findPacker` 上方）。
+ */
+async function missingInTree(pairs) {
+  const missing = []
+  for (const [label, target] of pairs) {
+    if (await access(join(repoRoot, target)).catch(() => 'no')) missing.push(`${label} -> ${target}`)
+  }
+  return missing
+}
+
+/** CLI 主体（碰真实文件系统 / 打包器，故不导出、不由离线单测覆盖）：装箱 → 解包 → 四条断言。 */
 async function main() {
   const pkg = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'))
   const allTargets = entryTargets(pkg.exports)
   const entries = allTargets.filter(([, target]) => !target.includes('*'))
+  // 发布面的其它契约指针（#88）：`exports` 之外，`main` / `types` / `dsh.bundle.patch`
+  // 同样被 tarball 的 `files` 面决定 —— 缺件只在装载期炸，故这里与 exports 同等对待。
+  const manifestPointers = manifestTargets(pkg)
   // Node-side import smoke covers the host entries only: `./package.json` is not an
   // ES module. (`./client` is vestigial — ADR-0013 removed the web bundle — and
   // `./src/*` never gets here because the wildcard targets are filtered out above.
@@ -123,12 +173,17 @@ async function main() {
   ).map(([entry]) => [entry, true])).keys()]
 
   // 1. every concrete pointer names a real file in the working tree.
-  const missing = []
-  for (const [entry, target] of entries) {
-    if (await access(join(repoRoot, target)).catch(() => 'no')) missing.push(`${entry} -> ${target}`)
-  }
+  const missing = await missingInTree(entries)
   if (missing.length > 0) {
     console.error('verify-pack: exports pointers to missing files:\n  ' + missing.join('\n  '))
+    process.exit(1)
+  }
+
+  // 1b. 同一存在性判据，管到 exports 之外的契约指针（#88）：工作树里就没有的文件，
+  // 打包器再怎么样也进不了 tarball —— 早失败，且与"打包器缺失即 loud skip"的路径无关。
+  const manifestMissing = await missingInTree(manifestPointers)
+  if (manifestMissing.length > 0) {
+    console.error('verify-pack: manifest pointers to missing files:\n  ' + manifestMissing.join('\n  '))
     process.exit(1)
   }
 
@@ -140,6 +195,8 @@ async function main() {
     // class of failure) and the bundled node ships no npm at all.
     const packer = findPacker()
     if (packer === null) {
+      // 文案按 #88 的 AC **逐字不变**（此后存在性检查还覆盖了 manifest 指针，但那句只陈述
+      // exports 指针"只做了存在性检查"——仍是事实，故不借机改写 Skip 面）。
       console.warn(
         'verify-pack: !! SKIP (loud) — 找不到打包器（Node 自带 npm / PATH 上的 npm·pnpm 皆无）。' +
           '本次未验证 tarball 完整性：exports 指针只做了存在性检查。',
@@ -178,7 +235,8 @@ async function main() {
     rmSync(probe, { force: true })
   }
 
-  // 3. every packed target is present inside the tarball.
+  // 3. every packed target — exports entries AND the manifest pointers (#88) — is present
+  // inside the tarball.
   const packedFiles = new Set()
   async function walk(dir) {
     for (const item of await readdir(dir, { withFileTypes: true })) {
@@ -189,7 +247,7 @@ async function main() {
   }
   await walk(unpacked)
   const normalize = p => p.replace(/^\.\//, '')
-  const notPacked = entries.filter(([, target]) => !packedFiles.has(normalize(target)))
+  const notPacked = [...entries, ...manifestPointers].filter(([, target]) => !packedFiles.has(normalize(target)))
   if (notPacked.length > 0) {
     console.error('verify-pack: tarball is missing packed targets:\n  ' + notPacked.map(([e, t]) => `${e} -> ${t}`).join('\n  '))
     process.exitCode = 1

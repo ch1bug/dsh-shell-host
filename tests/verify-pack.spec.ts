@@ -7,7 +7,7 @@
  * 连 import 它都无从下手。改前实测：`node -e "import('./scripts/verify-pack.mjs')"` 会真打包并
  * 打印 5 行 `verify-pack: …`。
  *
- * 本套件只测纯逻辑那半截（`entryTargets` / `untarGz` / `isDirectInvocation`）；跑打包器的
+ * 本套件只测纯逻辑那半截（`entryTargets` / `manifestTargets` / `untarGz` / `isDirectInvocation`）；跑打包器的
  * `main()` 要真实环境（先 `node --run build`），由 `node --run test:release` 自身覆盖。
  *
  * 两处刻意的写法：
@@ -35,7 +35,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { entryTargets, isDirectInvocation, untarGz } from "../scripts/verify-pack.mjs";
+import { entryTargets, isDirectInvocation, manifestTargets, untarGz } from "../scripts/verify-pack.mjs";
 
 /** 被测脚本自己的路径与 URL（与 CLI 启动时 `process.argv[1]` / `import.meta.url` 同源）。 */
 const SCRIPT_URL = new URL("../scripts/verify-pack.mjs", import.meta.url).href;
@@ -114,6 +114,44 @@ describe("entryTargets", () => {
 
   it("an empty map flattens to an empty list", () => {
     expect(entryTargets({})).toEqual([]);
+  });
+});
+
+describe("manifestTargets", () => {
+  it("THE POINT (#88): main / types / dsh.bundle.patch are pointers too, in a fixed order", () => {
+    expect(
+      manifestTargets({
+        main: "lib/pty/index.js",
+        types: "lib/types/pty/index.d.ts",
+        dsh: { bundle: { patch: "./cordis.patch.yml" } },
+      }),
+    ).toEqual([
+      ["main", "lib/pty/index.js"],
+      ["types", "lib/types/pty/index.d.ts"],
+      ["dsh.bundle.patch", "./cordis.patch.yml"],
+    ]);
+  });
+
+  it("an ordered array form is checked element by element, label carrying the index", () => {
+    expect(manifestTargets({ dsh: { bundle: { patch: ["a.patch.yml", "nested/b.patch.yml"] } } })).toEqual([
+      ["dsh.bundle.patch[0]", "a.patch.yml"],
+      ["dsh.bundle.patch[1]", "nested/b.patch.yml"],
+    ]);
+  });
+
+  it("a manifest without contract pointers yields nothing — no crash", () => {
+    expect(manifestTargets({})).toEqual([]);
+    expect(manifestTargets({ dsh: {} })).toEqual([]);
+    expect(manifestTargets({ dsh: { bundle: {} } })).toEqual([]);
+    expect(manifestTargets({ dsh: { bundle: { patch: [] } } })).toEqual([]);
+  });
+
+  it("out-of-contract shapes are skipped quietly — shape policing belongs to the host, not to this guard", () => {
+    expect(manifestTargets({ main: 42, types: null, dsh: { bundle: { patch: 42 } } })).toEqual([]);
+    // 但数组里合法的字符串元素照旧逐个校验（index 保持声明位置）——不因兄弟元素形状非法而整条漏检。
+    expect(manifestTargets({ dsh: { bundle: { patch: [42, "b.patch.yml"] } } })).toEqual([
+      ["dsh.bundle.patch[1]", "b.patch.yml"],
+    ]);
   });
 });
 
