@@ -175,15 +175,37 @@ registers model tools — never an execution backend.
 
 ## Build & verify
 
-`pnpm install && pnpm build` needs no `deepseek-harness` checkout:
-`peerDependencies` are only `@deepseek-ai/cordis` +
-`@deepseek-ai/schemastery`; everything else resolves from npm.
+`node --run install` / `node --run build` need no `deepseek-harness` checkout:
+`peerDependencies` (cordis, schemastery, and the `@deepseek-ai/dsh-*` packages
+that `dsh-tools` declares) resolve from npm.
 
 ```bash
-pnpm typecheck   # one facade: tsconfig.json
-pnpm build       # tsc -p tsconfig.build.json → tsdown (lib/)
-pnpm test        # typecheck + vitest unit + machine (ssh-pty-live skips without DSH_SSH_LIVE_HOST)
+node --run typecheck      # tsc --noEmit -p tsconfig.json
+node --run build          # tsc -p tsconfig.build.json → tsdown (lib/*.js)
+node --run test           # typecheck + scripts/verify-all.mjs (the single check entry)
+node --run test:release   # build + verify:pack (exports pointers resolve from the tarball)
 ```
+
+Scripts use `node --run` rather than a package-manager shim, so they work in an
+environment that has only Node (no `pnpm`/`npm` on PATH) — issue #79.
+
+**First clone, once:** enable the local pre-commit guard. Git does not ship hook
+configuration with a clone, so the file is present but inert until this is run:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It checks detached HEAD + lockfile agreement + typecheck, and skips LOUDLY
+(never blocking) when a tool is missing. Bypass deliberately with
+`SKIP_HOOKS=1 git commit …`.
+
+No CI (maintainer decision 2026-09-30; boundaries in ADR-0014) — local
+verification is the only channel. In the `verify-all` summary, `PASS*` means the
+case contained a loud skip and its environment-side assertions were NOT
+verified; `SKIP` means a gate was off. See `docs/agents/TESTING.md` for the
+tiering and evidence rules, and `docs/dev-environment.md` for isolation,
+source deployment and build gotchas.
 
 ## Provenance
 
