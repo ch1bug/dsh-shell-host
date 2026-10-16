@@ -32,6 +32,13 @@ Default five-role vocabulary (`needs-triage`, `needs-info`,
 Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See
 `docs/agents/domain.md`.
 
+### Profile install & debugging
+
+Plugin not found / composition errors / how this repo reaches a live DSH
+profile (symlink, registration records, restart semantics): see
+`docs/agents/profile-install.md`. Install only via the plugin manager — a
+hand-made node_modules symlink is not a registration.
+
 ## Project context
 
 Read `GLOSSARY.md` first — it carries the verified upstream facts and the
