@@ -145,7 +145,7 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 
 三个 e2e 套件都在 **machine 车道**（串行，`fileParallelism` off），隔离用临时
 `DSH_HOME`（`os.tmpdir`）+ `--port 0`，**不占任何固定端口**（19387 / 19501 / 19502）。
-两个 mock 层套件共用同一份链挂具（mock provider / 实例启动 / RPC 信封，见
+两个 mock 层套件共用同一份链挂具（mock provider / 实例启动与收尾 / RPC 信封，见
 `tests/helpers/e2e-chain.ts`）；安装与环境门禁在 `tests/helpers/e2e-install.ts`
 （装箱交付档多两件：`packTarball()` / `tarballFiles()`）。真实层是另一条
 （自有供应商路由与凭据形态），不吃这份挂具。

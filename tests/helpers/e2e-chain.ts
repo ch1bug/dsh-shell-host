@@ -134,6 +134,30 @@ export function startInstance(profile: string, dshHome: string, env: Record<stri
   return { child, ready, stderr: () => stderr };
 }
 
+/** Stop the real instance and WAIT for it to exit.
+ *
+ * Why waiting is not optional: killing while the agent loop is live leaves libuv
+ * teardown noise and ECONNRESET in the report. Why it is bounded and returns a
+ * verdict: an instance that ignores SIGTERM *and* SIGKILL must not hang the
+ * caller's cleanup ring — "the child never exited" is a reading, not a hang.
+ * Why the pre-check: `once('exit')` registered after the child is already gone
+ * never fires, which is a silent hang in exactly the failure path this exists for.
+ */
+export async function stopChild(child: ChildProcess, budgetMs = 15_000): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true
+  const exited = new Promise<boolean>((resolve) => { child.once("exit", () => { resolve(true); }); });
+  child.kill("SIGTERM");
+  const forced = setTimeout(() => { child.kill("SIGKILL"); }, 10_000);
+  try {
+    return await Promise.race([
+      exited,
+      new Promise<boolean>((resolve) => { setTimeout(() => { resolve(false); }, budgetMs); }),
+    ]);
+  } finally {
+    clearTimeout(forced);
+  }
+}
+
 /** One typert Remote envelope. Args are NAMED (`payload.args.request`). */
 export function rpc(port: number, cookie: string | undefined, method: string, args: unknown) {
   const body = JSON.stringify({ type: "client-request", rpcId: `e2e-${method}`, method, payload: { args } });
