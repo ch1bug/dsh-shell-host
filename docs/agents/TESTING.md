@@ -114,6 +114,21 @@ git -C /c/msys64/home/<user>/dsh-shellhost-src fetch <repo> main
 git -C /c/msys64/home/<user>/dsh-shellhost-src merge --ff-only FETCH_HEAD
 ```
 
+> **同步前先统一 `core.autocrlf`**：本仓为 `true`，而 msys2 侧 git **不继承**
+> Windows 侧配置。未设时同一个工作区会被两套 git 判出**全量行尾差异**
+> （实测 123 个文件 "modified"，`git diff --ignore-cr-at-eol` 后为空），
+> 于是 `merge --ff-only` 报
+> 「您对下列文件的本地修改将被合并操作覆盖 / 请在合并前提交或储藏您的修改」。
+> 一次性对齐：
+>
+> ```bash
+> git -C /c/msys64/home/<user>/dsh-shellhost-src config core.autocrlf true
+> git -C /c/msys64/home/<user>/dsh-shellhost-src checkout -- .   # 丢弃纯行尾噪音
+> ```
+>
+> **判别**：`git status` 一片 "M" 时，先跑 `git diff --ignore-cr-at-eol --stat`。
+> **为空**即纯行尾噪音，可安全 `checkout -- .`；**非空**才是真实改动，须先弄清来源。
+
 > 宿主的 tag 锚点（`dsh-v0.2.0-rc.2`）**只切在宿主源码树** `dsh-host-src`；
 > **插件仓库不要 checkout tag** —— 本仓 `main` 就是工作线，切 tag 只会制造
 > detached HEAD。
