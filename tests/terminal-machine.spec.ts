@@ -15,10 +15,6 @@
 
 import { describe, expect, it, onTestFinished } from "vitest";
 import { execFileSync } from "node:child_process";
-import { Context } from "@deepseek-ai/cordis";
-import LocalSubprocessRuntime from "@deepseek-ai/dsh-subprocess-local";
-import { liveConfig } from "./helpers/live-config.ts";
-import { LocalBashExecutor } from "../src/index.ts";
 import { apply as applyPty } from "../src/pty/index.ts";
 import { apply as applyTerminal } from "../src/terminal/index.ts";
 import { resolveLaunchers } from "../src/launchers.ts";
@@ -174,35 +170,6 @@ describe("terminal entry machine lane (#55 AC)", () => {
       // The platform shell (outside this plugin's executor path) still runs.
       const out = execFileSync("cmd.exe", ["/d", "/c", "echo platform-ok"], { encoding: "utf8", timeout: 15_000 });
       expect(out.trim()).toBe("platform-ok");
-    },
-  );
-
-  it.skipIf(!hasCmd)(
-    "route-B coexistence: the ctx.shell executor serves one-shot commands while launcher sessions are open (AC: 与 ctx.shell 共存)",
-    { timeout: 120_000 },
-    async () => {
-      // The 路 B executor mounts exactly as it does in production (settings.spec.ts
-      // precedent: LocalSubprocessRuntime + LocalBashExecutor behind the live loader).
-      const ctx = new Context();
-      onTestFinished(() => ctx.fiber.dispose());
-      await ctx.plugin(LocalSubprocessRuntime);
-      await liveConfig(ctx, LocalBashExecutor, { timeoutMs: 60_000 });
-      const shell = ctx.get('shell') as { execute: (r: unknown) => Promise<{ result: () => Promise<{ stdout: { text: string } }> }>; resolve: (r: unknown) => unknown };
-
-      const { tool } = boot();
-      const opened = await tool("shell_open").execute({ preset: "cmd" }, { agent: AGENT });
-      onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent: AGENT }).catch(() => {}));
-
-      // Both faces live at once: the launcher session holds its PTY while
-      // the ctx.shell executor serves a one-shot command (nothing disabled,
-      // nothing replaced by the terminal entry's mounting).
-      await tool("pty_send").execute({ id: opened.sessionId, data: "echo session-alive" }, { agent: AGENT });
-      await waitFor(tool, opened.sessionId, "session-alive");
-      const handle = await shell.execute(shell.resolve({ command: "echo route-b-ok" }));
-      const result = await handle.result();
-      expect(result.stdout.text).toContain("route-b-ok");
-      const after = await tool("pty_tail").execute({ id: opened.sessionId }, { agent: AGENT });
-      expect(after.text).not.toContain("route-b-ok");
     },
   );
 

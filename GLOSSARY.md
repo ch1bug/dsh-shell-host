@@ -35,7 +35,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   - 前端设置页 = 包内 client half(lib/client.js closure factory,只外部依赖平台模块表的 primitives + react/jsx-runtime),绑定 configForms namespace **`shell-host`(= Loader 行 id,settings-controller 自动按行派生表单)**;volatile 字段经 settings user-section 运行时改预算,免重启
   - 顺带覆盖 `terminal-controller`(宿主级侧边栏用户终端):默认 shell 显式指 MSYS2 bash `--login -i`,摘掉裸 `bash` 候选(宿主 PATH 无 MSYS2,裸 bash 只会命中 WSL stub);!!js existsSync 探测,未安装则回退上游发现
 
-## D8 follow-up (#10, 2026-09-30)
+## D8 follow-up (#10, 2026-09-30)【历史记录 —— 已被 D12/ADR-0012 摒弃,上游 permission-presets 重新组装】
 
 - **permission-presets host-only fork(human 拍板:只 fork 不提上游)**:D8 副作用
   #10 修复 = 包内 `src/permission-presets.ts`(入口 `dsh-shell-host/permission-presets`)
@@ -110,6 +110,41 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 
 - **launcher 预设 lane 传递依赖**:launchers.ts 经 pty/index 引 `composeSshCommand`,容器 lane 装 `@lydell/node-pty` 外还需 `@deepseek-ai/schemastery@~3.18.4` + `@deepseek-ai/dsh-tools@0.2.1-alpha.1`(npm range/钉源锚均可)。
 - **POSIX 预设行实机绿**:podman node:24-bookworm lane(.scratch/issue68-posix-launcher-verify.mjs,一条命令见脚本头)8 项 ALL GREEN——bash 行 resolved(/etc/shells 匹配行,候选全在盘)、zsh/fish 缺席姿态进 absent(probed 列 /etc/shells 匹配行;bookworm 容器无 fish 行故 probed 空)、win32 门控完全休眠、argv 单一出处、shell_open 同构回环。
+
+## D13 (ADR-0013, 2026-10-16, human 拍板 B:执行器 world 整体移除)
+
+- **本包 = 纯工具插件**:shell 执行器 world(`shell-host` 行、`src/index.ts`、
+  `src/core/`、`src/backends*`、`src/types|timeout|subprocess-context|wsl-bridge`、
+  client 设置卡、`./remote` entry)全部删除;`ctx.shell` 只由平台 shell 执行器
+  提供。理由:B 路径(执行器注册/缝组装)已被实证会直接报错。
+- **挂载面 = 两个自有 id 行**:`pty` + `terminal`;entry 面 = `./pty`(持久
+  PTY 会话核心)、`./terminal`(shell_open launcher 预设)、`./wsl`(WSL 桥
+  工具)。`launchers.ts` 吸收了原 backends 的 argv/prefix 常量
+  (`*_INTERACTIVE_ARGV`、`msys2PathPrefix`、`parseWslDistroList`)。
+- **远程 one-shot = C 路线**:归独立 `dsh-shell-remote` 插件(ADR-0004 原边界
+  恢复;该插件已独立安装在 profile)。
+- **ADR 状态**:0001/0003/0006 被 ADR-0013 supersede;0002/0011 已被 0012
+  supersede;0007/0008 收窄有效(所有 entry 均为插件层)。T5 e2e 执行器清单
+  与执行器/registry/backend 测试面随删;machine lane = terminal + ssh-pty live。
+
+## D12 (#ADR-0012, 2026-10-16, human 拍板:只保留独立插件注册)
+
+- **改上游路径全部摒弃,挂载形态 = 自有 id 插件行**:patch 只允许自有 id 的
+  insert 行(`shell-host` / `pty` / `terminal`);同 id 接管上游 loader 行、
+  覆盖上游行 config 一律禁止。被清除的三处接管:`permission` 行
+  (permission-presets fork,ADR-0002 废弃)、`tool-pwsh` 行(pwsh 工具
+  fork,ADR-0011 废弃)、`terminal-controller` 行(上游侧边栏终端 config
+  覆盖)。对应源码入口与测试连代码删除(`src/permission-presets.ts`、
+  `src/pwsh.ts`)。
+- **行为回归已知情接受**:上游 permission 三面(命令/设置页/权限选择器)、
+  pwsh 工具缺 PS7 静默回落 bash(#63 现象回归)、侧边栏终端裸 `bash` 候选
+  (可能命中 WSL stub)全部回归上游原生行为。
+- **不受影响的边界**:D8 执行器替换本体(`shell-host` 行 + client 设置卡 +
+  ctx.shell 缝语义)保留;backends pwsh descriptor 是执行器维度,不动;
+  依赖策略 npm 通道保留(独立构建决策);tsdown/vitest 装饰器预变换保留
+  (执行器自身也用装饰器,built-artifact 冒烟改指 `lib/index.js`)。
+- **后续修复上游行为的唯一合法通道**:上游 PR,或新的自有 id 行/entry——
+  永不再走同 id 接管。
 
 ## 术语表(惰性)
 

@@ -1,6 +1,7 @@
 # ADR-0002: Host-only fork of permission-presets over the non-confining executor
 
-- Status: Accepted (issue #10 deliverable)
+- Status: Superseded by ADR-0012 (the fork row and entry were removed
+  2026-10-16; upstream permission-presets composes again)
 - Date: 2026-09-30
 - Deciders: human (path decision "in-bundle fork only, no upstream PR", triage 2026-09-30); fork shape "host-side only"
 - Context: `GLOSSARY.md` D8 + its regression note; ADR-0001 T5/D8 amendment §4(b); issue #10

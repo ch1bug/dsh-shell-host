@@ -15,7 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
 import { apply as applyPty } from "../src/pty/index.ts";
-import { PWSH_INTERACTIVE_ARGV } from "../src/backends.ts";
+import { PWSH_INTERACTIVE_ARGV } from "../src/launchers.ts";
 import { apply as applyTerminal } from "../src/terminal/index.ts";
 import { resolveLaunchers } from "../src/launchers.ts";
 import type { CustomLauncherConfig, LauncherDeps } from "../src/launchers.ts";

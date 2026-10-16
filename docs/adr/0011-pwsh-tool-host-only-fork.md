@@ -1,6 +1,7 @@
 # ADR-0011: Host-only fork of the platform pwsh tool (same-name takeover)
 
-- Status: Accepted (issue #63 deliverable)
+- Status: Superseded by ADR-0012 (the takeover row and entry were removed
+  2026-10-16; the platform pwsh tool's behavior is upstream's again)
 - Date: 2026-10-10
 - Deciders: human (route A "host-only fork" over route B "upstream PR", 2026-10-10, recorded in the #63 triage comment)
 - Context: issue #63; ADR-0002 (the fork precedent this decision copies); ADR-0007 (plugin-layer vs executor-layer entry forms); ADR-0010 (the own-channel world the one-shot execution rides beside)

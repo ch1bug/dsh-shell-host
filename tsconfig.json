@@ -41,9 +41,5 @@
     "tests",
     "vitest.config.ts",
     "tsdown.config.ts"
-  ],
-  // The browser half has its own facade (tsconfig.client.json).
-  "exclude": [
-    "src/client"
   ]
 }

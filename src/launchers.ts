@@ -22,13 +22,6 @@
 import { basename, delimiter, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import {
-  MSYS2_INTERACTIVE_ARGV,
-  PWSH_INTERACTIVE_ARGV,
-  WSL_INTERACTIVE_ARGV,
-  msys2PathPrefix,
-  parseWslDistroList,
-} from './backends.ts'
-import {
   MSYS2_ROOT_CANDIDATES,
   detectMsysRoot,
   detectPosixShell,
@@ -40,6 +33,29 @@ import {
   wslProbedLocations,
 } from './detect.ts'
 import { composeSshCommand, type SshLaunchArgs, type SshOptionInput } from './pty/index.ts'
+
+// Launcher argv/prefix constants (ADR-0013: moved here from the removed
+// backends.ts — the launcher layer is their only consumer now). Single source
+// the launcher views derive from — no second hardcoded argv table.
+export const MSYS2_INTERACTIVE_ARGV: readonly string[] = ['--login', '-i']
+export const PWSH_INTERACTIVE_ARGV: readonly string[] = ['-l', '-noexit']
+export const WSL_INTERACTIVE_ARGV = (distro: string): readonly string[] => ['-d', distro, '-e', 'bash', '--login', '-i']
+
+/** MSYS2 subsystem PATH prefix for a resolved install root (launcher view). */
+export function msys2PathPrefix(msysRoot: string, msystem: string): readonly string[] {
+  const subsystemBin = msystem === 'MSYS' ? [] : [join(msysRoot, msystem.toLowerCase(), 'bin')]
+  return [...subsystemBin, join(msysRoot, 'usr', 'local', 'bin'), join(msysRoot, 'usr', 'bin'), join(msysRoot, 'bin')]
+}
+
+/**
+ * Parse `wsl.exe --list --quiet` output. wsl.exe writes UTF-16LE text whose
+ * first line opens with a BOM (U+FEFF) and trails blank lines; the BOM is
+ * stripped explicitly (a surviving `\uFEFFUbuntu` would break `-d <distro>`),
+ * and discovery takes the first listed distro name.
+ */
+export function parseWslDistroList(output: string): readonly string[] {
+  return output.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0)
+}
 
 /** Injected probes — tests fake the machine; production uses the real one. */
 export interface LauncherDeps {

@@ -30,22 +30,13 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // reason. `machineLane` below stays an explicit list on purpose: it selects
 // the suites that run SERIALLY (fileParallelism off, live WSL spawns), so
 // membership there is a deliberate per-suite choice, not collection gating.
-const machineLane = ['tests/wsl-backend.spec.ts', 'tests/registry.spec.ts', 'tests/wsl-plugin-live.spec.ts', 'tests/ssh-pty-live.spec.ts', 'tests/terminal-machine.spec.ts', 'tests/pwsh-tool-machine.spec.ts']
+const machineLane = ['tests/ssh-pty-live.spec.ts', 'tests/terminal-machine.spec.ts']
 // Explicit exclusion outlet: a spec listed here is exempt from the unit lane,
 // each with its reason. machineLane files are excluded because the serial
-// machine project owns them; _e2e-smoke is excluded because the EXPLICIT e2e
-// lane (vitest.e2e.config.ts, `pnpm test:e2e`) owns it. Add an entry ONLY to
+// machine project owns them. Add an entry ONLY to
 // exempt a spec from the unit lane entirely — every other tests/**/*.spec.ts
 // is collected by position, with zero config.
-const unitLaneExclusions = [
-  ...machineLane,
-  'tests/_e2e-smoke.spec.ts',
-  // executor.spec.ts exercises POSIX signal semantics (TERM-trap → SIGKILL
-  // escalation). Win32-conditional, mirroring the upstream
-  // windowsUnsupportedPackages policy family ("a real POSIX shell is
-  // unavailable on Windows"): POSIX hosts keep collecting it.
-  ...(process.platform === 'win32' ? ['tests/executor.spec.ts'] : []),
-]
+const unitLaneExclusions = [...machineLane]
 const specInclude = ['tests/**/*.spec.ts', ...unitLaneExclusions.map((f) => `!${f}`)]
 
 const shared = {

@@ -1,78 +1,16 @@
-# dsh-shell-host bundle patch: Windows 宿主 shell 执行器(MSYS2 平台层,与平台 shell 并列共存)。
+# dsh-shell-host bundle patch: tools-only plugin(ADR-0013 —— 纯工具插件,
+# 无执行器、无上游行接管)。
 #
-# 建模立场:MSYS2 是独立于 bash 的环境层——安装根(msysRoot)、子系统(MSYSTEM)、
-# PATH 表面、pacman/cygpath 工具链是一等公民;bash 只是该环境中可配置的 shell
-# 可执行文件。执行器内部按 VS Code 终端 profile 建模(ordered candidates、
-# argv 模板、profile env、CHERE_INVOKING、addEnvMixinPathPrefix)。
+# 本 bundle 只以自有 id 行挂载,不接管任何上游 loader 行 id、不覆盖任何上游行
+# config(ADR-0012);shell 执行器 world 已整体移除(ADR-0013),shell seam
+# (ctx.shell)完全交给平台 shell 执行器。
 #
-# shell seam 语义(ctx.shell)每个 composition 只允许恰好一个 provider,且「装载
-# 即生效于所有 preset」——preset 树里的 tool-bash 行解析当时的 ctx.shell。启用
-# shell-host 后,每个 preset 的 bash 工具、enginePath/engineArgs 终端推导、
-# configForms namespace 都落到本执行器上。
-# 并列语义(issue #23, AC7):不再 disable 基座的 pwsh-sandbox / bash-sandbox
-# —— 平台 shell 执行器保持 DSH 原生行为;本执行器作为并列行插入,默认
-# disabled,用户在 Plugins 页启用后其 shell-host 行才接管 ctx.shell(同一个
-# composition 仍只允许恰好一个 ctx.shell provider:启用 shell-host 即取代
-# 平台 shell,禁用即回到平台 shell —— 选择权在用户)。每个 preset 的 bash
-# 工具、enginePath/engineArgs 终端推导、configForms namespace 解析的是当时
-# 装配的 ctx.shell,因此启用/禁用都不影响其它行的解析路径。
-# POSIX 上本行同样插入但默认休眠(disabled: true),启用语义与 Windows
-# 一致 —— 路由后的 backends 全平台可服务。
-- insert:
-    - id: shell-host
-      name: dsh-shell-host
-      disabled: true
-      config:
-        backend: msys2
-        subsystem: UCRT64
-
-# #10: D8 副作用修复 —— 上游 permission-presets 组装硬检查
-# ctx.shell.sandboxMode === undefined 即 throw(非 confinement 执行器 =
-# misconfiguration),宿主服务起不来 → client 行 inject remote.permissionPresets
-# 落空 → /permission 命令、设置页 PermissionRow、输入框权限选择器三面全灭。
-# 路径已拍板(human 2026-09-30):包内 host-only fork,不提上游。
-# fork = 本包 ./permission-presets 入口:同名服务(permissionPresets)+
-# 同 Typert 命名空间 + 同命令 definitionId(@deepseek-ai/dsh-permission-presets),
-# 原版 client UI 零改动复活。fork 的 sandbox 旋钮回退读 ctx.sandboxPolicy
-# (文件沙箱政策,与执行器无关)——不读 ctx.shell,不声称进程 confinement。
-#
-# 挂载形状(human 2026-09-30 方案 A 拍板):设置页 PermissionRow 绑定的是
-# loader 行 id 'permission'(settings namespace = entry id,客户端硬编码),
-# 因此 fork 行必须接管该 id,不能用新 id + disable+insert。loader 语义:
-# 同 group 内同 id 的行,后行 options 覆盖前行(group.update newMap 后行
-# 胜,Entry.update create:true 整体替换)——本 insert 追加在基座行之后,
-# 即为替换机制:上游模块在本部署永不组装。POSIX 等价性已验证:上游
-# confining 执行器的 sandboxMode 本就读 ctx.sandboxPolicy.defaultMode
-# (bash-sandbox src),fork 回退值与之逐值等价,双平台行为无损。
-- insert:
-    - id: permission
-      name: dsh-shell-host/permission-presets
-      config:
-        presets:
-          read-only:
-            sandbox: read-only
-            approval: ask
-          workspace-write:
-            sandbox: workspace-write
-            approval: ask
-          danger-full-access:
-            sandbox: danger-full-access
-            approval: never
-
-# #55(ADR-0008):./terminal entry —— launcher 层插件行(插件层 entry,与路 B
-# 的执行器行完全解耦:不接管 ctx.shell、不 disable 平台 shell,可与两者并存)。
+# pty/terminal 两行(ADR-0007/0008 插件层 entry,与执行器维度无关):
 # 挂载后模型获得单工具 shell_open(preset):按预设开出持久终端,sessionId 即
 # PTY 缝会话 id,后续操作复用既有 pty_send/pty_tail/pty_close(不加转发工具)。
-# 独立 settings namespace(id: terminal):custom = 自定义预设数据通道(#54
-# 定型形状,CRUD UI 归后续票读写同一数据);内置预设表只读 —— 实时视图由
-# shell_open 未知 id 的响亮错误枚举(全部可服务预设 id)。预设解析走真实探测
-# (#54 launchers 层):未装的环境从解析结果缺席,选定才响亮报全部探测点。
-# 【2026-10-10 撤下→#61 恢复】pty/terminal 两行曾因 rc.2 terminals 缝为
-# agent 执行世界级(ADR-0009 blocked 结论——该结论与重开条件仍成立)而撤下;
-# ADR-0010 改道自带通道后 ./pty 不再 inject terminals:会话核心由 node-pty
-# (Windows ConPTY)自管——owner 作用域注册表、读取游标、#56 软上限
-# (maxSessions 默认 8)与可选 idleTimeoutMs 语义迁移,entry remount 计数
-# 归零的根因(#62)随缝一并消失。两行恢复随 bundle 挂载,无依赖等待。
+# 独立 settings namespace(id: terminal)。【2026-10-10 撤下→#61 恢复】
+# ADR-0010 改道自带通道后 ./pty 不再 inject terminals,会话核心由 node-pty
+# (Windows ConPTY)自管;两行恢复随 bundle 挂载,无依赖等待。
 - insert:
     - id: pty
       name: dsh-shell-host/pty
@@ -81,41 +19,3 @@
       name: dsh-shell-host/terminal
       config:
         custom: []
-
-# #63(A 路线,human 2026-10-10 拍板):pwsh 工具 host-only fork —— 平台
-# dsh-tool-pwsh 的执行器裸查 `pwsh`,缺 PowerShell 7 时静默回落 bash,
-# Windows 上 pwsh 工具跑的是 bash(#63 现象)。本行以同 id 接管 loader 行
-# (同 permission 行先例:同 group 同 id 后行覆盖,Entry.update create:true
-# 整体替换),注册同名 `pwsh` 工具;唯一语义差 = executable 解析:
-# `pwsh.exe → powershell.exe` 有序探测(detect.ts pwshProbedLocations +
-# spawnableExists,与 backends pwsh descriptor 同一候选表),双缺响亮报
-# 全部探测点——绝不静默回落 bash。仅剩 Windows PowerShell 5.1 时经
-# powershell.exe -Command 正常执行 PowerShell 语法(UTF-8 前导对齐该
-# descriptor)。一次性命令走 ctx.subprocess 通道(非 PTY 世界;ADR-0007
-# 插件层/执行器层不合并——backends pwsh descriptor 是另一维度,不动)。
-# disabled 表达式与基座行逐字镜像:POSIX 上平台行本就 disabled,接管行
-# 不得把它翻亮。
-# #72 裁决(期望 4+3):本行即「pwsh 窄组件」——默认启用(win32),只接管
-# pwsh 工具的 executable 探测链,不触碰 ctx.shell(不涉 #23 AC7 契约);
-# 独立 settings namespace(id: tool-pwsh,settings-controller 按行派生),
-# `enabled` 开关默认 true,false 即本组件不注册任何工具(loader 行已替换
-# 平台行,故 opt-out 是「pwsh 工具下线」而非「回到回落 bash」)。
-- insert:
-    - id: tool-pwsh
-      name: dsh-shell-host/pwsh
-      disabled: !!js process.platform !== 'win32'
-
-# 用户侧边栏终端(api-terminal-controller)是宿主级 user terminal,与 preset
-# 无关:发现走宿主 PATH。本机 Windows PATH 不含 MSYS2,裸 `bash` 只会命中
-# C:\Windows\System32\bash.exe(WSL 启动器 stub)。这里把 MSYS2 bash 显式设为
-# 默认 shell(`--login -i`,VS Code `bash (MSYS2)` profile 同款,登录脚本在
-# 纯 MSYS 子系统下构建环境),并从候选中摘掉裸 `bash` 防误选 stub。
-# 行内 !!js 探测安装位置:未安装时不产出 profile(schema 接受 undefined),
-# 候选表保持上游默认 —— 与执行器 detect.ts 同一候选顺序。
-- id: terminal-controller
-  name: '@deepseek-ai/dsh-api-terminal-controller'
-  config:
-    shell: !!js >-
-      (() => { const fs = process.getBuiltinModule('node:fs'); const path = ['C:/msys64/usr/bin/bash.exe', `${process.env.HOMEDRIVE ?? 'C:'}/msys64/usr/bin/bash.exe`].find(p => fs.existsSync(p)); return path === undefined ? undefined : { path, name: 'Shell Host (MSYS2)', args: ['--login', '-i'] }; })()
-    shellCandidates: !!js >-
-      (() => { const fs = process.getBuiltinModule('node:fs'); const msys = ['C:/msys64/usr/bin/bash.exe', `${process.env.HOMEDRIVE ?? 'C:'}/msys64/usr/bin/bash.exe`].some(p => fs.existsSync(p)); return ['zsh', 'bash', 'fish', 'pwsh', 'powershell', 'cmd'].filter(c => c !== 'bash' || !msys); })()

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { detectPosixShell, posixInteractiveArgv, posixShellProbedLocations } from '../src/detect.ts'
-import { plainBackend } from '../src/backends.ts'
 
 /**
  * #26 native cross-platform detection (macOS/Linux), fully injected —
@@ -96,35 +95,4 @@ describe('posixInteractiveArgv (#26: macOS zsh/bash login flags, VS Code 1:1)', 
   })
 })
 
-describe('plain backend POSIX branch (#26: detected shell, not bare bash)', () => {
-  // Config facade with no explicit bashPath — only the field plainBackend reads.
-  const noExplicit = { bashPath: { get: () => undefined } } as never
-  it('executable = the detected getpwuid shell', () => {
-    const backend = plainBackend(noExplicit, deps({ userInfoShell: () => '/usr/bin/zsh' }))
-    expect(backend.id).toBe('plain')
-    expect(backend.executable).toEqual(['/usr/bin/zsh'])
-  })
 
-  it('one-shot stays [-c {command}] (zsh/bash/sh/fish all accept -c)', () => {
-    const backend = plainBackend(noExplicit, deps())
-    expect(backend.argv.oneShot).toEqual(['-c', '{command}'])
-  })
-
-  it('interactive argv follows the macOS login-flag matrix', () => {
-    expect(plainBackend(noExplicit, deps({ platform: 'darwin', userInfoShell: () => '/bin/zsh' })).argv.interactive).toEqual(['-l'])
-    expect(plainBackend(noExplicit, deps({ platform: 'darwin', userInfoShell: () => '/bin/bash' })).argv.interactive).toEqual(['--login'])
-    expect(plainBackend(noExplicit, deps({ platform: 'linux' })).argv.interactive).toEqual([])
-  })
-
-  it('sh fallback lands as the bare name so PATH resolves it (never loud-fails on POSIX)', () => {
-    const backend = plainBackend(noExplicit, deps({ userInfoShell: () => '/usr/sbin/nologin' }))
-    expect(backend.executable).toEqual(['sh'])
-  })
-
-  it('POSIX surface keeps env {} / no PATH prefix / identity mapping', async () => {
-    const backend = plainBackend(noExplicit, deps())
-    expect(backend.env).toEqual({})
-    expect(backend.pathPrefix).toEqual([])
-    expect(await backend.pathMapping.toShell('/tmp/x')).toBe('/tmp/x')
-  })
-})

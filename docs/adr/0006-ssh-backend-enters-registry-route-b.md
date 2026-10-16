@@ -1,7 +1,8 @@
 # ADR-0006: The ssh backend enters the shell-host registry (route B decoupling)
 
-- Status: Accepted (supersedes ADR-0003 decision 2's registry boundary and
-  ADR-0004 decision 2's no-cross-registration rule, for the ssh transport only)
+- Status: Superseded by ADR-0013 (the ssh backend and the ./remote entry were
+  removed 2026-10-16; remote one-shot execution is owned by the standalone
+  dsh-shell-remote plugin — route C)
 - Deciders: human (#23 direction, 2026-10-08 — ticket #23 is the authored
   spec; this ADR records the reversal the ticket mandates)
 - Context: #23 (route B), ADR-0003 (multi-backend registry; "ssh/远程语义

@@ -1,6 +1,7 @@
 # ADR-0003: Multi-backend registry and WSL descriptor semantics
 
-- Status: Accepted (design output of #2 grill, 2026-10-03)
+- Status: Superseded by ADR-0013 (the registry left the package 2026-10-16;
+  the WSL user tools survive as the ./wsl plugin-layer entry)
 - Deciders: human (grill session 2026-10-03, Q1–Q8)
 - Context: #2 (wsl bash executor, generalized to multi-backend), ADR-0001 descriptor layer, GLOSSARY.md D7/D8
 - Supersedes: the #2 triage note's "do not force a local-backend abstraction for wsl" stance (overridden by the human's 2026-09-30 direction update: multi-backend form, wsl as registry anchor)

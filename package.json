@@ -2,61 +2,37 @@
   "name": "dsh-shell-host",
   "version": "0.2.0-rc.2-r1",
   "private": true,
-  "description": "dsh-shell-host: an independent shell executor for the DSH shell seam on Windows (VS Code terminal-profile modeled, NOT a fork of dsh-bash-local) — routed backends (msys2 default, plain, pwsh, wsl, ssh) selectable per config, coexisting with the platform shell executors, plus a Plugins-page settings card and a host-only fork of the permission-presets plugin (issue #10).",
+  "description": "dsh-shell-host: tools-only DSH plugin (ADR-0013) — persistent PTY sessions (./pty), launcher-preset terminals (shell_open, ./terminal), and WSL bridge tools (./wsl). No shell executor, no upstream loader-row takeover.",
   "type": "module",
   "license": "MIT",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
-    "bash",
-    "msys2",
+    "pty",
+    "terminal",
     "windows"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-plugin-manager",
-        "@deepseek-ai/dsh-client-ui-renderer"
-      ],
-      "platform": "web"
     }
   },
   "engines": {
     "node": ">=24"
   },
-  "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "main": "lib/pty/index.js",
+  "types": "lib/types/pty/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
-      "default": "./lib/index.js"
-    },
-    "./client": {
-      "default": "./lib/client.js"
-    },
-    "./src/*": "./src/*",
-    "./package.json": "./package.json",
-    "./permission-presets": {
-      "types": "./lib/types/permission-presets.d.ts",
-      "default": "./lib/permission-presets.js"
-    },
-    "./pwsh": {
-      "types": "./lib/types/pwsh.d.ts",
-      "default": "./lib/pwsh.js"
-    },
-    "./pty": {
       "types": "./lib/types/pty/index.d.ts",
       "default": "./lib/pty/index.js"
     },
-    "./remote": {
-      "types": "./lib/types/remote/index.d.ts",
-      "default": "./lib/remote/index.js"
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./pty": {
+      "types": "./lib/types/pty/index.d.ts",
+      "default": "./lib/pty/index.js"
     },
     "./wsl": {
       "types": "./lib/types/wsl-plugin/index.d.ts",
@@ -68,68 +44,38 @@
     }
   },
   "files": [
-    "lib/index.js",
-    "lib/detect-*.js",
-    "lib/client.js",
     "lib/types/**/*.d.ts",
-    "lib/permission-presets.js",
-    "lib/pwsh.js",
     "lib/pty/index.js",
     "lib/pty-*.js",
-    "lib/remote/index.js",
     "lib/wsl-plugin/index.js",
     "lib/terminal/index.js",
     "lib/posix-quote-*.js",
-    "lib/backends-*.js",
+    "lib/detect-*.js",
+    "lib/launchers-*.js",
     "lib/src-*.js",
     "cordis.patch.yml"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && tsdown",
-    "_build-note": "issue #23: tsdown only — no `tsc -b ../deepseek-harness/...` declaration pre-pass and no monorepo checkout needed; the shell-seam types are inlined in src/types.ts. Issue #36 re-added a same-repo tsc declaration pre-pass (tsconfig.build.json; `preserveSymlinks` collapses pnpm peer copies so emit stays portable): lib/types/*.d.ts back the exports' `types` pointers.",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:pack": "node scripts/verify-pack.mjs",
-    "test": "pnpm typecheck && vitest run --project unit && vitest run --project machine",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+    "test": "pnpm typecheck && vitest run --project unit && vitest run --project machine"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/schemastery": "~3.18.4"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-sandbox-policy": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-session": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-session-projection": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-settings": "0.2.0-rc.2",
     "@deepseek-ai/dsh-tools": "0.2.1-alpha.1",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-user-approval": "0.2.0-rc.2",
-    "zod": "4.4.3",
     "@lydell/node-pty": "1.2.0-beta.15"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/cordis-plugin-loader": "~1.0.5",
     "@deepseek-ai/cosmokit": "~1.8.5",
-    "@deepseek-ai/dsh-client-locale": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-store": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-renderer": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-http-proxy": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-scope": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-shell": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-subprocess-local": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-timeout": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "~3.18.4",
     "@lydell/node-pty": "1.2.0-beta.15",
     "@types/node": "^24",
-    "@types/react": "^19",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8",

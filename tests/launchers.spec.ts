@@ -122,7 +122,7 @@ describe("resolveLaunchers (#54 preset set)", () => {
   });
 
   it("descriptor reuse: interactive argv templates come from the descriptor layer, not a second table", async () => {
-    const { MSYS2_INTERACTIVE_ARGV, PWSH_INTERACTIVE_ARGV } = await import("../src/backends.ts");
+    const { MSYS2_INTERACTIVE_ARGV, PWSH_INTERACTIVE_ARGV } = await import("../src/launchers.ts");
     const { presets } = resolveLaunchers(fullDeps());
     const msys = localPreset(presets, "msys2-ucrt");
     expect(msys.argv).toEqual([...MSYS2_INTERACTIVE_ARGV]);

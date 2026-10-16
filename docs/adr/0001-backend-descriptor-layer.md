@@ -1,6 +1,7 @@
 # ADR-0001: Backend descriptor layer for the bash executor
 
-- Status: Accepted (T1 deliverable, direct input to T2/#5)
+- Status: Superseded by ADR-0013 (the executor and its descriptor layer left
+  the package 2026-10-16; launcher-view constants moved to src/launchers.ts)
 - Date: 2026-09-30
 - Deciders: human (D7 consensus, triage 2026-09-30); this ADR records the VS Code source survey that grounds it
 - Context: `GLOSSARY.md` D2/D7; spec issue #1; tickets #4 (this) → #5 (implements)
