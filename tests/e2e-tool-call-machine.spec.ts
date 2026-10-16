@@ -1,0 +1,357 @@
+/**
+ * Machine-lane suite for the END-TO-END delivery chain of this bundle
+ * (issue: verification layering, synced with the adjacent matt workspace).
+ *
+ * What this proves — the mock-LLM tier (see docs/agents/TESTING.md):
+ *   install (profile registration + REAL link) → config (composed tree carries
+ *   the bundle's loader rows) → boot (real `dsh web` instance on an OS-assigned
+ *   port, stderr clean) → session (real `session/create`) → call (the model
+ *   asks for a tool, the instance EXECUTES it, and the `tool_result` is fed
+ *   back into the next request).
+ *
+ * What this CANNOT prove (deliberately out of scope here):
+ *   provider acceptance, real-model behaviour, real credentials. Those belong
+ *   to the opt-in real-LLM tier.
+ *
+ * Gates (loud skip, never a silent pass): the suite needs a built plugin tree
+ * and a built DSH host tree. Both are discoverable via env; when absent every
+ * case skips loudly with the missing piece named.
+ *
+ * Isolation: a temp DSH_HOME under os.tmpdir() plus `--port 0`, so this suite
+ * never occupies the fixed dev ports (19387 desktop / 19501 neighbor / 19502
+ * this workspace's resident instance).
+ *
+ * @module tests/e2e-tool-call-machine
+ */
+
+import { afterAll, describe, expect, it } from "vitest";
+import { createServer, request as httpRequest } from "node:http";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+/** Windows node runs the host + the native pieces (B1 posture); msys2 node
+ * cannot load rolldown/node-pty bindings. Overridable for other layouts. */
+const NODE = process.env.DSH_E2E_NODE ?? "C:/Program Files/nodejs/node.exe";
+/** The plugin checkout under test (built: lib/*.js must exist). */
+const PLUGIN_DIR = process.env.DSH_E2E_PLUGIN_DIR ?? "C:/msys64/home/<user>/dsh-shellhost-src";
+/** The DSH host source checkout that provides apps/cli/src/bin.ts. */
+const HOST_DIR = process.env.DSH_E2E_HOST_DIR ?? "C:/msys64/home/<user>/dsh-host-src";
+
+const PROFILE = "dsh-host-dev";
+const PROFILE_BUNDLES = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-shell-host"];
+
+/** The bundle's own loader rows (ADR-0007/0012): a failure must never blame
+ * these — they are the rows this repo adds (TESTING.md failure attribution). */
+const MY_ROWS = ["pty", "terminal"];
+
+/** Skip loudly with the precise missing piece; never a silent pass. */
+function missingEnvironment(): string[] {
+  return [
+    !existsSync(PLUGIN_DIR) ? `plugin tree ${PLUGIN_DIR}` : null,
+    !existsSync(join(PLUGIN_DIR, "lib/pty/index.js")) ? `built artifact ${PLUGIN_DIR}/lib/pty/index.js` : null,
+    !existsSync(join(HOST_DIR, "apps/cli/src/bin.ts")) ? `DSH host tree ${HOST_DIR}` : null,
+    !existsSync(NODE) ? `node executable ${NODE}` : null,
+  ].filter((v): v is string => v !== null);
+}
+
+const absent = missingEnvironment();
+/** Named in every skip so the report says WHY nothing ran. */
+const skipReason =
+  `e2e mock-LLM tier needs: ${absent.join(" / ")} — ` +
+  `override with DSH_E2E_PLUGIN_DIR / DSH_E2E_HOST_DIR / DSH_E2E_NODE`;
+
+/** Anthropic-style SSE frames — the shape the host's Messages client parses. */
+function sseFrames(content: Record<string, unknown>, stopReason: string): string {
+  return [
+    { type: "message_start", message: { id: "e2e-msg", model: "deepseek-v4-pro", usage: { input_tokens: 3, output_tokens: 0 } } },
+    { type: "content_block_start", index: 0, content_block: content },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: stopReason }, usage: { output_tokens: 1 } },
+    { type: "message_stop" },
+  ].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
+}
+
+interface Captured {
+  readonly body: Record<string, any>;
+  /** True only for agent requests: the host also sends lightweight requests
+   * (e.g. session titling) that must NOT be mistaken for the agent turn. */
+  readonly isAgent: boolean;
+}
+
+/** Local mock provider. Turn 1 (agent) demands a tool call; turn 2 answers. */
+async function startMockLlm() {
+  const captured: Captured[] = [];
+  const sockets = new Set<import("node:net").Socket>();
+  let agentTurns = 0;
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => { raw += c; });
+    req.on("error", () => { /* instance shutdown resets sockets — expected */ });
+    res.on("error", () => { /* same */ });
+    req.on("end", () => {
+      let body: Record<string, any> = {};
+      try { body = JSON.parse(raw) as Record<string, any>; } catch { /* keep raw */ }
+      const isAgent = Array.isArray(body.tools) && body.tools.length > 0;
+      captured.push({ body, isAgent });
+      let content: Record<string, unknown>;
+      let stopReason: string;
+      if (isAgent) {
+        agentTurns += 1;
+        if (agentTurns === 1) {
+          // pty_open's REQUIRED argument is `command` (shell_open's is `preset`).
+          // pty_open is chosen deliberately: it sits behind no approval gate, so
+          // this tier can prove the tool surface is wired without entering the
+          // approval/sandbox path (which the real-LLM tier owns).
+          content = { type: "tool_use", id: "toolu_e2e_1", name: "pty_open", input: { command: "cmd.exe /c echo verify-ok", autoClose: true } };
+          stopReason = "tool_use";
+        } else {
+          content = { type: "text", text: "done" };
+          stopReason = "end_turn";
+        }
+      } else {
+        content = { type: "text", text: "title" };
+        stopReason = "end_turn";
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(sseFrames(content, stopReason));
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      socket.on("error", () => { /* expected on shutdown */ });
+    });
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  return {
+    port,
+    captured,
+    agentRequests: (): Captured[] => captured.filter((c) => c.isAgent),
+    agentTurns: () => agentTurns,
+    async close() {
+      for (const s of sockets) s.destroy();
+      sockets.clear();
+      await new Promise<void>((resolve) => { server.close(() => { resolve(); }); });
+    },
+  };
+}
+
+/** Boot the real `dsh web` CLI and wait for its authenticated launch URL. */
+function startInstance(dshHome: string, mockPort: number) {
+  const child: ChildProcess = spawn(
+    NODE,
+    ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", PROFILE, "--no-open", "--port", "0"],
+    {
+      cwd: HOST_DIR,
+      env: {
+        ...process.env,
+        DSH_HOME: dshHome,
+        DSH_TELEMETRY_DISABLED: "1",
+        DEEPSEEK_BASE_URL: `http://127.0.0.1:${mockPort}`,
+        DEEPSEEK_API_KEY: "mock-key-nonempty",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  let stdout = "";
+  let stderr = "";
+  const ready = new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`instance not ready in 120s\nstdout=${stdout}\nstderr=${stderr}`));
+    }, 120_000);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      const match = /http:\/\/127\.0\.0\.1:\d+\/\?token=[^\s]+/u.exec(stdout);
+      if (match?.[0] !== undefined) { clearTimeout(timer); resolve(match[0]); }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`instance exited early (${String(code)})\n${stderr}`)); });
+  });
+  return { child, ready, stderr: () => stderr };
+}
+
+/** One typert Remote envelope. Args are NAMED (`payload.args.request`). */
+function rpc(port: number, cookie: string | undefined, method: string, args: unknown) {
+  const body = JSON.stringify({ type: "client-request", rpcId: `e2e-${method}`, method, payload: { args } });
+  return new Promise<{ status: number; text: string }>((resolve) => {
+    const req = httpRequest(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: `/api/${method}`,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+          ...(cookie === undefined ? {} : { cookie }),
+        },
+      },
+      (res) => {
+        let text = "";
+        res.on("data", (c: Buffer) => { text += c.toString(); });
+        res.on("end", () => { resolve({ status: res.statusCode ?? 0, text }); });
+      },
+    );
+    req.on("error", (e: NodeJS.ErrnoException) => { resolve({ status: 0, text: `__rpc_error__ ${e.code ?? e.message}` }); });
+    req.end(body);
+  });
+}
+
+describe.skipIf(absent.length > 0)("e2e: install → config → boot → session → tool call (mock LLM tier)", () => {
+  const timeout = 180_000;
+
+  it("delivers the full chain and feeds the tool_result back", { timeout }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-shellhost-e2e-"));
+    const dshHome = join(root, ".dsh");
+    const profileDir = join(dshHome, "profiles", PROFILE);
+    await mkdir(profileDir, { recursive: true });
+
+    // ── install: registration record AND a real link ────────────────────────
+    // The record alone is not an installation: without the link the loader logs
+    // `skipping profile bundle ... cannot resolve` while the instance still
+    // boots — which is exactly the shape that produces a FALSE GREEN if the
+    // tool-surface assertion is written loosely.
+    await writeFile(
+      join(profileDir, "package.json"),
+      JSON.stringify(
+        {
+          name: `dsh-profile-${PROFILE}`,
+          private: true,
+          dependencies: { "dsh-shell-host": `link:${PLUGIN_DIR}` },
+          dsh: { profile: { bundles: PROFILE_BUNDLES } },
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFile(join(profileDir, "cordis.yml"), "[]\n");
+    await writeFile(join(profileDir, "pnpm-workspace.yaml"), "packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n");
+    await writeFile(join(profileDir, "cordis.patch.yml"), "[]\n");
+    const linkPath = join(profileDir, "node_modules", "dsh-shell-host");
+    await mkdir(join(profileDir, "node_modules"), { recursive: true });
+    try {
+      await symlink(PLUGIN_DIR, linkPath, "junction");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    expect(existsSync(join(linkPath, "package.json")), "plugin linked into the profile").toBe(true);
+
+    // ── config: the composed tree carries this bundle's rows ────────────────
+    const dump = spawn(NODE, ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", PROFILE, "--dump-config"], {
+      cwd: HOST_DIR,
+      env: { ...process.env, DSH_HOME: dshHome, DSH_TELEMETRY_DISABLED: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let dumpOut = "";
+    dump.stdout?.on("data", (c: Buffer) => { dumpOut += c.toString(); });
+    await new Promise<void>((resolve) => { dump.once("exit", () => { resolve(); }); });
+    expect(dumpOut, "composed tree carries dsh-shell-host/pty").toContain("dsh-shell-host/pty");
+    expect(dumpOut, "composed tree carries dsh-shell-host/terminal").toContain("dsh-shell-host/terminal");
+    expect(dumpOut, "no row is left pending on a missing service").not.toMatch(/waiting for service|Missing services/u);
+
+    // ── boot: real instance, OS-assigned port, clean stderr ────────────────
+    const mock = await startMockLlm();
+    const inst = startInstance(dshHome, mock.port);
+    let launchUrl: string;
+    try {
+      launchUrl = await inst.ready;
+    } catch (error) {
+      await mock.close();
+      await rm(root, { recursive: true, force: true });
+      throw error;
+    }
+
+    try {
+      expect(inst.stderr(), "instance stderr is clean").toBe("");
+      // Failure attribution: whatever stderr says must never blame THIS repo's
+      // rows — that separates "harness/host missing something" from "our bug".
+      const blamed = MY_ROWS.filter((row) => new RegExp(`\\b${row}\\b`, "u").test(inst.stderr()));
+      expect(blamed, "stderr never blames this bundle's loader rows").toEqual([]);
+      expect(inst.stderr(), "stderr never blames this bundle").not.toContain("dsh-shell-host");
+
+      const port = Number(/127\.0\.0\.1:(\d+)/u.exec(launchUrl)?.[1]);
+      expect(Number.isInteger(port) && port > 0, "instance bound a real port").toBe(true);
+
+      // ── token → cookie (the browser-trust exchange) ─────────────────────
+      const parsed = new URL(launchUrl);
+      const exchange = await new Promise<{ status: number; setCookie?: string[] }>((resolve) => {
+        const req = httpRequest({ hostname: "127.0.0.1", port, path: `${parsed.pathname}${parsed.search}` }, (res) => {
+          resolve({ status: res.statusCode ?? 0, setCookie: res.headers["set-cookie"] });
+        });
+        req.on("error", () => { resolve({ status: 0 }); });
+        req.end();
+      });
+      const cookie = exchange.setCookie?.[0]?.split(";")[0];
+      expect(exchange.status, "launch URL exchanges the token").toBe(303);
+      expect(cookie, "exchange issues an auth cookie").toBeTruthy();
+
+      // ── session: a real Session on the real controller ──────────────────
+      const created = await rpc(port, cookie, "session/create", { request: { cwd: PLUGIN_DIR } });
+      const createdValue = (JSON.parse(created.text) as any)?.result?.value;
+      expect(createdValue?.sessionId, "session/create returns a sessionId").toBeTruthy();
+      // agentPreset resolving proves the agentPresets service is live — the
+      // service whose absence makes a headless-style boot look green while the
+      // preset never activated.
+      expect(createdValue?.agentPreset, "session resolves an agent preset").toBeTruthy();
+
+      // ── call: the model asks, the instance executes, the result comes back ─
+      await rpc(port, cookie, "session/prompt", {
+        request: {
+          requestId: `e2e-${Date.now()}`,
+          sessionId: createdValue.sessionId,
+          mode: "queue",
+          content: [{ type: "text", text: "Call the pty_open tool once." }],
+        },
+      });
+
+      const deadline = Date.now() + 90_000;
+      while (mock.agentTurns() < 2 && Date.now() < deadline) {
+        await new Promise((r) => { setTimeout(r, 500); });
+      }
+
+      const agentReqs = mock.agentRequests();
+      expect(agentReqs.length, "the instance issued at least one agent request").toBeGreaterThan(0);
+
+      // The tool surface must be read from the instance's OWN request body.
+      // Asserting on raw text would pass even when the plugin never loaded
+      // (the mock's own tool_use carries the name) — the false-green shape.
+      const declared = Array.isArray(agentReqs[0]?.body.tools) ? agentReqs[0]!.body.tools : [];
+      const names = declared.map((t: any) => t?.name ?? t?.function?.name).filter(Boolean) as string[];
+      expect(names.length, "the instance declares a tool surface").toBeGreaterThan(0);
+      expect(names, "pty_open is in the instance's tool surface").toContain("pty_open");
+      expect(names, "shell_open (./terminal row) is in the tool surface").toContain("shell_open");
+
+      // The loop closes only when the instance EXECUTED the tool and fed the
+      // result back into a subsequent request.
+      const withResult = agentReqs.find((c) => JSON.stringify(c.body).includes("tool_result"));
+      expect(withResult, "the instance executed the tool and fed tool_result back").toBeTruthy();
+      const raw = JSON.stringify(withResult?.body ?? {});
+      expect(raw, "the executed tool did not error").not.toMatch(/"is_error":\s*true/u);
+      // A real PTY really ran the command: the value carries a live session id.
+      expect(raw, "the tool result carries the PTY session it opened").toContain("sessionId");
+    } finally {
+      // Waiting for exit is required: killing while the agent loop is live
+      // leaves libuv teardown noise (and ECONNRESET) in the report.
+      const exited = new Promise<void>((resolve) => { inst.child.once("exit", () => { resolve(); }); });
+      inst.child.kill("SIGTERM");
+      const forced = setTimeout(() => { inst.child.kill("SIGKILL"); }, 10_000);
+      await exited;
+      clearTimeout(forced);
+      await mock.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// Keep the loud skip visible even when the suite is filtered out by the gate.
+afterAll(() => {
+  if (absent.length > 0) {
+    console.warn(`  !! SKIP (loud) — ${skipReason}`);
+  }
+});
