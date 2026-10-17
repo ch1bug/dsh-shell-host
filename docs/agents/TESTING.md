@@ -49,8 +49,10 @@
   漏回滚 = 提交物与被跑过的树不是同一份）。
 - **回收要读总账**：跑完扫一眼临时目录（`Get-ChildItem $env:TEMP -Directory -Filter
   'dsh-shellhost-*'`），**本轮那几个档名**不应新增；残留里可能带复制的
-  `.credentials.yaml`，看到先解释来源再删（本机曾长期躺着 9 个来源不可考的
-  `dsh-shellhost-verify-*`）。
+  `.credentials.yaml`，看到先解释来源再删。旧档名 `dsh-shellhost-verify-*` 的来源**已解释**：
+  那是 pre-`#97` 挂具**失败路径**的泄漏残留（含复制的 `.credentials.yaml`），不由现树任何
+  挂具产出（`dsh-shellhost-*` 这一族现役只有 `-real-` / `-tarball-` / `-e2e-` 三处
+  `mkdtemp`），本机那 9 个已于 2026-10-17 清掉。
 - **探测自检：0 命中先解释，再采信。** "回读/核对"用的探针本身会**静默**给假阴性，
   值不值得信要看**探测方法**，不是看结论顺不顺眼。四个同族实测形态（2026-10-16 / 2026-10-17）：
   - 原生命令（`gh … --json body` 一类）的输出在 PowerShell 里**按行成数组**，
@@ -180,6 +182,29 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
    [#80](https://github.com/ch1bug/dsh-shell-host/issues/80) /
    [#81](https://github.com/ch1bug/dsh-shell-host/issues/81) 与
    [dev-environment.md](../dev-environment.md) §4。
+7. **探针 needle 命中的必须是被测系统的输出，回声不算**（`#99`）：拿「轮询 `pty_tail`
+   直到 needle 出现」判到达时，**展开值探针**的 needle 要选**只在展开后出现**的形状 ——
+   只写裸前缀（如 `PSV-`）会被 `pty_send` 敲进去那行命令的**回声**满足，等于在展开输出
+   到达前就判到达（后果与成因见判据本体头注，本文不复述）。这是**选 needle 的纪律**，
+   不是「把断言放松」。（与上文「探测自检」是两个面：那条讲**验证手段自身**会静默假阴性，
+   本条讲**被测探针**该选什么 needle。）三种正确形状（`#99` 落地时逐条核过）：
+   - **展开值正则**：needle 是 `RegExp`，字面命令里同名前缀后面跟的不是数字 —— pwsh 的
+     `/PSV-\d+\.\d+/`（字面命令是 `"PSV-$($PSVersionTable.PSVersion.ToString())"`）：
+     只有回声时恒不命中；
+   - **展开值 + 输出组合**：needle 同时要求**展开后的探针值**与**那条命令自身的输出行** ——
+     msys2 的 `/PROBE-UCRT64[\s\S]*\b(MSYS|MINGW|UCRT)/i`（字面命令是
+     `echo PROBE-$MSYSTEM && uname -a`：回声里 `$MSYSTEM` 未展开、没有 `PROBE-UCRT64`，
+     `uname -a` 的输出行是它的另一半）；
+   - **展开值子串**：needle 是只可能由展开产生的裸子串 —— wsl 的 `WSLPROBE-Linux`
+     （字面命令里是 `WSLPROBE-$(uname -sr)`）。
+   **例外**：**marker / 往返探针**的 needle 本来**就该**被回声满足 —— coexistence 的四个
+   `MARK-*`（`echo MARK-MSYS` 一类）与 ssh 往返的 `SSHOPEN-42` 就是拿「自己敲的字面量」证明
+   「没串到别的会话 / 往返通了」，它们断言的是隔离与到达、不是展开值。故本规则**只对展开值
+   探针**成立。
+   **取证口径**：判据抽成可测纯函数 + 离线**「回声帧 / 展开帧」两输入**断言（真 `pty_send`
+   后的分帧到达在集成层是时序相关的，离线层才是确定性形态）；变异口径 = 把 needle 改回裸前缀
+   → 离线档**必红**。判据本体与成因**只在** `tests/helpers/probe-needle.ts` 里讲（单一来源），
+   离线实例断言见 `tests/probe-needle.spec.ts`，活体用例见 `tests/terminal-machine.spec.ts`。
 
 ## 本仓现有验证入口
 
