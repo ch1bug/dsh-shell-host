@@ -81,13 +81,15 @@ Do not propose adding ci.yml. Local guardrails ARE allowed — enable once per c
 含「安装 → 配置 → 启动 → 建会话 → 真实调用」三档 e2e）——**在 msys bash 里**跑：
 
 ```bash
-bash <repo>/scripts/msys-lane.sh              # 同步副本 → 全量套件 → 读数汇总（前置检查失败即停，不跑套件）
+bash <repo>/scripts/msys-lane.sh              # 同步副本 → 全量套件（含真实层）→ 读数汇总
+bash <repo>/scripts/msys-lane.sh --no-live    # 排除真实层（外部端点偶发假红）；pre-push 用的就是这条
 bash <repo>/scripts/msys-lane.sh --lane machine   # 迭代口径（只跑 machine 车道）
 ```
 
-它自己 source `scripts/msys-env.sh`（Windows node 前置 + 复用 Windows 的 git/gh 配置），
-并把四个 `DSH_E2E_*` 推导成 **Windows 形态**路径。机制、读数判据与路径形态坑见
-`docs/dev-environment.md` §0.1.1。
+`.githooks/pre-push` 已接：branch 推送前自动跑 `--no-live` 那条（约一分钟）；红则阻断推送，
+`SKIP_HOOKS=1 git push …` 可明确跳过。它自己 source `scripts/msys-env.sh`（Windows node 前置 +
+复用 Windows 的 git/gh 配置），并把四个 `DSH_E2E_*` 推导成 **Windows 形态**路径；
+机制、读数判据与路径形态坑见 `docs/dev-environment.md` §0.1.1。
 
 分层、证据纪律、失败归因规则见 `docs/agents/TESTING.md`。
 

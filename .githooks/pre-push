@@ -10,6 +10,11 @@
 # 只针对 **branch refs** 触发；`--tags` 单独推 / 删远端 ref 时不跑（那不是「推代码」）。
 # 也没有 ref 能推（如 `--dry-run`）时不跑。
 #
+# **默认排除真实层**（`--no-live`；即跳过 `tests/e2e-real-llm-machine.spec.ts`）：
+# 那一档打的是**外部端点**，交接与本会话都实测到偶发 `TRANSPORT`（外部网络问题，重跑即绿）。
+# 让外部抖动阻断日常推送的后果是大家常按 `SKIP_HOOKS`，闸门反而失效。真实层留给
+# **发布 / 手动验收**：`bash scripts/msys-lane.sh`（默认含真实层）。
+#
 # 绕过（明确知道在跳什么时）：`SKIP_HOOKS=1 git push …`
 # 拿不到 msys bash 时**响亮跳过**（不阻断推送）：把结果写清是「未验证」，不写成通过。
 #
@@ -39,8 +44,8 @@ for c in bash /usr/bin/bash /bin/bash; do
 done
 [ -n "$BASH_BIN" ] || { echo "pre-push: 找不到 bash —— 跳过 msys 车道（本次推送未经验证）"; exit 0; }
 
-echo "pre-push: $BASH_BIN $LANE（全量：同步副本 → unit + machine）"
-if "$BASH_BIN" "$LANE"; then
+echo "pre-push: $BASH_BIN $LANE --no-live（同步副本 → unit + machine；排除真实层）"
+if "$BASH_BIN" "$LANE" --no-live; then
   echo "pre-push: msys 车道全绿 ✅（完整口径见 docs/dev-environment.md §0.1.1）"
   exit 0
 fi

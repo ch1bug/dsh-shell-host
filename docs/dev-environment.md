@@ -129,10 +129,16 @@ export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
 （含三档 e2e 的「安装 → 配置 → 启动 → 建会话 → 真实调用」）。本仓**已把它口子化成一条命令**：
 
 ```bash
-bash <repo>/scripts/msys-lane.sh                  # 日常口径：同步副本 → 全量套件 → 读数汇总
+bash <repo>/scripts/msys-lane.sh                  # 日常口径：同步副本 → 全量套件（含真实层）→ 读数汇总
+bash <repo>/scripts/msys-lane.sh --no-live        # 排除真实层（外部端点偶发 TRANSPORT；**pre-push 用的就是这条**）
 bash <repo>/scripts/msys-lane.sh --lane machine   # 迭代口径：只跑 machine 车道（~1 分钟）
 bash <repo>/scripts/msys-lane.sh --no-sync        # 只验当前副本提交，不碰同步
 ```
+
+**推送前自动跑**：`.githooks/pre-push` 会调 `scripts/msys-lane.sh --no-live`（约一分钟）——
+推送是本套仓库离开本机的时刻，值得在它前面过一遍唯一检查入口。默认排除真实层的原因：
+那一档打外部端点，偶发 `TRANSPORT` 会假红；让它阻断日常推送只会逼出 `SKIP_HOOKS`。真实层
+留给发布 / 手动验收（默认口径含它）。绕过：`SKIP_HOOKS=1 git push …`。
 
 `scripts/msys-lane.sh` 自己 source 引导脚本，并把这些面在入口处钉死（前置检查失败就**响亮失败**、
 **不跑套件** —— 环境缺件与产品缺陷是不同归因，先分清）：

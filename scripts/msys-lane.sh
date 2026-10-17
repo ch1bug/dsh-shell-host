@@ -58,13 +58,18 @@ fi
 
 LANE=""
 DO_SYNC=1
+NO_LIVE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --lane) LANE="${2:-}"; [ -n "$LANE" ] || { echo "msys-lane: --lane 需要一个值（unit / machine）" >&2; exit 2; }; shift 2 ;;
     --no-sync) DO_SYNC=0; shift ;;
-    -h|--help) echo "用法：bash scripts/msys-lane.sh [--lane unit|machine] [--no-sync]
+    --no-live) NO_LIVE=1; shift ;;
+    -h|--help) echo "用法：bash scripts/msys-lane.sh [--lane unit|machine] [--no-sync] [--no-live]
   在 msys bash 里跑：同步部署副本 → 跑唯一检查入口 → 打读数汇总。
-  覆盖：DSH_MSYS_COPY（副本路径，默认 \$HOME/dsh-shellhost-src）、DSH_MSYS_SRC（权威树，默认本仓）"; exit 0 ;;
+  --lane      只跑一个车道（迭代口径；默认全量 = 验收口径）
+  --no-sync   不碰同步，只验当前副本提交
+  --no-live   排除真实层（e2e-real-llm；外部端点偶发 TRANSPORT，会假红）——**日常推送口径**
+  覆盖：DSH_MSYS_COPY（副本路径，默认在 msys2 家目录下按名找）、DSH_MSYS_SRC（权威树，默认本仓）"; exit 0 ;;
     *) echo "msys-lane: 未知参数：$1（见 --help）" >&2; exit 2 ;;
   esac
 done
@@ -154,14 +159,25 @@ export DSH_E2E_PNPM_DIR="${DSH_E2E_PNPM_DIR:-$(to_win "$MSYS_HOME/dsh-host-src/n
 
 # —— 5. 跑唯一检查入口（在副本里；msys 的 git/sh/tar + Windows 的 node）——
 [ -f "$COPY/node_modules/vitest/vitest.mjs" ] || fail "副本没装依赖（$COPY/node_modules/vitest 不存在）：先在副本里装一次依赖"
-step "车道=${LANE:-全量（unit + machine）}  副本=$copy_short  node=$(node -v)"
+scope="${LANE:-全量（unit + machine）}"
+[ "$NO_LIVE" = 1 ] && scope="$scope（已排除真实层）"
+step "车道=$scope  副本=$copy_short  node=$(node -v)"
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
+# 真实层（`tests/e2e-real-llm-machine.spec.ts`）打的是**外部端点**：交接与本会话都实测到偶发
+# `TRANSPORT`（BACKEND 侧网络问题，重跑即绿）。故 `--no-live` 把它排除 —— 那是「日常推送口径」：
+# pre-push 不该因外部端点抖动阻断推送（否则大家只会常按 SKIP_HOOKS，闸门形同虚设）。
+# 发布 / 手动验收仍跑默认（含真实层）。
+LIVE_SPEC="tests/e2e-real-llm-machine.spec.ts"
 if [ -n "$LANE" ]; then
-  (cd "$COPY" && node node_modules/vitest/vitest.mjs run --project "$LANE") >"$log" 2>&1
+  runner=(node node_modules/vitest/vitest.mjs run --project "$LANE")
+  [ "$NO_LIVE" = 1 ] && runner+=(--exclude "$LIVE_SPEC")
 else
-  (cd "$COPY" && node --run test) >"$log" 2>&1
+  runner=(node --run test)
+  # 经包脚本跑时，附加参数要显式分隔后转交 vitest。
+  [ "$NO_LIVE" = 1 ] && runner+=(-- --exclude "$LIVE_SPEC")
 fi
+(cd "$COPY" && "${runner[@]}") >"$log" 2>&1
 rc=$?
 
 # —— 6. 读数汇总：逐文件四态 + loud skip 原文 + 汇总行（**绿红都收**）——
