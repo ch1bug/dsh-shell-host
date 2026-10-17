@@ -100,6 +100,59 @@ export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
 
 只**指向**Windows 配置，不复制不修改：凭据与登录态留在原处。
 
+上面前两件（PATH + git/gh 配置）已经收进 `scripts/msys-env.sh`，source 一次即可：
+
+```bash
+. <repo>/scripts/msys-env.sh      # 只指向 Windows 的 node / gh / git 配置，不改 HOME
+```
+
+- 它把 **Windows node 前置**（防 ucrt64 抢位）、推导 gh / Windows git 目录、指向
+  `%USERPROFILE%/.gitconfig` 与 Windows 的 gh 凭据目录，并在自检里**打印当前生效的
+  node / git / gh 版本**（缺哪个报哪个，绝不静默）。**幂等**：重复 source 不会累加 PATH
+  （故可安全写进 `~/.bashrc`）。
+- **不写死本机路径**：目录都在运行时经 `cygpath` / Windows PATH 推导（本仓是 PUBLIC 仓）。
+  非默认布局用四个变量覆盖：`DSH_MSYS_WIN_NODE_DIR` / `DSH_MSYS_GH_DIR` /
+  `DSH_MSYS_WIN_GIT_DIR` / `DSH_MSYS_WIN_HOME`。实测：本机 **Git for Windows 不在 Windows
+  PATH 上**，脚本于是维持 msys git 并**打印警告**，此时用
+  `DSH_MSYS_WIN_GIT_DIR='<git 安装根>/cmd'` 覆盖即切到 Windows git
+  （实测生效，且 `GIT_CONFIG_SYSTEM` 一并认到）。
+- **不要把它当 `.sh` 执行**：`source` 是用法（脚本里没有 `exit`，就是为了不把调用方 shell 退掉）。
+
+### 0.1.1 副本的 msys 侧全流程验证（**第三条车道**，2026-10-17 落地）
+
+默认的副本验证是「Windows 侧 PowerShell + ucrt64 node 指过去」；本仓的 e2e 挂具用**显式 env**
+（`DSH_E2E_NODE` / `DSH_E2E_PLUGIN_DIR` / `DSH_E2E_HOST_DIR` / `DSH_E2E_PNPM_DIR`）驱动宿主 CLI，
+所以**不依赖 PATH 上的 `dsh`**（这一点被邻仓 `dsh-matt-preset` 的 §0.1 反过来引用，
+其 #83 正要把他们那套 `dsh` 依赖改成这个形态）。但那样跑，**msys 的 git/sh/tar 语义一次都没被行使**。
+
+隔壁工作区的做法值得照搬：在**副本里**、用 **msys 的 git/sh/tar + Windows 的 node** 跑一遍完整套件
+（含三档 e2e 的「安装 → 配置 → 启动 → 建会话 → 真实调用」）。本仓实测（副本 `48639fe`，
+Windows node 24.18 + Windows git 2.55）：
+
+```bash
+. <repo>/scripts/msys-env.sh
+cd ~/dsh-shellhost-src
+export DSH_E2E_PLUGIN_DIR='C:/msys64/home/<user>/dsh-shellhost-src'   # Windows 形态，见下条
+export DSH_E2E_HOST_DIR='C:/msys64/home/<user>/dsh-host-src'
+export DSH_E2E_NODE='C:/Program Files/nodejs/node.exe'
+export DSH_E2E_PNPM_DIR='C:/msys64/home/<user>/dsh-host-src/node_modules/.bin'
+node --run test
+```
+
+- 读数 `OK — 22/23 通过（其中 1 项为 PASS*）`、`exit 0`；三档 e2e 全绿（装箱档 5/5 环表）。
+  四个 `DSH_E2E_*` 的默认值已经就是这套（`tests/helpers/e2e-install.ts` 按运行时用户名拼出
+  `C:/msys64/home/<user>/…`），所以**不设也能跑**；显式设一遍是为了把路径形态摆明。
+- **它与 Windows 车道不是逐项同读数**：msys 车道下 `tests/terminal-machine.spec.ts` 是
+  `(7 tests | 3 skipped)`（Windows 侧 1 skipped），即该档在 msys 环境里有更多 loud skip ——
+  读 msys 车道的汇总数字要看 `PASS*` 与 skip 数，别按「与 Windows 逐项一致」判绿红。
+- **路径形态坑（本会话实测）**：`DSH_E2E_*` 必须是 **Windows 形态 `C:/…`**。POSIX 形态
+  `/c/…` 交给 Windows node 后，`node:path.join('/c/…', 'lib/pty/index.js')` 会拼出
+  `/c/…/lib/pty/index.js` 这类**当前盘根下的不存在的路径**，症状是**安装环红而装箱档绿**
+  （装箱档自己 `npm pack`、不吃该 env）。赋值成 `C:/…` 不会被 msys 转换（实测：`export X='C:/…'`
+  与命令前缀 inline 两种形态都给到 Windows node 原样字符串，**不需要 `MSYS2_ARG_CONV_EXCL`**）。
+- 环境缺件时的正确归因：安装环红 + 装箱档绿 = 该 env 形态/缺件问题，**不是本仓缺陷**；
+  若两档一起红才是产品面可疑。
+
 ## 1. 隔离契约（三实例互不干扰）
 
 启动器用 **`DSH_HOME`** 定位 home、**`--profile <name>`** 选择
