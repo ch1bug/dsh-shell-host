@@ -281,6 +281,12 @@ ucrt64 node 上报 `platform=win32-x64-gnu`，而 rolldown 等只发布 `-msvc` 
 RC2 构建会报 `MISSING_EXPORT "principalOf"`（该符号只存在于 alpha 源码）。
 用 `git clean -fxd`（实测清掉 38 个孤儿 `lib/` 后通过）。
 
+**判构件新旧用内容哈希，不用 mtime**：同步会**重写副本 `src/` 的 mtime**（内容没变也照改），
+而 `lib/` 是 gitignored 的构建产物 —— 实测副本 `src/` 显示 14:15、`lib/` 12:05，看着「源码比构件新」，
+两树 `lib/` 却逐文件哈希相同（唯一差异是权威树里一个 tsdown 不清理的孤儿 chunk）。
+所以：`ls` 时间戳只能当线索，判据是**同名文件哈希比对**（`Get-FileHash`），
+而车道已改为同步后**无条件重建**（§0.1.1），不存在靠猜的场景。
+
 ### 4.4 本插件的依赖锚（#82）
 
 `@deepseek-ai/dsh-tools` 必须锚 **RC 线**（`0.2.0-rc.2`），且其 **10 个
