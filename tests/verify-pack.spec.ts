@@ -827,6 +827,13 @@ describe("loud skip 路径（#90）：注入驱动，environment-independent", (
  * （按子串判"确实走到了自检分支"）、`files` 宽窄本身（那是 #117 的面）。
  */
 describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写产品文件", () => {
+  /**
+   * 这些用例的超时预算：**必须**大于 {@link PRELUDE_WAIT_MS}，否则前置门槛等不到上界就被
+   * vitest 按默认 5 s 掐断 —— 那时 `finally` 跑不完，`%TEMP%` 会**遗留副本目录**
+   * （本票实测：把 `lib/` 移走造极端窗口后单档跑出 2 个残留）。给 90 s = 60 s 门槛 + 30 s 余量。
+   */
+  const CLI_CASE_TIMEOUT_MS = 90_000;
+
   /** 把脚本与 manifest 复制成一个独立"仓库根"，返回该目录。 */
   function makeRepoCopy(tag: string): string {
     const root = tempDir(tag);
@@ -897,11 +904,14 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
   }
 
   it("THE POINT (#118): `files` 宽写成 `lib/**` ⇒ 真实 CLI exit 1 并打出自检文案（AC1 可达）", async () => {
+    // **顺序**：**先**等门槛（只读、无副作用），**再**建副本，然后整个"建了副本"的区间都在
+    // try/finally 里。若先建副本再等门槛，门槛一旦超时被掐断，`finally` 跑不完 ⇒ 副本泄漏
+    // （本票实测到过，见上面 `CLI_CASE_TIMEOUT_MS` 的说明）。
+    await waitForRepoLibReady();
     const root = makeRepoCopy("selfcheck-wide");
     try {
       // 备齐 lib/ 与 cordis.patch.yml，让判据 1/1b **不是**早退的那条路 —— 否则退出码会被
       // 判据 1 的 `return 1` 污染，"exit 1" 就失去判别力（复核 C2 指出的一点，实测确认）。
-      await waitForRepoLibReady();
       furnishForPackedCriteria(root);
       // 只改**副本**的 files：族声明全部消失，等价于票面"宽写成 lib/**（或删掉族声明）"。
       const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));

@@ -167,6 +167,27 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 `assistant/attempt → finish → { code: "MISSING_CREDENTIAL" }`。
 且**必须先 `selectModel` 再 `prompt`**(乱序则 turn 不起)。
 
+## PTC 模式下第三方工具的等价性（2026-10-18 核查，`0.2.1-rc.2`）
+
+**结论：本仓 `pty_*` / `ssh_*` / `shell_open` 在 PTC（`run_code`）下与官方 `terminal_*`
+等价可用，无需任何额外元数据。** 源码 + 受控实验全文见
+[docs/research/research-ptc-third-party-tools.md](docs/research/research-ptc-third-party-tools.md)。
+
+- **规则**：PTC 的 SDK 渲染集合 = **调用方 agent 的可见集**减去 `run_code`
+  （`packages/core/tools/src/index.ts` 的 `sdkSchemas()`），每条只取
+  `name`/`description`/`parameters`/`output.schema` 四个字段；派发侧用**同一个**
+  `registry.schemas(agent)` 建绑定 ⇒ **渲染了即能调** —— "第三方"在 PTC 里没有差别。
+- **必要条件**（挂载期判定，缺了是**响亮失败**而不是被静默排除）：`defineTool` 必须给
+  `output: { schema, render }`；`output.schema` 必须过 `assertSupportedJsonSchema`。本仓
+  9 个工具（pty 四 + ssh 四 + `shell_open`）全部满足。
+- **`presentation` 不是工具字段**：`presentation: 'ptc'` 是 loader 行
+  `@deepseek-ai/dsh-agent-tool-presentation` 的 `config.mode`（实验里用 `DSH_TOOLS_MODE=ptc`）；
+  `presentationMeta` 只是可选投影进结果 `meta` 的展示面，与 PTC 可用性无关。
+- **与官方 `tool-terminal` 的实际差距**（都**不影响 PTC 可用性**）：① 无 `pty_list` /
+  `pty_signal` 等价工具；② 无 `run_in_background`（官方走 `ctx.jobs`）；③ 无
+  `presentationMeta` / `presentResult` / `finalizeContent` 字节上限。已按此立票。
+- **`./wsl` entry**：默认 bundle patch 不挂 ⇒ SDK 里不会出现 `win_*`（opt-in entry 的预期行为，非缺陷）。
+
 ## #68 POSIX launcher 预设行事实(2026-10-11)
 
 - **launcher 预设 lane 传递依赖**:launchers.ts 经 pty/index 引 `composeSshCommand`,容器 lane 装 `@lydell/node-pty` 外还需 `@deepseek-ai/schemastery@~3.18.5` + `@deepseek-ai/dsh-tools@0.2.1-rc.2`(npm range/钉源锚均可)。**【2026-10-16 修订】**原记 `dsh-tools@0.2.1-alpha.1`,与 **ADR-0005** 的 RC 锚不符(当时 `version` = `0.2.0-rc.2-r1`;2026-10-17 起锚 `0.2.1-rc.2-r1`),已改锚 RC;RC 与 alpha 的**接口差异**见上条 #82。
