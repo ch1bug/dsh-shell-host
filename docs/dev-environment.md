@@ -126,8 +126,24 @@ export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
 其 #83 正要把他们那套 `dsh` 依赖改成这个形态）。但那样跑，**msys 的 git/sh/tar 语义一次都没被行使**。
 
 隔壁工作区的做法值得照搬：在**副本里**、用 **msys 的 git/sh/tar + Windows 的 node** 跑一遍完整套件
-（含三档 e2e 的「安装 → 配置 → 启动 → 建会话 → 真实调用」）。本仓实测（副本 `48639fe`，
-Windows node 24.18 + Windows git 2.55）：
+（含三档 e2e 的「安装 → 配置 → 启动 → 建会话 → 真实调用」）。本仓**已把它口子化成一条命令**：
+
+```bash
+bash <repo>/scripts/msys-lane.sh                  # 日常口径：同步副本 → 全量套件 → 读数汇总
+bash <repo>/scripts/msys-lane.sh --lane machine   # 迭代口径：只跑 machine 车道（~1 分钟）
+bash <repo>/scripts/msys-lane.sh --no-sync        # 只验当前副本提交，不碰同步
+```
+
+`scripts/msys-lane.sh` 自己 source 引导脚本，并把这些面在入口处钉死（前置检查失败就**响亮失败**、
+**不跑套件** —— 环境缺件与产品缺陷是不同归因，先分清）：
+
+- 权威树工作树干净（行尾噪音按 §0.1 第 1 条判别：**忽略行尾后为空 = 纯噪音**，不算脏）；
+- 权威树先与 `origin` 对齐，副本按 `--prune --tags --force` + `merge --ff-only` 同步（口径见 §0）；
+- 两树同提交提示（`AGENTS.md` 的硬约束）、副本同步后仍干净；
+- 四个 `DSH_E2E_*` 一律**推导成 Windows 形态**（`cygpath -w`），避免下面那条路径形态坑；
+- 读数汇总**绿红都收**：逐文件行、`!! SKIP (loud)` 行数、隐私扫描读数、退出码；红时把末 40 行原文打出来。
+
+手工等价跑法（脚本不存在或要单独调时用）：
 
 ```bash
 . <repo>/scripts/msys-env.sh
