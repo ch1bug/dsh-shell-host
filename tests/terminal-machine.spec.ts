@@ -18,6 +18,12 @@ import { execFileSync } from "node:child_process";
 import { apply as applyPty } from "../src/pty/index.ts";
 import { apply as applyTerminal } from "../src/terminal/index.ts";
 import { resolveLaunchers } from "../src/launchers.ts";
+import {
+  matchesNeedle,
+  PWSH_PROBE_COMMAND,
+  PWSH_PROBE_NEEDLE,
+  type ProbeNeedle,
+} from "./helpers/probe-needle.ts";
 
 const AGENT = { name: "terminal-machine" };
 
@@ -46,15 +52,16 @@ function boot(config: { custom?: unknown[] } = {}) {
 }
 
 /** Poll pty_tail until `needle` (string or RegExp) shows up (or the budget
- * expires). */
-async function waitFor(tool: (name: string) => any, id: string, needle: string | RegExp, budgetMs = 45_000): Promise<string> {
+ * expires). The hit judgement is the shared pure `matchesNeedle` (#99) — the
+ * offline case in tests/probe-needle.spec.ts pins that a needle must be chosen
+ * so the typed command's ECHO cannot satisfy it. */
+async function waitFor(tool: (name: string) => any, id: string, needle: ProbeNeedle, budgetMs = 45_000): Promise<string> {
   const deadline = Date.now() + budgetMs;
   let text = "";
-  const hit = () => (typeof needle === "string" ? text.includes(needle) : needle.test(text));
   while (Date.now() < deadline) {
     const page = await tool("pty_tail").execute({ id }, { agent: AGENT });
     text += page.text;
-    if (hit()) return text;
+    if (matchesNeedle(text, needle)) return text;
     await new Promise((r) => setTimeout(r, 500));
   }
   throw new Error(`timed out waiting for ${JSON.stringify(needle)}; saw:\n${text.slice(-2000)}`);
@@ -86,8 +93,13 @@ describe("terminal entry machine lane (#55 AC)", () => {
     const { tool } = boot();
     const opened = await tool("shell_open").execute({ preset: "pwsh" }, { agent: AGENT });
     onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent: AGENT }).catch(() => {}));
-    await tool("pty_send").execute({ id: opened.sessionId, data: '"PSV-$($PSVersionTable.PSVersion.ToString())"' }, { agent: AGENT });
-    const text = await waitFor(tool, opened.sessionId, "PSV-");
+    await tool("pty_send").execute({ id: opened.sessionId, data: PWSH_PROBE_COMMAND }, { agent: AGENT });
+    // Echo-safe needle (#99): the literal command carries `PSV-$(` — no digit
+    // follows `PSV-` — so the echoed command line alone can never satisfy the
+    // version pattern; only PowerShell's EXPANDED output can. Constant + offline
+    // pin (成因、判据与层级见那里，不在本档复述):
+    // tests/helpers/probe-needle.ts / tests/probe-needle.spec.ts.
+    const text = await waitFor(tool, opened.sessionId, PWSH_PROBE_NEEDLE);
     expect(text).toMatch(/PSV-\d+\.\d+/);
   });
 
