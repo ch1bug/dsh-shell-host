@@ -106,21 +106,31 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **lane 布局事实**:容器内不可在 /repo 挂载点直接 npm install(Windows pnpm node_modules 污染解析)——把 src/ + 脚本拷进容器内干净目录再装依赖。
 - **mac 实机节 PENDING**(无 mac 机器;#26 待实测项 ① 留待有机器时并入 lane)。
 
-## #82 RC 锚 vs alpha 的宿主接口差异(2026-10-16,实测)
+## #82 宿主锚与接口事实（**2026-10-17 起锚 `0.2.1-rc.1`**；本节原为 rc.2 实测）
 
-本仓锚 **RC 线**(ADR-0008):`version` = `0.2.0-rc.2-r1` ↔ 宿主 tag
-`dsh-v0.2.0-rc.2`(commit `639ed015`)。**浅克隆默认分支会落到 alpha 系**
-(实测 `dsh-v0.2.1-alpha.4`),必须显式 checkout tag。两系接口实测差异:
+本仓锚 **RC 线**（ADR-0005）：`version` = `0.2.1-rc.1-r1` ↔ 宿主 tag
+`dsh-v0.2.1-rc.1`(commit `1600d8a1`)。**浅克隆默认分支会落到 alpha 系**
+(实测 `dsh-v0.2.1-alpha.4`),必须显式 checkout tag。
 
-- **`session/initializeDefaultModel` 只存在于 alpha**。RC2 的会话 RPC 全集 =
-  `list`/`search`/`create`/`selectModel`/`modelCatalog`/`openWorkspacePath`/
-  `workspacePathApplications`/`rename`/`fork`/`prompt`/`attachment`/`updateQueue`/
-  `cancel`/`page`/`projections`。RC 上选模型走 **`selectModel`**。
-- **`@deepseek-ai/dsh-tools` 的 peer 集不同**:RC 版**多一个
-  `@deepseek-ai/dsh-invariants`**,且 `cordis ~4.0.4` / `schemastery ~3.18.4`
-  (与 alpha 的 `~4.0.5-alpha.1` / `~3.18.5-alpha.1` 不同)。照 alpha 抄 peer 会
-  **漏声明**(#82 即此)。
-- **宿主 `scripts/build.ts` 参数不同**：RC2 用 `--profile`，alpha 用 `--scope artifacts`。
+- **会话 RPC 两侧一致（原记录有误,2026-10-17 按源码树更正）**:`dsh-v0.2.0-rc.2`
+  与 `dsh-v0.2.1-rc.1` 各 **19 个 `@Remote`**;`session/initializeDefaultModel` 在
+  **两侧都存在**(`packages/api/session-controller/src/index.ts` 的 `@Remote`;
+  上游同 tag 的 `docs/subsystems/session.md` 与同 tag 客户端都在调用它),
+  rc.2 另有未进旧清单的 `@Remote canOpenWorkspacePath`。原记「只存在于 alpha /
+  RC2 全集不含它」与同一 tag 的源码树矛盾 —— **切锚不触及会话 RPC**;
+  选模型仍走 **`selectModel`**。
+- **`@deepseek-ai/dsh-tools` 的 peer 集随锚变**:rc.2 = 有 `dsh-invariants`、
+  `cordis ~4.0.4`、`schemastery ~3.18.4`;**rc.1 = 无 `dsh-invariants`**(上游整包
+  移除,官方 upgrade guide `remove-runtime-invariants` 明说不再发布)**、新增
+  `dsh-working-directory`、`cordis ~4.0.5`、`schemastery ~3.18.5`**。照 alpha 抄
+  peer 会**漏声明**(#82 即此);本仓口径 = 只跟 `dsh-tools` 的直接 peer 集
+  (见 [docs/dev-environment.md](docs/dev-environment.md) §4.4)。
+- **rc.1 起 `dsh-tools` 另删了 `./invariant` 子路径导出**,并把
+  `ToolPresentationMode` 从 `'native'|'ptc'|'both'` 收成 `'native'|'ptc'`
+  (本仓未用该字段,代码零动作)。
+- **宿主 `scripts/build.ts` 参数**:rc.1 **同时**接受 `--scope`
+  (`complete`/`artifacts`/`check`/`typecheck`)与 `--profile`(客户端构建 profile);
+  alpha 用 `--scope artifacts`,rc.2 记的是 `--profile`。
   （构建操作与切 tag 后的清理步骤见 [docs/dev-environment.md](docs/dev-environment.md) §2/§4.3，
   此处只记接口差异本身。）
 
@@ -153,7 +163,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 
 ## #68 POSIX launcher 预设行事实(2026-10-11)
 
-- **launcher 预设 lane 传递依赖**:launchers.ts 经 pty/index 引 `composeSshCommand`,容器 lane 装 `@lydell/node-pty` 外还需 `@deepseek-ai/schemastery@~3.18.4` + `@deepseek-ai/dsh-tools@0.2.0-rc.2`(npm range/钉源锚均可)。**【2026-10-16 修订】**原记 `dsh-tools@0.2.1-alpha.1`,与 ADR-0008 的 RC 锚不符(本仓 `version` = `0.2.0-rc.2-r1`),已改锚 RC;RC 与 alpha 的**接口差异**见下条。
+- **launcher 预设 lane 传递依赖**:launchers.ts 经 pty/index 引 `composeSshCommand`,容器 lane 装 `@lydell/node-pty` 外还需 `@deepseek-ai/schemastery@~3.18.5` + `@deepseek-ai/dsh-tools@0.2.1-rc.1`(npm range/钉源锚均可)。**【2026-10-16 修订】**原记 `dsh-tools@0.2.1-alpha.1`,与 **ADR-0005** 的 RC 锚不符(当时 `version` = `0.2.0-rc.2-r1`;2026-10-17 起锚 `0.2.1-rc.1-r1`),已改锚 RC;RC 与 alpha 的**接口差异**见上条 #82。
 - **POSIX 预设行实机绿**:podman node:24-bookworm lane(.scratch/issue68-posix-launcher-verify.mjs,一条命令见脚本头)8 项 ALL GREEN——bash 行 resolved(/etc/shells 匹配行,候选全在盘)、zsh/fish 缺席姿态进 absent(probed 列 /etc/shells 匹配行;bookworm 容器无 fish 行故 probed 空)、win32 门控完全休眠、argv 单一出处、shell_open 同构回环。
 
 ## D13 (ADR-0013, 2026-10-16, human 拍板 B:执行器 world 整体移除)

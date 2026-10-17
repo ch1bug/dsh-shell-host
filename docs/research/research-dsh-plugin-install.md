@@ -1,7 +1,7 @@
 # Research: how to install a plugin into dsh the built-in way
 
 Primary source: the host checkout **on this machine** (`~/dsh-host-src`, msys2 家目录下), tag
-`dsh-v0.2.0-rc.2`（commit `639ed015`）。锚点、克隆口径与「先读源码树还是 app.asar」的单一来源是
+`dsh-v0.2.1-rc.1`（commit `1600d8a1`）。锚点、克隆口径与「先读源码树还是 app.asar」的单一来源是
 [`../dev-environment.md` §2 宿主锚点](../dev-environment.md)。
 （本行原写的 `<old-work>\deepseek-harness` 是**另一台机器/旧布局**的路径，本机不存在；
 retro 2026-10-16：信它把一次宿主契约核对逼成了 `app.asar` 逆推，代价见 dev-environment.md §2 的注。）
@@ -65,14 +65,14 @@ There is **no Koishi-style `market` registry.json**. "Official" tooling = CLI pl
 
 ## 4. What this means for dsh-shell-host
 
-`<repo>\package.json` **already declares** `dsh.bundle.patch: ./cordis.patch.yml`, `dsh.client` (inject list + `platform: web`), `main`/`exports` to `lib/`, and pinned `@deepseek-ai/dsh-*` peers at `0.2.0-rc.2`. So the official path needs almost nothing structural:
+`<repo>\package.json` **already declares** `dsh.bundle.patch: ./cordis.patch.yml`, `dsh.client` (inject list + `platform: web`), `main`/`exports` to `lib/`, and pinned `@deepseek-ai/dsh-*` peers at `0.2.1-rc.1`. So the official path needs almost nothing structural:
 
 **Recommended path (publish to npm):**
 1. Remove `"private": true`, keep `version` semver-clean; ensure `prepare`/build output (`lib/`) is either committed or built via `prepare` (note pnpm ≥10 build-script approval friction — shipping a built tarball avoids it, `apps/cli/reference/README.md:101`).
 2. `npm publish` — unscoped or any scope works; no registry gate beyond the default npm/npmmirror plan.
 3. Users install: `dsh plugin --profile web add dsh-shell-host` (or via the Web Plugins page / `plugin_manager` tool). dsh reconciles `dsh.profile.bundles` and the bundle's `cordis.patch.yml` joins the stack.
 4. Discovery: GitHub repo topic `dsh-plugin` + README (the only official discovery mechanism).
-5. Peer pins `0.2.0-rc.2` must satisfy the user's runtime or the install is refused — track dsh releases, and expect users on other versions to need `allow-version`.
+5. Peer pins `0.2.1-rc.1` must satisfy the user's runtime or the install is refused — track dsh releases, and expect users on other versions to need `allow-version`.
 
 **Alternatives (current approach and their trade-offs):**
 - **Local checkout link (what the repo does today via the desktop profile)**: `dsh plugin --profile desktop add link:../dsh-shell-host` (or `add .` from inside the checkout). Pros: live edits, no publish. Cons: per-machine, no distribution, Desktop profile is only mutable through the Desktop-bundled command while the app is quit (`apps/desktop/README.md:91`).
@@ -92,4 +92,4 @@ There is **no Koishi-style `market` registry.json**. "Official" tooling = CLI pl
 
 - **Client-bundle packaging for distribution**: the checkout documents `dsh.client.inject` for first-party packages but I did not find a full spec for how a *third-party* package's client UI bundle is built/located at runtime (dsh-shell-host already solved this locally via its tsdown client build; whether the published-package path resolves the same way for external installs was not verified end-to-end in source).
 - **No official market/registry**: confirmed absent; nothing to submit a `registry.json` entry to. The `dsh-plugin` GitHub topic is the only sanctioned discovery channel.
-- **Exact peer-version policy across dsh releases** (how strictly `0.2.0-rc.2` pins will reject future runtimes) is implemented in `plugin-compatibility.ts` but the release/policy intent isn't documented beyond the exemption mechanism.
+- **Exact peer-version policy across dsh releases** (how strictly `0.2.1-rc.1` pins will reject future runtimes) is implemented in `plugin-compatibility.ts` but the release/policy intent isn't documented beyond the exemption mechanism.

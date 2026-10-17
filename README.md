@@ -214,9 +214,11 @@ source deployment and build gotchas.
   (issue #23), and ended as a tools-only plugin (ADR-0012/0013, 2026-10-16).
   The PTY/wsl modules are pure moves absorbed from their source repos
   (ADR-0005 anchors).
-- Dependencies: `peerDependencies` are only `@deepseek-ai/cordis` +
-  `@deepseek-ai/schemastery`; deps are `@deepseek-ai/dsh-tools` +
-  `@lydell/node-pty`; tooling (typescript/vitest/tsdown) comes from npm.
+- Dependencies: `peerDependencies` = `@deepseek-ai/cordis` +
+  `@deepseek-ai/schemastery` + the current `@deepseek-ai/dsh-tools` **direct peer
+  set** (10 `dsh-*` pins that swap with the anchor — ADR-0005, dev-environment
+  §4.4); deps are `@deepseek-ai/dsh-tools` + `@lydell/node-pty`; tooling
+  (typescript/vitest/tsdown) comes from npm.
 
-Status: v0.2.0-rc.2-r1, tools-only (ADR-0012/0013): `./pty` + `./terminal` +
+Status: v0.2.1-rc.1-r1, tools-only (ADR-0012/0013): `./pty` + `./terminal` +
 `./wsl`; remote one-shot via the standalone `dsh-shell-remote` plugin.

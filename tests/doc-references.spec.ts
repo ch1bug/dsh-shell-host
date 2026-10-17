@@ -112,9 +112,10 @@ export function runnerRefsIn(blocks: string[], scripts: string[]): string[] {
 
 /**
  * 引用哈希的**允许清单**：跨仓引用，本仓历史里必然解析不到，故显式留档。
- * `639ed015` / `639ed01539` = **宿主**仓的 `dsh-v0.2.0-rc.2` 锚点（见 dev-environment.md §2）。
+ * `1600d8a1` = **宿主**仓现锚 `dsh-v0.2.1-rc.1`（见 dev-environment.md §2）；
+ * `639ed015` / `639ed01539` = 旧锚 `dsh-v0.2.0-rc.2`（历史引用仍在）。
  */
-export const HASH_ALLOWLIST = new Set(["639ed015", "639ed01539"]);
+export const HASH_ALLOWLIST = new Set(["1600d8a1", "639ed015", "639ed01539"]);
 
 /** 文本块里的提交哈希引用（7–40 位 hex；纯数字的版本号片段 / 权限位不算）。 */
 export function hashRefsIn(blocks: string[]): string[] {

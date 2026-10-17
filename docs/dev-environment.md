@@ -44,7 +44,7 @@ git -C ~/dsh-shellhost-src merge --ff-only FETCH_HEAD
 「两个都叫 `main`、内容不同」的仓库，权威树落后 3 个提交；又叠加 `git checkout <tag>`
 造成的 detached HEAD。**根因是把"部署副本"和"开发工作树"混为一个。**
 
-**本仓不要 `checkout` tag** —— `dsh-v0.2.0-rc.2` 锚点属于**宿主**源码树；本仓
+**本仓不要 `checkout` tag** —— 宿主锚点 tag（当前见 §2）属于**宿主**源码树；本仓
 `main` 就是工作线，切 tag 只会制造 detached HEAD。
 
 ### 0.0 历史重写（2026-10-16，隐私）
@@ -199,10 +199,11 @@ node --run test
 - 桌面端是**稳定升级通道**：开发中的改动不得先装桌面端。
 - pnpm store 与 corepack shim 可共享（内容寻址、只读复用）；**并发 install 不要共享**。
 
-## 2. 宿主锚点（ADR-0008）
+## 2. 宿主锚点（ADR-0005）
 
-跟随 DSH 运行时 **rc 线**：本仓 `0.2.0-rc.2-r1` ↔ 宿主 tag
-`dsh-v0.2.0-rc.2`（commit `639ed015`）。
+跟随 DSH 运行时 **rc 线**：本仓 `0.2.1-rc.1-r1` ↔ 宿主 tag
+`dsh-v0.2.1-rc.1`（commit `1600d8a1`）。旧锚（`0.2.0-rc.2` ↔ `639ed015`）的
+历史事实保留下表与 [GLOSSARY.md #82](../GLOSSARY.md)。
 
 **宿主契约核对优先读源码树**：`bundlePatchFiles()`、patch op 语义、profile 组合这类问题，
 直接读 `dsh-host-src` 的 TS 源码（如 `packages/boot/app-boot/src/profile.ts:58-64`）。
@@ -216,18 +217,25 @@ node --run test
 
 ```bash
 git clone --depth 1 https://github.com/deepseek-ai/deepseek-harness.git <src>
-cd <src> && git fetch --depth 1 origin tag dsh-v0.2.0-rc.2 && git checkout dsh-v0.2.0-rc.2
+cd <src> && git fetch --depth 1 origin tag dsh-v0.2.1-rc.1 && git checkout dsh-v0.2.1-rc.1
 ```
 
 **RC 与 alpha 的接口差异（切锚时必查）**：
 
-| 项 | alpha | **RC2** |
-|---|---|---|
-| `session/initializeDefaultModel` | 有 | **无**（改用 `selectModel`） |
-| `dsh-tools` peer 集 | 无 `dsh-invariants`；`cordis ~4.0.5-alpha.1`、`schemastery ~3.18.5-alpha.1` | **有 `dsh-invariants`**；`cordis ~4.0.4`、`schemastery ~3.18.4` |
-| `scripts/build.ts` 参数 | `--scope artifacts` | `--profile` |
+| 项 | alpha（历史调查） | **RC2**（旧锚） | **RC1 = 现锚** |
+|---|---|---|---|
+| `session/initializeDefaultModel` | 有 | **有**（`@Remote`） | **有**（两侧一致） |
+| `dsh-tools` peer 集 | 无 `dsh-invariants`；`cordis ~4.0.5-alpha.1`、`schemastery ~3.18.5-alpha.1` | **有 `dsh-invariants`**；`cordis ~4.0.4`、`schemastery ~3.18.4` | **无 `dsh-invariants`、新增 `dsh-working-directory`**；`cordis ~4.0.5`、`schemastery ~3.18.5` |
+| `scripts/build.ts` 参数 | `--scope artifacts` | `--profile` | `--scope`（`complete`/`artifacts`/`check`/`typecheck`）与 `--profile` 并存 |
 
 照 alpha 抄 peer 会**漏声明**（本仓 #82 即此）。
+
+**2026-10-17 更正（切锚 `0.2.1-rc.1` 时按源码树复核）**：上表原把
+`session/initializeDefaultModel` 记成「RC 无」（[GLOSSARY.md #82](../GLOSSARY.md) 同），
+与同一 tag 的源码树矛盾 —— `dsh-v0.2.0-rc.2` 与 `dsh-v0.2.1-rc.1` **两侧都有**
+`@Remote initializeDefaultModel`（两侧各 19 个 `@Remote`；rc.2 另有未进旧清单的
+`@Remote canOpenWorkspacePath`）。**会话 RPC 侧切锚零影响**，选模型仍走 `selectModel`。
+`dsh-invariants` 的移除见现锚列与 §4.4。
 
 ## 3. 源码部署步骤（msys2 侧）
 
@@ -235,7 +243,7 @@ cd <src> && git fetch --depth 1 origin tag dsh-v0.2.0-rc.2 && git checkout dsh-v
 # 宿主（自建，不复用相邻工作区的树）
 git clone https://github.com/deepseek-ai/deepseek-harness.git ~/dsh-host-src
 cd ~/dsh-host-src
-git fetch --depth 1 origin tag dsh-v0.2.0-rc.2 && git checkout dsh-v0.2.0-rc.2
+git fetch --depth 1 origin tag dsh-v0.2.1-rc.1 && git checkout dsh-v0.2.1-rc.1
 pnpm install --ignore-scripts --package-import-method=copy   # 见 §4.1
 git clean -fxd && pnpm install --ignore-scripts --package-import-method=copy
 pnpm build                                                   # 见 §4.2/§4.3（约 290s）
@@ -289,9 +297,17 @@ RC2 构建会报 `MISSING_EXPORT "principalOf"`（该符号只存在于 alpha �
 
 ### 4.4 本插件的依赖锚（#82）
 
-`@deepseek-ai/dsh-tools` 必须锚 **RC 线**（`0.2.0-rc.2`），且其 **10 个
-peerDependencies 必须显式声明**（含 `dsh-invariants`）。未声明时 pnpm 严格布局下
-运行时缺失：`Cannot find package '@deepseek-ai/dsh-scope'`。
+`@deepseek-ai/dsh-tools` 必须锚 **当前 RC 线**（`0.2.1-rc.1`），且其 **10 个
+peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-ptc-runtime` /
+`dsh-sandbox` / `dsh-sandbox-policy` / `dsh-scope` / `dsh-session` /
+`dsh-system-prompt` / `dsh-user-approval` / **`dsh-working-directory`**；
+`dsh-invariants` 自 `0.2.1-rc.1` 起被上游整包移除，声明已删）。未声明时 pnpm
+严格布局下运行时缺失：`Cannot find package '@deepseek-ai/dsh-scope'`。
+
+口径 = **只跟 `dsh-tools` 的直接 peer 集**（#107 拍板）：不补传递闭包 ——
+`dsh-working-directory` 自身还 peer 依赖 `dsh-fs` / `dsh-session-projection`，
+因此 `pnpm peers check` 会报这两条 missing，属**已知并接受**；`node --run test`
+与 `test:release` 不受影响。
 
 ### 4.5 msys 的 `pkill` 杀不掉 Windows node 进程
 

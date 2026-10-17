@@ -140,7 +140,7 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 | 宿主源码树 | 安装版 | `dsh-matt-src` | `dsh-host-src` |
 | 端口 | 19387 | 19501 | 19502 |
 
-**宿主锚点统一 = `dsh-v0.2.0-rc.2`（`639ed015`）**，ADR-0008 口径。
+**宿主锚点统一 = `dsh-v0.2.1-rc.1`（`1600d8a1`）**，ADR-0005 口径。
 
 ## 权威工作树 vs 部署副本
 
