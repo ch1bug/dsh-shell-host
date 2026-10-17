@@ -37,15 +37,37 @@ else
   WINHOME="${DSH_MSYS_WIN_HOME:-}"
 fi
 
+# —— msys 自己的根（如 `MSYSTEM_PREFIX=/ucrt64` → 上两级 = `C:\msys64`）——
+# 它要尽早算出来：msys 会把自己的 `/usr/bin`、`/ucrt64/bin` 塞进 Windows PATH，而里面**就有**
+# node.exe 与 git.exe。任何「找 Windows 侧的那个工具」的探测都必须排掉 msys 根，
+# 否则第一命中永远是 msys 自己的那份（实测：UCRT64 会话里选到 `/usr/bin/node`）。
+MSYS_ROOT_WIN=""
+if [ -n "${MSYSTEM_PREFIX:-}" ] && command -v cygpath >/dev/null 2>&1; then
+  MSYS_ROOT_WIN=$(cygpath -w "$(dirname "$(dirname "$MSYSTEM_PREFIX")")" 2>/dev/null)
+fi
+if [ -z "$MSYS_ROOT_WIN" ] && command -v cygpath >/dev/null 2>&1; then
+  # 兜底：从 `cygpath` 自身位置推（`C:\msys64\usr\bin\cygpath.exe` → 上两级）。
+  MSYS_ROOT_WIN=$(cygpath -w "$(dirname "$(dirname "$(command -v cygpath)")")" 2>/dev/null)
+fi
+MSYS_ROOT_POSIX=""
+[ -n "$MSYS_ROOT_WIN" ] && MSYS_ROOT_POSIX=$(cygpath -u "$MSYS_ROOT_WIN" 2>/dev/null)
+
 # —— 候选目录：从「当前 Windows PATH 上已经在的工具」反推所在目录，再补默认安装点 ——
-# to_dir <exe>  → 该可执行文件所在目录（POSIX 形态）；找不到则空。
+# to_dir <exe>  → 该可执行文件所在目录（POSIX 形态）；**msys 根之下的不算**（否则拿到的是
+# msys 自带的 node/git，正是本仓要避开的 ucrt64/MSYS 那份）。
 to_dir() {
   p=$(command -v "$1" 2>/dev/null) || return 0
   case "$p" in
     /*) d=$(dirname "$p") ;;
     *)  d=$(command -v cygpath >/dev/null 2>&1 && cygpath -u "$(dirname "$p")") ;;
   esac
-  [ -n "$d" ] && printf '%s\n' "$d"
+  [ -n "$d" ] || return 0
+  if [ -n "$MSYS_ROOT_POSIX" ]; then
+    case "$d" in
+      "$MSYS_ROOT_POSIX"|"$MSYS_ROOT_POSIX"/*) return 0 ;;
+    esac
+  fi
+  printf '%s\n' "$d"
 }
 
 # from_win_path_outside <exe1> [exe2 …] → 该可执行文件所在目录（POSIX 形态），**排除 msys 自己的
@@ -62,25 +84,25 @@ from_win_path_outside() {
   [ -n "$NODE_BIN_FOR_PATH" ] || return 0
   WINPATH="$("$NODE_BIN_FOR_PATH" -e 'process.stdout.write(process.env.PATH ?? "")' 2>/dev/null)"
   [ -n "$WINPATH" ] || return 0
-  # msys 自己的根（如 /ucrt64 → 上两级 = C:\msys64）：msys 会把自己的 `/usr/bin`、
-  # `/ucrt64/bin` 塞进 Windows PATH，而里面**就有** git.exe / node.exe —— 只排除
-  # `MSYSTEM_PREFIX` 不够，必须排到 msys 根，否则第一命中还是 msys（实测）。
-  MSYS_ROOT=""
-  if [ -n "${MSYSTEM_PREFIX:-}" ]; then
-    MSYS_ROOT=$(cygpath -w "$(dirname "$(dirname "$MSYSTEM_PREFIX")")" 2>/dev/null)
-  fi
+  # msys 自己的根：见文件上部（已算好），这里直接用。
+  MSYS_ROOT="$MSYS_ROOT_WIN"
   # 注意：**不能**在 `-e` 的脚本里用 `process.argv` —— `node -e` 下 argv[0] 是 node 本身，
   # 传进来的参数从 argv[1] 起，容易错位一位（实测：候选名变成 argv[0]，永远查不到）。
   # 候选名、PATH、排除根都经环境变量传进去，避掉引号与错位两重坑。
   DIR=$(CANDIDATES=$(printf '%s,' "$@" | sed 's/,$//') PATHDIRS="$WINPATH" EXCL="$MSYS_ROOT" \
     "$NODE_BIN_FOR_PATH" -e '
       const { existsSync } = require("node:fs");
-      const { join, normalize } = require("node:path");
+      const { join, normalize, sep } = require("node:path");
       const excl = (process.env.EXCL ?? "").replace(/[\\/]+$/u, "").toLowerCase();
       const names = process.env.CANDIDATES.split(",");
+      const underExcl = (d) => {
+        if (excl === "") return false;
+        const n = normalize(d).toLowerCase();
+        return n === excl || n.startsWith(excl + sep);
+      };
       const hit = (process.env.PATHDIRS ?? "").split(";")
         .map((s) => s.replace(/[\\/]+$/u, "")).filter(Boolean)
-        .filter((d) => excl === "" || !normalize(d).toLowerCase().startsWith(excl))
+        .filter((d) => !underExcl(d))
         .find((d) => names.some((n) => existsSync(join(d, n))));
       process.stdout.write(hit ?? "");
     ' 2>/dev/null)
