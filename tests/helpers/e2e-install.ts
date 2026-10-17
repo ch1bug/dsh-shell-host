@@ -30,7 +30,15 @@ export const NODE = process.env.DSH_E2E_NODE ?? "C:/Program Files/nodejs/node.ex
 /** msys2 侧的家目录在 Windows 视角是 `C:/msys64/home/<user>`：用户名**运行时取**，
  * 不写进仓库（本仓是 PUBLIC 仓 —— 见 AGENTS.md 与 docs/agents/privacy.md）。 */
 const MSYS2_HOME = join("C:/msys64/home", userInfo().username);
-/** The plugin checkout under test (must be built: lib/*.js present). */
+/** The plugin tree under test — by default the msys2-side DEPLOYMENT COPY, not this
+ * working tree. All three tiers install/pack `$PLUGIN_DIR/lib`, so the artifact they
+ * prove is the copy's `lib/` — gitignored, which is why `merge --ff-only` never
+ * refreshes it: a `src/` change without a rebuild leaves every tier running the
+ * PREVIOUS build (an empty green). `scripts/msys-lane.sh` rebuilds it (≈2s); the manual
+ * equivalent is `node --run build` inside the copy. This repo tree's own `lib/` is the
+ * RELEASE face instead (`node --run test:release` → `scripts/verify-pack.mjs`, and
+ * `tests/built-artifact.spec.ts` imports it) — never what the e2e tiers install.
+ * Overridable via DSH_E2E_PLUGIN_DIR. */
 export const PLUGIN_DIR = process.env.DSH_E2E_PLUGIN_DIR ?? join(MSYS2_HOME, "dsh-shellhost-src");
 /** The DSH host source checkout providing apps/cli/src/bin.ts. */
 export const HOST_DIR = process.env.DSH_E2E_HOST_DIR ?? join(MSYS2_HOME, "dsh-host-src");

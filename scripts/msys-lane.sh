@@ -1,5 +1,5 @@
 #!/bin/bash
-# msys-lane.sh —— **msys 侧日常口径**：同步部署副本 → 在副本上跑唯一检查入口 → 打读数汇总。
+# msys-lane.sh —— **msys 侧日常口径**：同步部署副本 → 重建副本构件 → 在副本上跑唯一检查入口 → 打读数汇总。
 #
 # 为什么存在：本仓有三条验证车道（见 docs/dev-environment.md §0.1.1）——
 #   ① Windows 侧权威树（`node --run test`，开发时最常跑）
@@ -8,6 +8,10 @@
 # 第 ③ 条此前只活在文档的散文里，每次都要手敲六条命令，且极容易踩「路径形态」坑（POSIX `/c/…`
 # 交给 Windows node → 安装环红而装箱档绿，看着像产品缺陷）。本脚本把那条车道**口子化**：
 # 一条命令走完，并把它依赖的环境事实（Windows node 前置、Windows 形态路径）在入口处钉死。
+#
+# **同步只搬 git 跟踪的文件**：`lib/` 被 gitignore，`merge --ff-only` 不会碰它 —— 故本脚本在跑
+# 套件前**重建副本构件**。不重建就会是「新 spec + 旧构件」的**空心绿**：三档 e2e 安装/打包的
+# 正是 <副本>/lib（`DSH_E2E_PLUGIN_DIR`），旧构件证明不了本次交付的东西。
 #
 # 用法（**在 msys bash 里跑**，不是 PowerShell；也不需要先 source 引导脚本 —— 本脚本自己 source）：
 #
@@ -159,6 +163,23 @@ export DSH_E2E_PNPM_DIR="${DSH_E2E_PNPM_DIR:-$(to_win "$MSYS_HOME/dsh-host-src/n
 
 # —— 5. 跑唯一检查入口（在副本里；msys 的 git/sh/tar + Windows 的 node）——
 [ -f "$COPY/node_modules/vitest/vitest.mjs" ] || fail "副本没装依赖（$COPY/node_modules/vitest 不存在）：先在副本里装一次依赖"
+
+# —— 5a. 重建副本构件（**同步 ≠ 重建**）——
+# 为什么必须有这一步：`lib/` 被 .gitignore，同步只搬 git 跟踪的文件；源码更新后副本的 `lib/`
+# 仍是上一次构建的产物，而三档 e2e 安装/打包的正是它（`DSH_E2E_PLUGIN_DIR`，见第 4 步）。
+# 没有这一步，改了 `src/` 的车道会拿**旧构件**跑出绿 —— 恰好在「证明交付构件可用」这层哑火。
+# 成本实测 ≈2s（tsc 全量 emit + tsdown 33ms，无 tsbuildinfo）；tsdown 需 Windows node（§4.2），
+# 第 0 步已把 ucrt64 排除。
+buildlog=$(mktemp)
+trap 'rm -f "$buildlog"' EXIT
+step "构件：重建副本 lib/（同步只搬源码，不搬被 gitignore 的 lib/）"
+if ! (cd "$COPY" && node --run build) >"$buildlog" 2>&1; then
+  tail -20 "$buildlog" | sed 's/^/  /'
+  fail "副本重建失败（$COPY）—— 三档 e2e 装的就是它，装不出就没有可验的构件"
+fi
+# 建完仍缺件就**在这里**判失败：否则三档 e2e 会因缺件响亮跳过，看着像「门禁未开」而不是构建坏了。
+[ -f "$COPY/lib/pty/index.js" ] || fail "重建后仍没有 $COPY/lib/pty/index.js（e2e 门禁要它）"
+
 scope="${LANE:-全量（unit + machine）}"
 [ "$NO_LIVE" = 1 ] && scope="$scope（已排除真实层）"
 step "车道=$scope  副本=$copy_short  node=$(node -v)"
@@ -175,7 +196,7 @@ LIVE_SPEC="tests/e2e-real-llm-machine.spec.ts"
 # 真要「唯一检查入口」的验收口径（`node --run test`），照 §0.1.1 的手工等价跑法在副本里跑它。
 log=$(mktemp)
 typeslog=$(mktemp)
-trap 'rm -f "$log" "$typeslog"' EXIT
+trap 'rm -f "$log" "$typeslog" "$buildlog"' EXIT
 step "typecheck（规范要求：与 vitest 同批跑）"
 if ! (cd "$COPY" && node --run typecheck) >"$typeslog" 2>&1; then
   tail -20 "$typeslog" | sed 's/^/  /'
@@ -198,7 +219,7 @@ else
 fi
 (cd "$COPY" && rm -f "$JSON_OUT" && "${runner[@]}" --reporter=json --outputFile="$JSON_OUT") >"$log" 2>&1
 rc=$?
-trap 'rm -f "$log" "$typeslog"; [ -n "${COPY:-}" ] && rm -f "$COPY/$JSON_OUT"' EXIT
+trap 'rm -f "$log" "$typeslog" "$buildlog"; [ -n "${COPY:-}" ] && rm -f "$COPY/$JSON_OUT"' EXIT
 
 # —— 6. 读数汇总：逐文件四态 + loud skip 原文 + 汇总行（**绿红都收**）——
 echo ""

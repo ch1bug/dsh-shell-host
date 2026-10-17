@@ -147,6 +147,8 @@ bash <repo>/scripts/msys-lane.sh --no-sync        # 只验当前副本提交，�
 - 权威树先与 `origin` 对齐，副本按 `--prune --tags --force` + `merge --ff-only` 同步（口径见 §0）；
 - 两树同提交提示（`AGENTS.md` 的硬约束）、副本同步后仍干净；
 - 四个 `DSH_E2E_*` 一律**推导成 Windows 形态**（`cygpath -w`），避免下面那条路径形态坑；
+- 同步后**重建副本 `lib/`**（`node --run build`，实测 ≈2s）：`lib/` 被 gitignore，同步只搬源码 ——
+  不重建就是「新 spec + 旧构件」的**空心绿**（三档 e2e 安装/打包的正是它）；
 - 读数汇总**绿红都收**：逐文件行、`!! SKIP (loud)` 行数、隐私扫描读数、退出码；红时把末 40 行原文打出来。
 
 手工等价跑法（脚本不存在或要单独调时用）：
@@ -158,6 +160,7 @@ export DSH_E2E_PLUGIN_DIR='C:/msys64/home/<user>/dsh-shellhost-src'   # Windows 
 export DSH_E2E_HOST_DIR='C:/msys64/home/<user>/dsh-host-src'
 export DSH_E2E_NODE='C:/Program Files/nodejs/node.exe'
 export DSH_E2E_PNPM_DIR='C:/msys64/home/<user>/dsh-host-src/node_modules/.bin'
+node --run build      # 构件是副本的 lib/（gitignore，同步搬不动它）——先重建再跑
 node --run test
 ```
 

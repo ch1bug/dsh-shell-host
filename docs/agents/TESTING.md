@@ -18,6 +18,9 @@
 - **收集口径**：unit 车道按**位置**收集（`#44`）—— 新增 `tests/**/*.spec.ts` 无需登记；machine 车道是
   `vitest.config.ts` 的显式清单（只放串行、碰真实环境的档）。所以新增/改动 spec 时不必再去读元守卫档
   确认"要不要登记"。
+- **计费档（真实端点）别用单档出绿**：`tests/e2e-real-llm-machine.spec.ts` 的绿路径必然跑到环 6
+  （真实端点，一次 ≈22k token）。迭代只跑**红路径 / 变异单档**（环 3 一红就按名阻断环 4–6，零 token），
+  绿路径读数交给 `node --run test` —— AC 要的本来就是它。#101 会话实测：4 次变异单档共 ~36s、0 token。
 - **验收口径**仍只有 `node --run test`：`--lane` 的输出自带「非验收口径」提示，别把单车道读数当验收。
 
 本仓高危面：**loader 行 / 组合树 / 入口导出（pty·terminal·wsl）/ 原生件路径 /
@@ -139,12 +142,18 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 分工表、同步命令、`core.autocrlf` 对齐与实测教训见
 [dev-environment.md](../dev-environment.md) §0（**唯一来源**）。
 
-测试相关的两条推论：
+测试相关的三条推论：
 
 - **e2e 用临时 DSH_HOME**（`os.tmpdir` + `--port 0`），不碰常驻实例，也不碰副本的
-  profile —— 所以跑测试不需要先同步副本。
-- **副本不同步就跑 e2e** 会测到旧代码：`tests/` 与 `lib/` 都来自副本自己的树。
-  跑 e2e 前先确认两边 `main` 同提交。
+  profile —— 所以跑测试不需要先同步副本的 profile。
+- **构件来自副本，spec 来自哪棵树取决于你在哪跑**：三档 e2e 安装/打包的是
+  `DSH_E2E_PLUGIN_DIR`（默认 = 部署副本，见 `tests/helpers/e2e-install.ts`）；在**副本里**跑时
+  spec 也来自副本，在**权威树**跑 `node --run test` 时 spec 来自工作树、只有构件来自副本。
+  两边 `main` 同提交仍要确认（不同即说明有人在副本里提交过）。
+- **同步 ≠ 重建**：构件来自副本的 `lib/`，而同步搬不动它（机制与环境事实的**唯一来源**：
+  [dev-environment.md](../dev-environment.md) §0.1.1）—— 改了 `src/` 而没重建，e2e 拿旧构件跑出的
+  绿是**空心绿**（恰在「证明交付构件可用」这层哑火）。`bash scripts/msys-lane.sh` 同步后
+  **自动重建**（实测 ≈2s）；手工在 Windows 侧跑全量前，先在副本里 `node --run build`。
 
 ## 写测试时会踩的坑
 
