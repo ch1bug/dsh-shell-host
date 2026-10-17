@@ -75,8 +75,8 @@ msys2 的 `HOME` 与 PATH 都不指向 Windows 侧，直接在里面跑 git/node
    **全量行尾差异**（实测 123 个文件 "modified"，`git diff --ignore-cr-at-eol --stat`
    为空），`merge --ff-only` 因此报「本地修改将被覆盖」。判别：**忽略行尾后为空
    即纯噪音**，可安全 `checkout -- .`；非空才是真实改动。
-2. **ucrt64 node 优先于 Windows node** → ucrt64 上报 `platform=win32-x64-gnu`，而
-   rolldown 等原生件只发布 `-msvc` 绑定（见 §4）。
+2. **ucrt64 node 优先于 Windows node** → 构建 / 打包会在原生件绑定上崩掉。机制、上游事实与 B1
+   分工**只在 §4.2 记一次**（那里有判别式、registry 读数与可跑的复现），本处不复述。
 
 引导做法（**Windows node 必须先于 ucrt64**，并复用 Windows 的 git/gh 配置与凭据）：
 
@@ -328,18 +328,67 @@ dsh plugin --profile dsh-host-dev add ~/dsh-shellhost-src             # ② 注�
 
 pnpm 加载 N-API 原生件即 `napi-sys … Node-API symbol has not been loaded` → panic
 abort（`--ignore-scripts` 也一样）。绕行 = `--package-import-method=copy`（关硬链接）
-**且用 Windows node 装**。（本插件包几乎纯 JS，纯 ucrt64 能过 —— 结论不可类推。）
+**且用 Windows node 装**。（本插件包几乎纯 JS，但**构建面**仍卡在 rolldown 的绑定上 —— 见 §4.2；
+结论不可类推。）
 
-### 4.2 构建期原生件缺口
+### 4.2 构建期原生件缺口（ucrt64 node 下 rolldown 拿不到绑定）—— **#81 结论：不承诺 msys2 侧构建**
 
-ucrt64 node 上报 `platform=win32-x64-gnu`，而 rolldown 等只发布 `-msvc` 绑定，
-且 `@rolldown/binding-win32-x64-gnu` **在 npm 上不存在** → 打包必须走
-**Windows node**。B1 分工：
+**判别不是 `platform`**：ucrt64 node 实测上报的仍是标准 `win32 x64`（node v24.21.0、ABI 137）。
+rolldown 看的是 **`process.config.variables`** 里的两个值 —— 本机实测两个 node 各有一组：
+
+| 键 | ucrt64 node | Windows node |
+|---|---|---|
+| `shlib_suffix` | `dll.a` | `so.137` |
+| `node_target_type` | `shared_library` | `executable` |
+
+判定在 rolldown 的绑定加载器里。该文件在 pnpm 的虚拟 store 下、文件名带内容哈希，用
+`Get-ChildItem node_modules/.pnpm/rolldown@1.2.11/node_modules/rolldown/dist/shared -Filter 'binding-*.mjs'`
+定位（本机 = `binding-BY0qR5iS.mjs`）：
+
+- `:132`：`shlib_suffix === "dll.a" || node_target_type === "shared_library"` → 选
+  `@rolldown/binding-win32-x64-gnu`（`:134-141`）；**ucrt64 node 两个条件都命中**；
+- `:146-160`：否则选 `@rolldown/binding-win32-x64-msvc`（Windows node 走这条）；
+- wasm 回退候选：`:546`（`./rolldown-binding.wasi.cjs`）与 `:567`（`@rolldown/binding-wasm32-wasi`）。
+
+**上游事实（2026-10-17 查询）**：
+
+- `npm view @rolldown/binding-win32-x64-gnu@1.2.11 version` → **`E404`**（未发布）；
+- `npm view @rolldown/binding-wasm32-wasi@1.2.11 version` → `1.2.11`（存在）。
+
+**复现（只读：不装包、不碰工作树；下条命令 2026-10-17 已逐字跑过）**：
+
+```powershell
+$entry = Join-Path $PWD 'node_modules/.pnpm/rolldown@1.2.11/node_modules/rolldown/dist/index.mjs'  # 必须绝对路径
+& '<msys2 根>/ucrt64/bin/node.exe' -e "import('file:///'+process.argv[1].replace(/\\/g,'/')).catch(e=>{let c=e;for(let i=0;c&&i<5;i++){console.log('['+i+'] '+c.message.split('\n')[0]);c=c.cause}})" $entry
+# → [0] Cannot find native binding. npm has a bug related to optional dependencies …
+#   [1] Cannot find module '@rolldown/binding-wasm32-wasi'
+#   [2] Cannot find module './rolldown-binding.wasi.cjs'
+#   [3] Cannot find module '@rolldown/binding-win32-x64-gnu'
+#   [4] Cannot find module './rolldown-binding.win32-x64-gnu.node'
+```
+
+把上面那行的 `'<msys2 根>/ucrt64/bin/node.exe'` 换成 `node` 再跑一遍 = **阳性对照**：打印
+`LOADED`（Windows node 走 msvc 绑定）。`<msys2 根>` 本机为 `C:/msys64`，非默认安装根按实际替换。
+
+**结论（#81，本会话判定）：本仓不承诺 msys2 ucrt64 侧构建**，四条理由：
+
+1. rolldown 的 gnu 目标在上游**没有产物**（上面那条事实），本仓无法提供；
+2. 声明 wasm 回退（`@rolldown/binding-wasm32-wasi`）只解决**打包器**这一层：版本必须与 tsdown 带的
+   rolldown **锁死同步**（tsdown 一升级就得跟着改 pin，漂移即再失败），且 #80（tsdown 在 msys node
+   下的 tsconfig 路径翻倍）还挡在后面 —— 两层串起来才可能"能跑"；
+3. 它换不到本仓实际使用的流程：msys 侧引导脚本（`scripts/msys-env.sh`）做的就是**把 Windows node
+   前置**，而 `scripts/msys-lane.sh:106-108` 对生效 node 是 ucrt64 的情形**响亮失败**并提示设
+   `DSH_MSYS_WIN_NODE_DIR` —— 没有流程会从那条链上拿产物；
+4. **AC2 同样不做**：`vitest run` 的启动也经 vite/rolldown 的绑定解析，缺的是同一个 gnu 产物；
+   本仓的构建与套件入口都把 Windows node 前置（`scripts/msys-env.sh`），生效 node 是 ucrt64 时
+   车道直接**响亮失败**（见上条）。
+
+B1 分工（结论不变；`tsc` 那一行沿用 #80 的取证读数，本会话未重跑）：
 
 | 环节 | 环境 |
 |---|---|
 | `tsc` typecheck / 声明产出（纯 JS） | msys2 ucrt64 node 可 |
-| `tsdown` 打包（rolldown） | **必须 Windows node** |
+| `tsdown` 打包（rolldown） | **必须 Windows node**（机制见上） |
 
 ### 4.3 构建产物必须清理（切 tag / 发布）
 

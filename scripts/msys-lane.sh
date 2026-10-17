@@ -104,7 +104,7 @@ tree_status() { # tree_status <repo> <label>
 . "$SCRIPT_DIR/msys-env.sh" || fail "引导脚本 source 失败（$SCRIPT_DIR/msys-env.sh）"
 command -v node >/dev/null 2>&1 || fail "PATH 上仍没有 node —— 见 scripts/msys-env.sh 的警告"
 case "$(command -v node)" in
-  */ucrt64/*) fail "生效的 node 是 ucrt64：构建/套件会崩在原生件上（-msvc 绑定）。设 DSH_MSYS_WIN_NODE_DIR 后重试" ;;
+  */ucrt64/*) fail "生效的 node 是 ucrt64：构建/套件会崩在原生件绑定上（rolldown 与 gnu 绑定，见 docs/dev-environment.md §4.2）。设 DSH_MSYS_WIN_NODE_DIR 后重试" ;;
 esac
 
 # —— 1. 副本前置检查 ——

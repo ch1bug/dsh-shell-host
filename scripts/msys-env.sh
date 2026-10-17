@@ -16,10 +16,10 @@
 #   2. **不写死任何本机盘符 / 用户路径**（本仓是 PUBLIC 仓）：所有目录都经
 #      `cygpath` / `command -v` / 注册表默认位置**在运行时推导**；确实要指到非默认位置时
 #      用下面四个 `DSH_MSYS_*` 变量覆盖，而不是改本文件。
-#   3. **Windows node 必须排在 ucrt64 node 之前**：ucrt64 node 上报 `platform=win32-x64-gnu`，
-#      而本仓构建链的 rolldown 只发布 `-msvc` 绑定 → 用它跑套件会以缺 DLL 崩在原生件上
-#      （实测；见 docs/dev-environment.md §4）。本脚本会把 Windows node 目录前置，并在
-#      自检里**点名**当前生效的是哪一个。
+#   3. **Windows node 必须排在 ucrt64 node 之前**：ucrt64 node 的 `process.config.variables`
+#      会让 rolldown 去选**未发布**的 gnu 绑定 → 用它跑构建 / 套件会崩在原生件上。机制、上游
+#      事实与 B1 分工**只在 docs/dev-environment.md §4.2 记一次**，本处不复述。本脚本会把
+#      Windows node 目录前置，并在自检里**点名**当前生效的是哪一个。
 #   4. **不提供 `dsh` shim**：本仓 e2e 挂具用显式 env（`DSH_E2E_NODE` /
 #      `DSH_E2E_PLUGIN_DIR` / `DSH_E2E_HOST_DIR` / `DSH_E2E_PNPM_DIR`）直接驱动宿主 CLI
 #      （`node <host>/apps/cli/src/bin.ts`），**不依赖 PATH 上的 `dsh`** —— 这是本仓相对
