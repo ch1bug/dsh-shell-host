@@ -74,7 +74,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { stopChild } from "./helpers/e2e-chain.ts";
+import { MY_ROWS, stopChild } from "./helpers/e2e-chain.ts";
 import {
   HOST_DIR,
   NODE,
@@ -345,6 +345,17 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
         });
         launchUrl = launch;
 
+        // Failure attribution comes BEFORE the cleanliness check, on purpose
+        // (#101): when stderr is not empty, the first red must say whether it
+        // blames this bundle — by row name or by package name — because that is
+        // what separates an environment gap from our own bug (TESTING.md).
+        // Asserting emptiness first would abort on the bare fact and never reach
+        // the attribution. Same three assertions in the same order as the packed
+        // tier's boot ring (`e2e-tarball-machine` ring 4); the row list lives in
+        // exactly one place, the shared helper.
+        const blamed = MY_ROWS.filter((row) => new RegExp(`\\b${row}\\b`, "u").test(instErr));
+        expect(blamed, "stderr never blames this bundle's loader rows").toEqual([]);
+        expect(instErr, "stderr never blames this bundle").not.toContain("dsh-shell-host");
         expect(instErr.trim(), "instance stderr is clean at startup").toBe("");
         port = Number(new URL(launch).port);
         expect(Number.isInteger(port) && port > 0, "instance bound a real port").toBe(true);

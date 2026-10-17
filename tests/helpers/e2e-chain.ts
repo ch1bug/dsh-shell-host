@@ -15,9 +15,10 @@
  * a helper, not a second copy inside each spec. The install/env/gate half is in
  * `tests/helpers/e2e-install.ts`.
  *
- * The real-LLM tier (`e2e-real-llm-machine`) shares ONE piece of this module —
- * `stopChild()` (#97): its provider wiring, credential route and RPC envelope
- * differ, so it keeps its own. The rest of this module is the mock tiers' chain.
+ * The real-LLM tier (`e2e-real-llm-machine`) shares TWO pieces of this module —
+ * `MY_ROWS` (#101) and `stopChild()` (#97): its provider wiring, credential
+ * route and RPC envelope differ, so it keeps its own. The rest of this module
+ * is the mock tiers' chain.
  *
  * @module tests/helpers/e2e-chain
  */
