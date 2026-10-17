@@ -35,7 +35,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { chunkFamilyDeclarations, compileFilesMatcher, duplicateChunkFamilies, entryTargets, isDirectInvocation, manifestTargets, unexpectedPackedFiles, untarGz } from "../scripts/verify-pack.mjs";
+import { chunkFamilyDeclarations, compileFilesMatcher, duplicateChunkFamilies, entryTargets, isDirectInvocation, main, manifestTargets, unexpectedPackedFiles, untarGz } from "../scripts/verify-pack.mjs";
 
 /** 被测脚本自己的路径与 URL（与 CLI 启动时 `process.argv[1]` / `import.meta.url` 同源）。 */
 const SCRIPT_URL = new URL("../scripts/verify-pack.mjs", import.meta.url).href;
@@ -550,6 +550,116 @@ describe("import 本脚本零副作用", () => {
       writeFileSync(probe, `await import(${JSON.stringify(SCRIPT_URL)});\n`);
       importInChild([probe]);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("loud skip 路径（#90）：注入驱动，environment-independent", () => {
+  /**
+   * #90：**loud skip 路径**（`findPacker()` 返回 null）不得在 %TEMP% 下遗留 packdir。
+   *
+   * 实测症状（修复前）：`main()` 先 `mkdtempSync(join(tmpdir(), 'dsh-shell-host-pack-'))` 建
+   * packdir，**紧接着**才判 `packer === null`；而原 loud-skip 分支在**自己的 `try` 内**直接
+   * `process.exit(0)` 硬退出 ⇒ 该 `try` 的 `finally { rmSync(packdir, …) }` **不会执行**：
+   * 每次 skip 都永久留下一个空目录。实证（本机 %TEMP%，**该族随时间仍在增长 ⇒ 这里不写封闭
+   * 枚举**）：截至 2026-10-17 至少 3 个，例如 `dsh-shell-host-pack-oj6zqA`（2026-10-16 19:26 建）、
+   * `dsh-shell-host-pack-flWQo0`（2026-10-17 20:09 建）、`dsh-shell-host-pack-mZ30Qt`（同日 20:31 建，
+   * 由一次变异取证留下）—— 泄漏真实发生过，不是推演。修复把 `process.exit` 换成 `return <number>`
+   * （入口改 `process.exit(await main())`），回收因此走正常控制流。
+   *
+   * 顺带一条**为什么它长期没被看见**：`docs/agents/TESTING.md` §证据纪律「回收要读总账」给的过滤器
+   * 是 `dsh-shellhost-*`（`shellhost` 无连字符），**匹配不到**本族的 `dsh-shell-host-pack-*` ——
+   * 按那条命令扫，计数恒为 0。故本族的残留只在本用例的差集判据里现形。
+   *
+   * **为什么本机现在能实证（第一轮的教训）**：`findPacker()` 的候选里有一条**硬编码**
+   * `C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js`，它排在 PATH 兜底**之前**，而本机
+   * 该路径真实存在 ⇒ 真实环境下 `findPacker()` **永远**返回 npm-cli，loud-skip 分支**结构性
+   * 不可达**。第一轮那条用例因此只能恒为 loud skip（0 实证），在打包器可达的机器上反而会真跑
+   * 一次完整 `npm pack`（重 e2e）。本轮改用 `main({ detect })` 的**注入缝**：注入
+   * "所有候选都不存在 + 两个 PATH 兜底都抛错" ⇒ `findPacker()` 必然返回 null ⇒ **必定**走
+   * loud-skip。于是本用例在任何机器上读数一致：**不依赖打包器是否可达，也不 spawn 打包器**。
+   *
+   * 判据为什么能判：
+   *   - **判据只看 %TEMP% 的前缀**：packdir 恒建在 `tmpdir()` 下、前缀写死
+   *     `dsh-shell-host-pack-`；本用例自己的临时目录用 `verify-pack-loudskip-` 前缀（见 `tempDir`）
+   *     ⇒ 两者前缀不重叠，直接读 `tmpdir()` 条目即可，不必在用例与脚本之间做集合差。
+   *     且**只**拿调用前后两次快照的**差集**判红（不是"快照必须为空"）：本机有 2 个修复前历史
+   *     残留，用绝对计数会假红 —— 残留是泄漏的后果，不是前提。
+   *   - **空 `package/` 让判据 1/1b 拿到空输入**：`repoRoot` 恒取被测脚本所在目录、`pkg` 恒读其
+   *     `package.json`（与 cwd 无关），故无法自造一份 manifest。改为铺设空的 `package/` 目录 ⇒
+   *     `entryTargets` / `manifestTargets` 全空 ⇒ missing 是**空集合**（不是"检查通过"）⇒
+   *     不进早退分支（`return 1`）⇒ 抵达建 packdir 与 skip 判据。
+   *   - **`probe` 必须抛错才算"不可用"**（与默认 `execFileSync` 的语义一致：不抛 = 命中）。
+   *     故用 `() => { throw … }`，**不能**用空函数当"未找到"。
+   *
+   * ⚠️ 它**只**锁 #90 的**回收面**（loud-skip 时 packdir 是否遗留）。以下都**不在**覆盖内，
+   * 别让它冒充更强的保证：打包器在场时的清理路径；判据 3/4/5 的判定正确性；loud-skip 文案的
+   * 逐字正确性（本用例只按子串判"确实走到了这个分支"）；`findPacker()` 候选数组/顺序的语义
+   * （那由其它用例与本文件的注入形状间接反映）。
+   *
+   * ## 变异取证的纪律（本轮踩过的坑，写下来免得重犯）
+   *
+   * 这条用例的「红」是靠**变异**取到的（实测：删掉 `finally` 里的 `rmSync(packdir)` 后本用例
+   * 报 `loud skip 在 %TEMP% 下遗留了 packdir：dsh-shell-host-pack-…`）。取红时**绝不写产品文件**：
+   * 本仓未提交改动没有 git 保护，`git cat-file blob > file`（PowerShell 重定向不落盘）与
+   * `Set-Content -NoNewline`（压平换行 ⇒ 整个文件变一行）都是高危还原手法，本轮真的因此损坏过
+   * `scripts/verify-pack.mjs`。正确做法是让**变异体待在独立目录**，用 vitest `resolve.alias`
+   * 覆盖本文件对 `../scripts/verify-pack.mjs` 的 import；或利用上面的注入缝在**用例内**注入
+   * 退化行为。至少要还原时用 `git checkout -- <path>`，不要手工重定向。
+   *
+   * 另一条同源的教训：判断"文件到底是什么"要**读工作树**。`git grep` 默认搜 index / HEAD，
+   * 而 index 可能停在旧版本（`git add` 滞后）⇒ 会用 0 命中给出与工作树相反的结论。
+   * 0 命中先解释再采信（`git grep --no-index` 或直接读文件）。
+   */
+  it("THE POINT (#90): a loud skip leaves no packdir behind in %TEMP%", async () => {
+    // 泄漏面：脚本的 packdir 前缀（写死在 main() 里）；本用例目录名是另一个前缀。
+    const packdirsInTmp = () =>
+      readdirSync(tmpdir())
+        .filter((name) => name.startsWith("dsh-shell-host-pack-"))
+        .sort();
+
+    /** 注入"必然找不到打包器"：候选全判不存在 + 两个 PATH 兜底都抛错 ⇒ findPacker() === null。 */
+    const noPacker = {
+      candidateExists: () => false,
+      probe: () => {
+        throw new Error("no packer on PATH");
+      },
+    };
+
+    const dir = tempDir("loudskip");
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    try {
+      // 空 `package/` 是判据 1/1b 的**空输入**：没有指针要查 ⇒ missing 为空 ⇒ 不早退。
+      mkdirSync(join(dir, "package"));
+      const before = packdirsInTmp();
+
+      // 捕获 loud-skip 的 `console.warn`（脚本用它输出那行 `!! SKIP (loud)`）。
+      // 只在这一段替换全局 console.warn，`finally` 里无条件还原。
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(" "));
+      };
+
+      // 注入驱动：main 返回退出码 number（不再 process.exit）⇒ 同进程内即可断言。
+      const status = await main({ detect: noPacker });
+
+      // (a) 防空转假绿：必须**真的**走到了 loud-skip 分支 —— 这正是当初揪出前提错误的那条断言。
+      //     若注入没接上（例如探针把 detect 参数丢了），这里会立刻红，而不是安静地"零遗留"。
+      expect(warnings.join("\n"), "必须真的走到 loud skip 分支（否则本用例什么都没验）").toContain(
+        "verify-pack: !! SKIP (loud)",
+      );
+      // (b) loud skip 是诚实的退出：返回 0，而不是异常码。
+      expect(status, "loud skip 应返回 0").toBe(0);
+
+      // (c) THE POINT：packdir 建在 `try` 内；skip 分支若硬退出（修复前的 process.exit）则
+      //     `finally` 不执行 ⇒ %TEMP% 里会多出一个 `dsh-shell-host-pack-*`。差集判红，
+      //     不用绝对计数（本机有历史残留，绝对计数会假红）。
+      const after = packdirsInTmp();
+      const leaked = after.filter((name) => !before.includes(name));
+      expect(leaked, `loud skip 在 %TEMP% 下遗留了 packdir：${leaked.join(", ")}`).toEqual([]);
+    } finally {
+      console.warn = originalWarn;
       rmSync(dir, { recursive: true, force: true });
     }
   });

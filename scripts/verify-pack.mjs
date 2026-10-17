@@ -28,9 +28,16 @@
  * （导出，见 `tests/verify-pack.spec.ts` 的离线单测）；
  * `findPacker` 亦导出但**非纯**（碰文件系统与 PATH 探针）：装箱交付链 e2e 现场打包时复用它，
  * 否则打包器候选顺序会有第二份。
+ * `main` **亦导出（#90）且同样非纯** —— 它碰真实文件系统与打包器，**不在**上面那份纯函数清单里。
+ * 导出它是刻意的取舍，理由：#90 修的是**控制流属性**（`return` 取代 `process.exit` ⇒ 那条 `finally`
+ * 得以执行、`packdir` 得以回收），而该属性**只有 `main` 的控制流能演示** —— 断言 `findPacker`
+ * 返回 `null` 证明不了它；不导出则用例只能恒 skip 或只做纯函数断言，锁不住 #90 真正修的属性。
+ * 这与 `findPacker` 的导出同属"非纯但为可测性/复用而导出"的一类（同形先例见上），**不是顺手导出**。
+ * 用例驱动它时**必须**注入 `detect` 制造"必然找不到打包器"，否则会真的 spawn 打包器。
  * `isDirectInvocation` **原样转出**自 `scripts/script-entry.mjs`（#85 的单一来源，本文件不再自带
  * 一份实现）。顶层流程收进 `main()` —— **只有直接执行才跑 CLI**，import 本模块零副作用
- * （改前顶层 `await` 会直接打包 + 写 `.scratch/`）。
+ * （改前顶层 `await` 会直接打包 + 写 `.scratch/`）。导出 `main` **不改变**这条保证：模块求值时
+ * `main` 只是被定义、不被调用，CLI 仍只由下方 `isDirectInvocation` 守卫触发。
  * @module dsh-shell-host/scripts/verify-pack
  */
 
@@ -92,8 +99,26 @@ export function untarGz(tarball, destination) {
  *
  * 导出（#89）：装箱交付链 e2e 要对**同一个**插件树现场打包，复用这份候选顺序；
  * 第二份实现在两处各漂一次就是等着「这个宿主找得到打包器、那个找不到」。
+ *
+ *  ## 可测性注入缝（#90，人类裁决）
+ *
+ *  候选里那条**硬编码** `C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js` 在本机
+ *  **真实存在**，且排在 PATH 兜底**之前** ⇒ 真实环境下本函数**永远**返回 npm-cli，
+ *  `main()` 的 loud-skip 分支因而**结构性不可达**：仓内回归用例只能恒为 loud skip（0 实证），
+ *  在打包器可达的机器上反而会真跑一次完整 `npm pack`（重 e2e）。于是开这个缝让用例注入
+ *  「必然找不到打包器」。
+ *
+ *  **注入只解决可测性，不重构查找语义**：候选数组、候选顺序、`existsSync` 而非 `access`
+ *  的理由**一律不变**（票面 Out of scope：不改打包器查找的候选顺序与路径）。不传参时两个
+ *  依赖回落到本模块真实 import 的 `existsSync` / `execFileSync` ⇒ 探测逐字等同于改动前。
+ *
+ *  @param detect              可选注入：`{ candidateExists, probe }` 两个探测依赖。
+ *  @param detect.candidateExists 判定硬编码候选是否存在（默认 `node:fs` 的 `existsSync`）。
+ *  @param detect.probe         PATH 兜底探针（默认 `node:child_process` 的 `execFileSync`）；
+ *                              **同步**语义 —— 它不抛即视为命中，抛错即视为该名字不可用。
+ *  @returns `{ kind, path }`，或找不到时 `null`（调用方据此 loud skip）。
  */
-export function findPacker() {
+export function findPacker({ candidateExists = existsSync, probe = execFileSync } = {}) {
   const candidates = [
     join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
     join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
@@ -103,12 +128,12 @@ export function findPacker() {
   // throws here, so every candidate would "match" and we would exec a path that
   // does not exist.
   for (const candidate of candidates) {
-    if (existsSync(candidate)) return { kind: 'npm-cli', path: candidate }
+    if (candidateExists(candidate)) return { kind: 'npm-cli', path: candidate }
   }
   // PATH-resolved fallbacks: `shell: true` because these are .cmd shims.
   for (const name of ['npm', 'pnpm']) {
     try {
-      execFileSync(name, ['--version'], { stdio: 'ignore', shell: true })
+      probe(name, ['--version'], { stdio: 'ignore', shell: true })
       return { kind: name, path: name }
     } catch {
       continue
@@ -338,8 +363,23 @@ async function missingInTree(pairs) {
   return missing
 }
 
-/** CLI 主体（碰真实文件系统 / 打包器，故不导出、不由离线单测覆盖）：装箱 → 解包 → 四条断言。 */
-async function main() {
+/** CLI 主体（碰真实文件系统 / 打包器，故覆盖它要真实环境；见下方"导出"说明）：装箱 → 解包 → 四条断言。
+ *
+ *  **返回退出码（#90），不在内部 `process.exit`**：loud-skip 分支原先在自己 `try` 内直接
+ *  `process.exit(0)`，而 `process.exit` 同步终止进程 ⇒ 该 `try` 的 `finally`（`rmSync(packdir)`）
+ *  永远跑不到，`%TEMP%` 每次遗留一个空的 `dsh-shell-host-pack-*`。改为 return 后由调用点统一
+ *  `process.exit(await main())`，回收走正常控制流。
+ *  判据 1/1b 是**早失败**（`return 1`：指针都不存在时没必要继续）；判据 2/3/4/5 用局部
+ *  `exitCode` 累积（保住"多条判据可同时红、不提前返回"的既有语义），末尾 `return exitCode`。
+ *
+ *  `detect` 是给用例的**可选**注入（#90），原样透传给 `findPacker()`；不传时探测依赖
+ *  回落到真实实现 —— 真实入口（下方调用点）**不传参**，故行为零变化。
+ *
+ *  @param detect 见 `findPacker`；省略即用真实文件系统 / 真实 `execFileSync`。
+ *
+ *  导出（#90）见 @module 头注：非纯，导出只为让用例能注入驱动 loud-skip 的回收面。
+ */
+export async function main({ detect } = {}) {
   const pkg = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'))
   const allTargets = entryTargets(pkg.exports)
   const entries = allTargets.filter(([, target]) => !target.includes('*'))
@@ -353,12 +393,14 @@ async function main() {
   const importableEntries = [...new Map(entries.filter(([entry]) =>
     entry !== './client' && entry !== './package.json'
   ).map(([entry]) => [entry, true])).keys()]
+  // 判据 2/3/4/5 共同累积的退出码（#90）：这些分支**不提前返回**，末尾一次性 return。
+  let exitCode = 0
 
   // 1. every concrete pointer names a real file in the working tree.
   const missing = await missingInTree(entries)
   if (missing.length > 0) {
     console.error('verify-pack: exports pointers to missing files:\n  ' + missing.join('\n  '))
-    process.exit(1)
+    return 1
   }
 
   // 1b. 同一存在性判据，管到 exports 之外的契约指针（#88）：工作树里就没有的文件，
@@ -366,7 +408,7 @@ async function main() {
   const manifestMissing = await missingInTree(manifestPointers)
   if (manifestMissing.length > 0) {
     console.error('verify-pack: manifest pointers to missing files:\n  ' + manifestMissing.join('\n  '))
-    process.exit(1)
+    return 1
   }
 
   // 2. every entry imports under Node self-reference from the unpacked tarball.
@@ -375,7 +417,7 @@ async function main() {
   try {
     // Pack through a shim-free packer: `pnpm` may be absent from PATH (the #79
     // class of failure) and the bundled node ships no npm at all.
-    const packer = findPacker()
+    const packer = findPacker(detect)
     if (packer === null) {
       // 文案按 #88 的 AC **逐字不变**（此后存在性检查还覆盖了 manifest 指针，但那句只陈述
       // exports 指针"只做了存在性检查"——仍是事实，故不借机改写 Skip 面）。
@@ -384,7 +426,7 @@ async function main() {
           '本次未验证 tarball 完整性：exports 指针只做了存在性检查。',
       )
       rmSync(unpackRoot, { recursive: true, force: true })
-      process.exit(0)
+      return 0
     }
     const args = ['pack', '--pack-destination', packdir]
     const out = packer.kind === 'npm-cli'
@@ -412,7 +454,7 @@ async function main() {
   try {
     execFileSync(process.execPath, [probe], { cwd: unpacked, stdio: 'inherit' })
   } catch {
-    process.exitCode = 1
+    exitCode = 1
   } finally {
     rmSync(probe, { force: true })
   }
@@ -432,7 +474,7 @@ async function main() {
   const notPacked = [...entries, ...manifestPointers].filter(([, target]) => !packedFiles.has(normalize(target)))
   if (notPacked.length > 0) {
     console.error('verify-pack: tarball is missing packed targets:\n  ' + notPacked.map(([e, t]) => `${e} -> ${t}`).join('\n  '))
-    process.exitCode = 1
+    exitCode = 1
   } else {
     console.log(`verify-pack: all ${entries.length} export entries packed and importable`)
   }
@@ -441,8 +483,8 @@ async function main() {
   //    判据 3 只问"声明目标在不在"，而 `lib/pty-*.js` 这类宽松 glob 把上一代 chunk 也合法声明了 ——
   //    于是历史 chunk 能一直跟着 tarball 走而**全绿**（实测：`lib/pty-C0_H63de.js` + `lib/pty-zzz-fake.js`
   //    会一起进 tarball，且旧判据放行）。用已 walk 出的 `packedFiles`（不第二次 walk），
-  //    用 `process.exitCode` 累积报告 —— 与判据 3、5 一样**不提前返回**；判据 1/1b 则是**早失败**
-  //    （`process.exit(1)`：指针都不存在时没必要继续，那时本判据不会执行）。
+  //    用 `exitCode` 累积报告 —— 与判据 3、5 一样**不提前返回**；判据 1/1b 则是**早失败**
+  //    （`return 1`：指针都不存在时没必要继续，那时本判据不会执行）。
   const duplicateFamilies = duplicateChunkFamilies(pkg.files, packedFiles)
   if (duplicateFamilies.length > 0) {
     console.error(
@@ -453,7 +495,7 @@ async function main() {
       console.error(`  ${family} -> ${matches.length} matches: ${matches.join(', ')}`)
     }
     console.error('verify-pack: clean lib/ (node --run build) and re-run.')
-    process.exitCode = 1
+    exitCode = 1
   } else {
     console.log(`verify-pack: no chunk family has two generations in tarball (${packedFiles.size} packed)`)
   }
@@ -469,12 +511,14 @@ async function main() {
       'verify-pack: tarball carries lib/ files outside the package.json "files" face:\n  ' +
         unexpected.join('\n  '),
     )
-    process.exitCode = 1
+    exitCode = 1
   } else {
     console.log(
       `verify-pack: no unexpected lib/ files in tarball (defensive check; ${packedFiles.size} packed)`,
     )
   }
+
+  return exitCode
 }
 
 /**
@@ -489,4 +533,6 @@ async function main() {
 export { isDirectInvocation }
 
 // 只有**直接执行**才跑 CLI：被单测 import 时不得打包、不得写 `.scratch/`、不得 spawn 打包器。
-if (isDirectInvocation(process.argv[1], import.meta.url)) await main()
+// 退出码由 `main()` 的返回值决定 —— 与 `scripts/privacy-scan.mjs` 同形（#90：main 内不再
+// `process.exit`，否则 loud-skip 会跳过回收 `packdir` 的 `finally`）。
+if (isDirectInvocation(process.argv[1], import.meta.url)) process.exit(await main())
