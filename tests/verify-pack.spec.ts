@@ -41,7 +41,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { chunkFamilyDeclarations, compileFilesMatcher, duplicateChunkFamilies, entryTargets, guardSelfCheck, isDirectInvocation, main, manifestTargets, unexpectedPackedFiles, untarGz } from "../scripts/verify-pack.mjs";
+import { chunkFamilyDeclarations, compileFilesMatcher, duplicateChunkFamilies, emittedDeclarationOf, entryTargets, guardSelfCheck, isDirectInvocation, main, manifestTargets, strayTypeDeclarations, unexpectedPackedFiles, untarGz } from "../scripts/verify-pack.mjs";
 
 /** 被测脚本自己的路径与 URL（与 CLI 启动时 `process.argv[1]` / `import.meta.url` 同源）。 */
 const SCRIPT_URL = new URL("../scripts/verify-pack.mjs", import.meta.url).href;
@@ -120,6 +120,26 @@ describe("entryTargets", () => {
 
   it("an empty map flattens to an empty list", () => {
     expect(entryTargets({})).toEqual([]);
+  });
+
+  it("THE PREMISE (#92): the real exports map has no `./client` entry — the dead condition stays dead", () => {
+    // `main()` 里 `importableEntries` 曾排除 `entry !== './client'`；ADR-0013 删掉 web bundle 后
+    // `exports` 里**没有** `./client`，该半边恒真（本票的清理依据）。这条锁**前提**而不是锁那段
+    // 代码：若将来有人把 `./client` 加回 `exports`，本用例立刻红，逼他重新审视那句排除到底还要不要
+    // —— 否则那句被删掉的排除会**静默**地不再成立（import smoke 会去 import 一个 web bundle，
+    // 在 node 侧必然失败）。
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+    expect(Object.keys(pkg.exports)).not.toContain("./client");
+    // 顺带锁住本判据读取的那份真实输入形状：9 个 entry、5 个具名 entry（`./src/*` 被通配过滤掉）。
+    const entries = entryTargets(pkg.exports).filter(([, target]) => !target.includes("*"));
+    expect(entries).toHaveLength(9);
+    expect([...new Set(entries.map(([entry]) => entry))]).toEqual([
+      ".",
+      "./package.json",
+      "./pty",
+      "./wsl",
+      "./terminal",
+    ]);
   });
 });
 
@@ -292,6 +312,171 @@ describe("guardSelfCheck", () => {
     for (const malformed of [undefined, null, 42, [], [42, null]] as never[]) {
       expect(guardSelfCheck(malformed).map((finding) => finding.code)).toEqual(["unreadable-files"]);
     }
+  });
+});
+
+describe("strayTypeDeclarations", () => {
+  /** 生产 `src/` 面的**真实**根相对路径（tsc 的 emit 根，`tsconfig.build.json`: rootDir=src）。 */
+  const realSources = ["src/detect.ts", "src/launchers.ts", "src/posix-quote.ts", "src/pty/index.ts", "src/pty/session-core.ts", "src/terminal/index.ts", "src/wsl-plugin/index.ts"];
+
+  it("THE POINT (#117): a hand-written `.d.ts` with no `src/` counterpart is flagged", () => {
+    // 票面实测（2026-10-17）：`Set-Content lib/types/zz-not-real.d.ts 'declare const zz: never'`
+    // ⇒ 该件**进 tarball**（`npm pack` 文件面含它），而四条判据**全不报警**：
+    //   - 判据 3（声明目标在不在）只问 exports 指针，不问"多出来的 .d.ts"；
+    //   - 判据 4（chunk 族）只认 `lib/*-*.js`；
+    //   - 判据 5（多余件）视它为"落在 `lib/types/**/*.d.ts` 声明面之内" ⇒ 放行（实测 `[]`）。
+    // 缺口来自**声明面的天然性质**：那条 glob 是**内容盲**的（只看路径不看内容），
+    // 而 tsc 只会产出 `src/` 里真有源码对应的那些 —— 手写件没有对应源码，故可判。
+    expect(
+      strayTypeDeclarations(
+        ["lib/types/zz-not-real.d.ts", "lib/types/pty/index.d.ts"],
+        realSources,
+      ),
+    ).toEqual(["lib/types/zz-not-real.d.ts"]);
+  });
+
+  it("NO FALSE ALARM (AC2): the real build face — 7 `.d.ts` — is clean", () => {
+    // 变异验证的另一半：正常构建（`src/` 下 7 个 `.ts` ⇒ `lib/types/` 下 7 个 `.d.ts`）
+    // **不得**被该判据误报。这 7 条是真件、真路径，一一对应。
+    expect(
+      strayTypeDeclarations(
+        [
+          "lib/types/detect.d.ts",
+          "lib/types/launchers.d.ts",
+          "lib/types/posix-quote.d.ts",
+          "lib/types/pty/index.d.ts",
+          "lib/types/pty/session-core.d.ts",
+          "lib/types/terminal/index.d.ts",
+          "lib/types/wsl-plugin/index.d.ts",
+        ],
+        realSources,
+      ),
+    ).toEqual([]);
+  });
+
+  it("the declaration maps (`lib/types/**.d.ts.map`) are NOT judged — they are not in the `files` face", () => {
+    // 边界（#111 已确立）：`lib/types/**` 整棵保留含 `.d.ts.map`，而 `files` 只声明了
+    // `lib/types/**/*.d.ts`。`.d.ts.map` 没有 `.d.ts` 那个后缀，故本判据**不碰**它 ——
+    // 收窄保留面会重现 `.d.ts.map` 静默缺口，那是 #111 明确不采纳的方向。
+    expect(
+      strayTypeDeclarations(
+        ["lib/types/detect.d.ts", "lib/types/detect.d.ts.map", "lib/types/pty/index.d.ts.map"],
+        realSources,
+      ),
+    ).toEqual([]);
+  });
+
+  it("a file outside the declared `.d.ts` face is left to `unexpectedPackedFiles` — no double reporting", () => {
+    // 分工：`lib/types/xxx.js`（非 .d.ts）不在 `lib/types/**/*.d.ts` 的声明面上 ⇒ 由判据 5
+    // 负责（`unexpectedPackedFiles` 会报它）。本判据**只**管声明面**之内**的 `.d.ts` 件，
+    // 否则同一条路径会被两条判据各报一次，读数噪声化。
+    const realFiles: string[] = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).files;
+    const paths = ["lib/types/pty/orphan.js", "lib/types/pty/index.d.ts"];
+    expect(strayTypeDeclarations(paths, realSources)).toEqual([]);
+    expect(unexpectedPackedFiles(realFiles, paths)).toEqual(["lib/types/pty/orphan.js"]);
+  });
+
+  it("a nested stray file deep under `lib/types/` is flagged too (the glob really crosses directories)", () => {
+    expect(
+      strayTypeDeclarations(["lib/types/pty/deep/deeper/zz.d.ts"], realSources),
+    ).toEqual(["lib/types/pty/deep/deeper/zz.d.ts"]);
+  });
+
+  it("findings are stably sorted, and a `./`-prefixed path counts the same", () => {
+    expect(
+      strayTypeDeclarations(
+        ["lib/types/z-last.d.ts", "./lib/types/a-first.d.ts", "lib/types/m-mid.d.ts"],
+        realSources,
+      ),
+    ).toEqual(["lib/types/a-first.d.ts", "lib/types/m-mid.d.ts", "lib/types/z-last.d.ts"]);
+  });
+
+  it("a `lib/types/` entry with no `src/` counterpart is reported even when sources are empty", () => {
+    // 前提退化（`src/` 读不到）：**不**放行 —— "读不到源码面"不是"没有杂散件"的证据。
+    // 与判据 5 的克制相反（那边形状不合法时放行、为的是不假红），这里的方向是：
+    // 源码面为空 ⇒ 任何 `.d.ts` 都无法被证明是 tsc 产出 ⇒ 全部报出（响亮，不静默）。
+    // ⚠️ 现实中 `src/` 恒非空（构建的前提），这条锁的是失败姿态不是日常路径。
+    expect(
+      strayTypeDeclarations(["lib/types/pty/index.d.ts"], []),
+    ).toEqual(["lib/types/pty/index.d.ts"]);
+  });
+
+  it("NO DISARMAMENT (复核 C1): the criterion does not depend on how `files` is written", () => {
+    // 复核实测的静默失效路径：早先那版用 `files.some(p => p.startsWith('lib/types/'))` 当
+    // 适用范围门 ⇒ `files` 一旦被宽写成 `lib/**`（`.d.ts` **照样进箱**），门判 false、
+    // 判据**静默返回空**；而 `guardSelfCheck` 只要求"存在 chunk 族"、照样放行 ——
+    // 与 #118 修的是同一族病（守卫被架空而无信号）。
+    // 修法：**取消适用范围门** —— 判据的输入 `packedPaths` **就是 tarball**，一件 `.d.ts`
+    // 出现在那里就说明它已经进箱，"该不该判"不需要再问 `files`。故本函数**不再接 `files`**。
+    // 这条用例锁的就是那个性质：同一份输入，无论声明面怎么写，读数都一样。
+    const paths = ["lib/types/zz-not-real.d.ts", "lib/types/pty/index.d.ts"];
+    expect(strayTypeDeclarations(paths, realSources)).toEqual(["lib/types/zz-not-real.d.ts"]);
+    // 对照：判据 5 在 `lib/**` 宽写下**确实**放行它（这正是本判据要补的洞，逐字复现）。
+    const realFiles: string[] = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).files;
+    expect(unexpectedPackedFiles(realFiles, ["lib/types/zz-not-real.d.ts"])).toEqual([]);
+  });
+
+  it("a malformed shape yields nothing — no crash", () => {
+    expect(strayTypeDeclarations(undefined as never, realSources)).toEqual([]);
+    expect(strayTypeDeclarations(["lib/types/zz.d.ts"], undefined as never)).toEqual([]);
+    expect(strayTypeDeclarations(null as never, realSources)).toEqual([]);
+  });
+
+  it("accepts a `Set` for packedPaths — THAT is what `main()` actually passes (the wiring trap)", () => {
+    // 本票实测踩到的洞：`main()` 的 `walk()` 产出的是 **`Set`**（与判据 3/4/5 同一份），
+    // 而实现最初拿 `Array.isArray(packedPaths)` 当形状门 ⇒ `Set` 被判成"形状不合法"、
+    // **静默返回空**。于是纯函数用例（喂数组）全绿、CLI 上一次都不报 —— 「看似在守、
+    // 实则守不住」。这条用例按**真实形状**（`Set`）锁住它，不是按方便的形状锁。
+    expect(
+      strayTypeDeclarations(
+        new Set(["lib/types/pty/index.d.ts", "lib/types/zz-not-real.d.ts"]),
+        realSources,
+      ),
+    ).toEqual(["lib/types/zz-not-real.d.ts"]);
+    // 干净的 `Set` 同样不得假报。
+    expect(
+      strayTypeDeclarations(new Set(["lib/types/pty/index.d.ts"]), realSources),
+    ).toEqual([]);
+  });
+
+  it("a hand-written ambient `src/*.d.ts` is a LEGAL emit source, not a stray (复核 C2)", () => {
+    // tsc 在 `include: ["src"]` 下会把 `src/` 下的手写 ambient `.d.ts` **原样镜像**为
+    // `lib/types/` 下的同名 `.d.ts`，故它同属"tsc 会产出"的面。早先的 `listSourceFiles`
+    // 把 `.d.ts` 剔掉了，头注却声称"双射" —— 文档与实现自相矛盾；若源码面真出现此类文件，
+    // 合法产物会被误报成杂散件。这里从判据的输入侧锁住它（源面含同名 ambient 声明 ⇒ 产物合法）。
+    expect(
+      strayTypeDeclarations(["lib/types/ambient.d.ts"], [...realSources, "src/ambient.d.ts"]),
+    ).toEqual([]);
+    // 但**没有**同名 ambient 源时仍然报 —— 修 C2 不得把判据一起放松掉。
+    expect(strayTypeDeclarations(["lib/types/ambient.d.ts"], realSources)).toEqual([
+      "lib/types/ambient.d.ts",
+    ]);
+  });
+});
+
+describe("emittedDeclarationOf", () => {
+  it("maps a `src/` path to its `lib/types/` declaration — segment-for-segment", () => {
+    expect(emittedDeclarationOf("src/detect.ts")).toBe("lib/types/detect.d.ts");
+    expect(emittedDeclarationOf("src/pty/index.ts")).toBe("lib/types/pty/index.d.ts");
+    expect(emittedDeclarationOf("src/pty/session-core.ts")).toBe("lib/types/pty/session-core.d.ts");
+    // `./` 前缀等价写法归一后再映射。
+    expect(emittedDeclarationOf("./src/pty/index.ts")).toBe("lib/types/pty/index.d.ts");
+  });
+
+  it("a `.d.ts` source maps to `.d.ts` (NOT `.d.d.ts`) — tsc mirrors ambient declarations", () => {
+    // 复核 C2 的映射面：`.d.ts` 源同样在 emit 面上，且镜像后**仍是** `.d.ts`。
+    expect(emittedDeclarationOf("src/ambient.d.ts")).toBe("lib/types/ambient.d.ts");
+    expect(emittedDeclarationOf("src/pty/globals.d.ts")).toBe("lib/types/pty/globals.d.ts");
+  });
+
+  it("returns null for anything not on the emit face (non-`src/`, non-`.ts`)", () => {
+    // 用**形态**举例而不是举仓内真路径：这些都是"不在 emit 面上"的形状，不是本仓的文件
+    // （仓内路径引用会被 `tests/doc-references.spec.ts` 的引用腐烂判据扫到，那是它的活）。
+    expect(emittedDeclarationOf("tests/not-a-source.ts")).toBeNull();
+    expect(emittedDeclarationOf("src/hypothetical.tsx")).toBeNull();
+    expect(emittedDeclarationOf("src/hypothetical.js")).toBeNull();
+    expect(emittedDeclarationOf("outside-the-src-tree.ts")).toBeNull();
+    expect(emittedDeclarationOf(undefined as never)).toBeNull();
   });
 });
 
@@ -616,6 +801,18 @@ const PRELUDE_WAIT_MS = 60_000;
 /** 前置门槛的轮询间隔（ms）。 */
 const PRELUDE_POLL_MS = 250;
 
+/**
+ * 从**临时副本**驱动真实 CLI 的那几条用例的超时预算（模块级，两个 describe 共用）。
+ *
+ * **必须**大于 {@link PRELUDE_WAIT_MS}，否则前置门槛等不到上界就被 vitest 按默认 5 s 掐断 ——
+ * 那时 `finally` 跑不完，`%TEMP%` 会**遗留副本目录**（#118 实测：把 `lib/` 移走造极端窗口后
+ * 单档跑出 2 个残留）。给 90 s = 60 s 门槛 + 30 s 余量。
+ *
+ * 放在模块级而不是某个 describe 内：它是**一份并发事实**（门槛的上界决定用例预算），
+ * #118 与 #117 两轮都要用；写进各自的 describe 会变成第二份，两处迟早漂移。
+ */
+const CLI_CASE_TIMEOUT_MS = 90_000;
+
 describe("loud skip 路径（#90）：注入驱动，environment-independent", () => {
   /**
    * #90：**loud skip 路径**（`findPacker()` 返回 null）不得在 %TEMP% 下遗留 packdir。
@@ -769,7 +966,11 @@ describe("loud skip 路径（#90）：注入驱动，environment-independent", (
       console.warn = originalWarn;
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+    // 超时预算与 #118/#117 的副本用例同一份（{@link CLI_CASE_TIMEOUT_MS}）——**这条也必须挂**：
+    // 它的前置门槛等的是同一个 `lib/` 重建窗口，默认 5 s 会在窗口稍宽时把它掐断，
+    // 而掐断时 `finally` 跑不完 ⇒ 反而**制造**本用例正要检出的那种残留（实测：全量并发下
+    // 5.0 s 红，单档 21 ms 绿 —— 只在并发环境下红，不是确定性缺陷）。
+  }, CLI_CASE_TIMEOUT_MS);
 });
 
 /**
@@ -827,12 +1028,7 @@ describe("loud skip 路径（#90）：注入驱动，environment-independent", (
  * （按子串判"确实走到了自检分支"）、`files` 宽窄本身（那是 #117 的面）。
  */
 describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写产品文件", () => {
-  /**
-   * 这些用例的超时预算：**必须**大于 {@link PRELUDE_WAIT_MS}，否则前置门槛等不到上界就被
-   * vitest 按默认 5 s 掐断 —— 那时 `finally` 跑不完，`%TEMP%` 会**遗留副本目录**
-   * （本票实测：把 `lib/` 移走造极端窗口后单档跑出 2 个残留）。给 90 s = 60 s 门槛 + 30 s 余量。
-   */
-  const CLI_CASE_TIMEOUT_MS = 90_000;
+  // 超时预算用模块级的 {@link CLI_CASE_TIMEOUT_MS}（#117 的副本用例共用同一份并发事实）。
 
   /** 把脚本与 manifest 复制成一个独立"仓库根"，返回该目录。 */
   function makeRepoCopy(tag: string): string {
@@ -930,14 +1126,15 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, CLI_CASE_TIMEOUT_MS);
 
   it("NO FALSE ALARM (AC2)：真实 `files` 下同一条通路**不**报 —— 判据 4/5 照常跑出正常绿行", async () => {
     // 副本 = 真实 package.json（**不改** files）。这条是变异验证的另一半：
     // 若自检写成了"永远报"，上面的响亮用例照样绿，只有这条能拦。
+    // **顺序**同上面的响亮用例：**先**等门槛，**再**建副本（门槛超时不得泄漏副本）。
+    await waitForRepoLibReady();
     const root = makeRepoCopy("selfcheck-real");
     try {
-      await waitForRepoLibReady();
       furnishForPackedCriteria(root);
       // 判据 0 在**最前**且早于打包：先按下自检静默取证，再看判据 4/5 是否照常报告。
       const run = runCopy(root);
@@ -952,7 +1149,7 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, CLI_CASE_TIMEOUT_MS);
 
   it("THE POINT (#118，复核 C1 的回归): loud skip **不得吞掉**判据 0 已判定的红", async () => {
     // 复核发现、本票实测确认的真洞：loud-skip 分支原先写死 `return 0`，把判据 0 已设的
@@ -962,9 +1159,11 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
     // 手法：**同进程**用 `main({ detect })` 注入"必然找不到打包器"（#90 已开的缝，不新增第二道），
     // 并把副本的 `files` 宽写。判据 1/1b 在 `main()` 里读的是**脚本自己所在仓库**的 package.json
     // ——故这里必须在**副本**里跑：权威树的 `files` 不能被改。
+    // **顺序**同上面的响亮用例：**先**等门槛（只读、无副作用），**再**建副本 ——
+    // 否则门槛超时被掐断时 `finally` 跑不完，副本会泄漏。
+    await waitForRepoLibReady();
     const root = makeRepoCopy("selfcheck-skip");
     try {
-      await waitForRepoLibReady();
       furnishForPackedCriteria(root);
       const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
       pkg.files = ["lib/**"];
@@ -1002,5 +1201,112 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, CLI_CASE_TIMEOUT_MS);
+});
+
+/**
+ * #117 的 **CLI 层**实证：判据 6 的接线是**活代码**，不是摆设。
+ *
+ * ## 为什么必须有这条（本票真的栽在这上面）
+ *
+ * 纯函数用例锁的是 `strayTypeDeclarations` 的**判定**。但本票实现时，`main()` 传进去的
+ * `packedFiles` 是 `walk()` 产出的 **`Set`**，而实现最初拿 `Array.isArray(packedPaths)`
+ * 当形状门 ⇒ `Set` 被判成"形状不合法"、**静默返回空**。当时**全部纯函数用例都绿**
+ * （它们喂的是数组），而真实 CLI 上判据 6 **一次都没 fire** —— 逐字复现了本文件反复
+ * 引用的那句「一个看起来在守、实际守不住的判据比没有更危险」。
+ *
+ * 这条用例因此**从真实 CLI 取读数**（不是再喂一次数组）：只有把判据 6 接进 `main()`
+ * 并跑通整条 walk → 断言这条链，那个洞才会现形。纯函数用例保留，但它锁不住接线。
+ *
+ * ## 手法：临时副本（沿用 #118/#90 的既有纪律，**绝不写产品文件**）
+ *
+ * `repoRoot` 取脚本**自己所在目录**的上级，故副本天然是个独立仓库根。副本需要
+ * `src/`（判据 6 的对照面）与 `lib/`（判据 1/1b 的前置）——都从权威树**只读复制**。
+ *
+ * ⚠️ **它不锁**：判据 6 的判定正确性（那是纯函数用例的活）、文案逐字稳定性
+ * （按子串判"确实走到了判据 6 分支"）。
+ */
+describe("判据 6 的 CLI 通路（#117）：临时副本里真跑，不写产品文件", () => {
+  /** 把脚本、manifest 与判据 1/6 需要的真实面复制成一个独立"仓库根"。 */
+  function makeRepoCopyWithFaces(tag: string): string {
+    const root = tempDir(tag);
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    for (const name of ["verify-pack.mjs", "script-entry.mjs"]) {
+      writeFileSync(join(root, "scripts", name), readFileSync(join(repoRoot, "scripts", name)));
+    }
+    writeFileSync(join(root, "package.json"), readFileSync(join(repoRoot, "package.json")));
+    return root;
+  }
+
+  function runCopy(root: string) {
+    return spawnSync(process.execPath, [join(root, "scripts", "verify-pack.mjs")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+  }
+
+  /** 备齐判据 1/1b（`lib/` + patch）与判据 6（`src/`）的输入面 —— 只读复制权威树。 */
+  async function furnish(root: string): Promise<void> {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+    const targets = [
+      ...entryTargets(pkg.exports).filter(([, target]) => !target.includes("*")),
+      ...manifestTargets(pkg),
+    ].map(([, target]) => target.replace(/^\.\//, ""));
+    const missing = () => targets.filter((target) => !existsSync(join(repoRoot, target)));
+    const deadline = Date.now() + PRELUDE_WAIT_MS;
+    let still = missing();
+    while (still.length > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, PRELUDE_POLL_MS));
+      still = missing();
+    }
+    expect(
+      still,
+      `权威树判据 1/1b 的指针在 ${PRELUDE_WAIT_MS} ms 内未就位（并发重建窗口或真缺件）：${still.join(", ")}`,
+    ).toEqual([]);
+    cpSync(join(repoRoot, "lib"), join(root, "lib"), { recursive: true });
+    cpSync(join(repoRoot, "src"), join(root, "src"), { recursive: true });
+    cpSync(join(repoRoot, "cordis.patch.yml"), join(root, "cordis.patch.yml"));
+  }
+
+  it("THE POINT (#117): 手写杂散 `.d.ts` ⇒ 真实 CLI exit 1 并点出它（AC1 可达）", async () => {
+    const root = makeRepoCopyWithFaces("stray-types");
+    try {
+      await furnish(root);
+      // 只改**副本**：在 `lib/types/` 放一个 tsc 永远不会产出的手写 `.d.ts`（票面原症状）。
+      writeFileSync(join(root, "lib", "types", "zz-not-real.d.ts"), "declare const zz: never\n");
+
+      const run = runCopy(root);
+      // 先证明**真的走到了判据 6**（防空转假绿）：文案是这条用例真正的判别面。
+      expect(run.stderr, "必须真的走到判据 6 分支（否则本用例什么都没验）").toContain(
+        "no matching src/ file",
+      );
+      // 且必须**点名**那个杂散件 —— 拿到红的人要知道删哪一个。
+      expect(run.stderr).toContain("lib/types/zz-not-real.d.ts");
+      // 判据 1/1b 不得早退（备齐后它们必须过），且判据 4/5 仍照常绿 ——
+      // 正是"四条判据全不报警"这一票面前提的反证现场。
+      expect(run.stderr, "判据 1/1b 不该早退").not.toContain("pointers to missing files");
+      expect(run.stdout).toContain("no chunk family has two generations in tarball");
+      expect(run.stdout).toContain("no unexpected lib/ files in tarball");
+      expect(run.status, "杂散 .d.ts 必须响亮（exit 1）").toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, CLI_CASE_TIMEOUT_MS);
+
+  it("NO FALSE ALARM (AC2)：真实构建面下判据 6 **不**报 —— 7 个 `.d.ts` 全有源码对应", async () => {
+    // 变异验证的另一半：若判据 6 写成了"永远报"，上面的响亮用例照样绿，只有这条能拦。
+    const root = makeRepoCopyWithFaces("stray-types-clean");
+    try {
+      await furnish(root);
+      const run = runCopy(root);
+      expect(run.stderr, "真实构建面下判据 6 不得触发（不假报）").not.toContain("no matching src/ file");
+      expect(run.stderr, "判据 1/1b 不该早退").not.toContain("pointers to missing files");
+      // 判据 6 必须**真的跑过**并给出正常读数（否则"没报"可能只是它压根没执行）。
+      expect(run.stdout).toContain("every lib/types/ declaration has a matching src/ file");
+      // 判据 3 的读数顺带证明走到了那一步（`entries` 计数仍是 9 —— #92 的 AC）。
+      expect(run.stdout).toContain("all 9 export entries packed and importable");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, CLI_CASE_TIMEOUT_MS);
 });

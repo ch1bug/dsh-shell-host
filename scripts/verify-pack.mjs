@@ -3,22 +3,29 @@
  * packs the current tree, unpacks it under .scratch/ (so the unpacked
  * package's up-tree lookup reaches the repo node_modules), then asserts
  *
+ * **编号口径**：下面这份清单的序号 = `main()` 里各分支注释的序号（判据 0 先于 1）；
+ * 检索某条判据时按这个号 grep，两处不会再漂。判据 1 拆成 1/1b（存在性 vs 装箱）。
+ *
+ *   0. (#118) 守卫**自检**（先于以下各条）：判据 4/5 的判据清单来自 `files`，`files` 被宽写成
+ *      `lib/**` 时两者**双双静默失效**。自检没有触发面时**响亮**报错（exit 1），不静默全绿。
  *   1. every concrete `exports` pointer names a real file, and
- *   2. every entry imports under Node self-reference FROM the tarball, and
- *   3. every packed target is present in the tarball, and
- *   4. every published-manifest pointer (`main` / `types` / `dsh.bundle.patch` — string or
+ *   1b. every published-manifest pointer (`main` / `types` / `dsh.bundle.patch` — string or
  *      ordered array) names a real file AND is present in the tarball: the install face that
  *      `exports` alone never covered (#88). It adds no new pass — the existence half rides
- *      criterion 1 (noted 1b below) and the tarball half rides criterion 3.
- *   5. (#111, THE fix) no chunk FAMILY has two generations in the tarball: criteria 1–4 only
+ *      criterion 1 and the tarball half rides criterion 3.
+ *   2. every entry imports under Node self-reference FROM the tarball, and
+ *   3. every packed target is present in the tarball.
+ *   4. (#111, THE fix) no chunk FAMILY has two generations in the tarball: criteria 1–3 only
  *      ever ask "is the declared target THERE", and `lib/pty-*.js` legitimately declares the
  *      PREVIOUS generation too — so a stale chunk rides along and everything stays green.
  *      `duplicateChunkFamilies` counts members per `files` chunk glob; ≥2 = stale output.
- *   6. (#111, DEFENSIVE) no `lib/` file outside the `files` face. Honestly downgraded: npm's
+ *   5. (#111, DEFENSIVE) no `lib/` file outside the `files` face. Honestly downgraded: npm's
  *      `files` allowlist already blocks these at pack time, so the CLI never sees them — kept
  *      for a future looser `files` / packer. Wording must never imply it guards stale chunks.
- *   0. (#118) 守卫**自检**（先于以上各条）：判据 4/5 的判据清单来自 `files`，`files` 被宽写成
- *      `lib/**` 时两者**双双静默失效**。自检没有触发面时**响亮**报错（exit 1），不静默全绿。
+ *   6. (#117, REACHABLE) every `lib/types/**\/*.d.ts` in the tarball must correspond to a real
+ *      `src/**\/*.ts`: that glob is CONTENT-BLIND, so a hand-written stray `.d.ts` rode into
+ *      the tarball while criteria 3/4/5 all stayed green (reproduced on the ticket). The
+ *      `src/` face is the independent evidence that tsc would emit it.
  *
  * Exit 0 = all pointers resolvable. **Requires a prior build** (`node --run build`),
  * so it is not part of `node --run test`; run it via `node --run test:release`, which
@@ -27,7 +34,7 @@
  *
  * 结构（#86）：`entryTargets` / `manifestTargets` / `untarGz` / `compileFilesMatcher` /
  * `chunkFamilyDeclarations` / `duplicateChunkFamilies` / `unexpectedPackedFiles` /
- * `guardSelfCheck`（#118）是**纯函数**
+ * `emittedDeclarationOf`（#117）/ `strayTypeDeclarations`（#117）/ `guardSelfCheck`（#118）是**纯函数**
  * （导出，见 `tests/verify-pack.spec.ts` 的离线单测）；
  * `findPacker` 亦导出但**非纯**（碰文件系统与 PATH 探针）：装箱交付链 e2e 现场打包时复用它，
  * 否则打包器候选顺序会有第二份。
@@ -352,6 +359,113 @@ export function duplicateChunkFamilies(files, packedPaths) {
   return violations
 }
 
+/** tsc 的 **emit 映射**（纯函数，导出）：一条 `src/` 相对路径 → 它会产出（或镜像）的
+ *  `lib/types/` 相对路径；不是 `src/` 下的 `.ts` 形态时返回 `null`。
+ *
+ *  **这是 emit 映射知识的单一来源**：判据 6 的对照面（`strayTypeDeclarations`）与源码面读取
+ *  （`listSourceFiles`）都要用它，两处各写一遍就是等着口径漂移（复核 Standards 轴 #4）。
+ *
+ *  规则（`tsconfig.build.json`: `rootDir: "src"` + `outDir: "lib/types"` + `declaration`）：
+ *  `src/a/b.ts` → `lib/types/a/b.d.ts` —— 逐段相同，只换后缀与前缀。
+ *
+ *  `src/*.d.ts` 同样算**源**（tsc 在 `include: ["src"]` 下会把它原样镜像到 `lib/types/`），
+ *  故 `.d.ts` 也要映射成 `.d.ts`（复核 C2：早先的实现在 `listSourceFiles` 里把 `.d.ts`
+ *  剔掉了，头注却声称"双射" —— 文档与实现自相矛盾）。
+ *
+ *  @param sourcePath `src/` 下的仓根相对路径（`/` 分隔）。
+ *  @returns 对应的 `lib/types/` 路径；不合形态（非 `src/` 前缀 / 非 `.ts` 结尾）时 `null`。
+ */
+export function emittedDeclarationOf(sourcePath) {
+  if (typeof sourcePath !== 'string') return null
+  const path = sourcePath.replace(/^\.\//u, '')
+  if (!path.startsWith('src/') || !path.endsWith('.ts')) return null
+  // `.d.ts` 源镜像成 `.d.ts`（不是 `.d.d.ts`）：先剥掉 `.d.ts` 再拼。
+  const stem = path.endsWith('.d.ts') ? path.slice(0, -'.d.ts'.length) : path.slice(0, -'.ts'.length)
+  return `${stem.replace(/^src\//u, 'lib/types/')}.d.ts`
+}
+
+/** **`lib/types/` 下的杂散 `.d.ts`**（纯函数，导出，#117 的修复面）。
+ *
+ *  ## 它修的是什么
+ *
+ *  `package.json` 用 `lib/types/**\/*.d.ts` 声明声明面，而这条 glob 是**内容盲**的
+ *  （只看路径、不看内容）。于是 `lib/types/` 下任何**手写**的、tsc 永远不会产出的 `.d.ts`
+ *  都会进 tarball，而**四条判据全不报警**（票面 2026-10-17 实测）：
+ *  判据 3 只问 exports 指针那些具体目标在不在；判据 4 只认 `lib/<name>-*.js` 的 chunk 族；
+ *  判据 5（多余件）视它为"落在声明面**之内**"⇒ 放行（实测 `unexpectedPackedFiles(files,
+ *  ['lib/types/zz-not-real.d.ts'])` → `[]`）。
+ *
+ *  ## 为什么可判：与 `src/` 面对照（不是与"上次构建的清单"对照）
+ *
+ *  `tsconfig.build.json` 固定 `rootDir: "src"` + `outDir: "lib/types"` + `include: ["src"]`
+ *  ⇒ tsc 的 emit 在**本仓当前配置下**是一一对应：`src/<X>.ts` 产出 `lib/types/<X>.d.ts`
+ *  （实测：7 ↔ 7，相对路径逐条相同）。故"这件的对应源码在不在"就是"tsc 会不会产出它"的
+ *  **独立**证据 —— 不需要在构建时落一份清单（票面 Direction 3 的"把产物名冻进 manifest"
+ *  **不采纳**：`#111` 已用同一理由否掉过它用于 chunk 面 —— 每次构建都要改 manifest）。
+ *
+ *  ⚠️ **这条对应的成立有前提，别把它当成无条件恒等式**（复核 C3）：它依赖
+ *  `tsconfig.build.json` 的 `include: ["src"]` **且无 `exclude`**（今天的事实）。若将来加了
+ *  `exclude`，或引入 `.tsx` / `allowJs`，则 `src/` 里**存在但 tsc 不 emit** 的文件会让同名的
+ *  杂散 `.d.ts` 被**静默放行**（该方向的假阴属已知边界，不在本票范围内）。
+ *  `src/*.d.ts`（手写 ambient 声明）**算源**并映射成同名 `lib/types/*.d.ts`（复核 C2 已按此修）——
+ *  emit 映射的单一来源是 `emittedDeclarationOf`。
+ *
+ *  `src/` 面是**读工作树的当前内容**，不是重算一遍 glob：本判据因此不受 `files` 宽窄影响，
+ *  也不与 `compileFilesMatcher` 共享任何假设（两条判据的**失效模式因此不相关**）。
+ *
+ *  ## 它**不**管什么（边界，防假红与防越界）
+ *
+ *  - **`.d.ts.map`**：不在 `lib/types/**\/*.d.ts` 的声明面上（后缀不同），且 `#111` 已确立
+ *    `lib/types/**` 整棵保留 —— 收窄那条保留面会重现 `.d.ts.map` 静默缺口，是 #111 明确
+ *    不采纳的方向。故本判据**只**看 `.d.ts` 结尾的路径。
+ *  - **声明面之外的件**（`lib/types/x.js`）：那是判据 5（`unexpectedPackedFiles`）的活；
+ *    本判据只判"声明面**之内**的件是不是 tsc 产出的"，避免同一路径被两条判据各报一次。
+ *  - **"内容被改过"的件**：若有人**改**了 `lib/types/pty/index.d.ts` 的内容（源码还在），
+ *    本判据看不见它 —— 它判的是**存在性对应**，不是内容一致性。那条面（比对产物内容 /
+ *    hash）需要构建期记录，属票面 Direction 2，本票不取。
+ *
+ *  @param packedPaths tarball 内全部文件的相对路径（`/` 分隔）。**接受 `Set` 或数组** ——
+ *                     `main()` 传的是它 `walk()` 出来的 `Set`（与判据 3/4/5 同一份），故这里
+ *                     必须用 `Array.from` 归一，**不能**用 `Array.isArray` 当形状门（那会把
+ *                     `Set` 判成"形状不合法"而**静默返回空**，本判据就永远不 fire —— 本票实测
+ *                     踩到过这个洞，纯函数用例喂数组时全绿、CLI 上一次都不报）。
+ *                     **不接 `files`**（刻意）：判据的适用范围由"箱里真有这件"决定，不由
+ *                     `files` 的写法决定 —— 早先那版拿 `files` 当门，于是 `files` 宽写成
+ *                     `lib/**`（`.d.ts` 照样进箱）时判据**静默失效**（复核 C1）。
+ *  @param sourcePaths **tsc 的 emit 根**（`src/` 下的仓根相对路径，如 `src/pty/index.ts`）。
+ *                     传空数组 ⇒ 任何 `.d.ts` 都无法被证明是 tsc 产出 ⇒ **全部报出**：
+ *                     "读不到源码面"不是"没有杂散件"的证据（响亮，不静默）。
+ *  @returns 违规路径，**排序稳定**（字典序）；无违规时为空数组。
+ */
+export function strayTypeDeclarations(packedPaths, sourcePaths) {
+  if (!Array.isArray(sourcePaths)) return []
+  // `packedPaths` 在 CLI 上是 `walk()` 出来的 `Set`：用 `Array.from` 归一，**不**拿
+  // `Array.isArray` 当形状门（理由见头注 @param —— 那个门会让本判据永远不 fire）。
+  if (packedPaths === null || packedPaths === undefined) return []
+  const packed = Array.isArray(packedPaths) ? packedPaths : [...packedPaths]
+  // **没有适用范围门**（复核 C1 修掉的）：判据的输入 `packedPaths` **就是 tarball**——
+  //  一件 `.d.ts` 出现在这里，就说明它**已经进箱**了，此时"该不该判它"不需要再问 `files`。
+  //  早先那版用 `files.some(p => p.startsWith('lib/types/'))` 当门，于是 `files` 一旦被宽写成
+  //  `lib/**`（`.d.ts` **照样进箱**），门就判 false ⇒ 本判据**静默失效**，而 `guardSelfCheck`
+  //  只要求"存在 chunk 族"、照样放行 —— 与 #118 修的是同一族病（守卫被架空而无信号）。
+  //  取消门之后，判定只依赖"箱里有什么" + "源码面有什么"，两条都不受 `files` 宽窄影响。
+  //  tsc 的 emit 面：`src/<X>.ts` → `lib/types/<X>.d.ts`；映射规则由 emittedDeclarationOf 单一来源。
+  const emitted = new Set(
+    sourcePaths
+      .map((path) => emittedDeclarationOf(path))
+      .filter((path) => path !== null),
+  )
+  const violations = []
+  for (const raw of packed) {
+    const path = String(raw).replace(/^\.\//u, '')
+    // 只判 `lib/types/` 下、以 `.d.ts` 结尾的件（`.d.ts.map` 的结尾是 `.map`，天然被排除）。
+    if (!path.startsWith('lib/types/') || !path.endsWith('.d.ts')) continue
+    if (emitted.has(path)) continue
+    violations.push(path)
+  }
+  return violations.sort()
+}
+
 /** 守卫**自检**（纯函数，导出）：判"本轮这两条判据是否还有触发面"，而不是判产物。
  *
  *  ## 它修的是什么（#118）
@@ -414,7 +528,6 @@ export function guardSelfCheck(files) {
 }
 
 /** 逐个契约指针查**工作树**存在性（碰 I/O，故不导出）：返回缺失行 `label -> target`。
- *
  *  存在性判据**只此一处** —— exports 指针（判据 1）与 manifest 指针（#88）走同一实现：
  *  两处各写一遍就是等着口径漂移。哨兵写法沿用本文件既有约定（`access(...).catch(() => 'no')`；
  *  为什么用 `access` 而不是 `existsSync` 的提醒见 `findPacker` 上方）。
@@ -427,7 +540,45 @@ async function missingInTree(pairs) {
   return missing
 }
 
-/** CLI 主体（碰真实文件系统 / 打包器，故覆盖它要真实环境；见下方"导出"说明）：装箱 → 解包 → 四条断言。
+/** 列出 `src/` 下全部 TypeScript 源文件（仓根相对、`/` 分隔）—— 判据 6 的对照面，碰 I/O 故不导出。
+ *
+ *  **为什么要读工作树的 `src/` 而不用构建期清单**：tsc 的 emit 由 `tsconfig.build.json`
+ *  固定为 `rootDir: src` + `outDir: lib/types` + `include: ["src"]`，故 `src/<X>.ts` 与
+ *  `lib/types/<X>.d.ts` 一一对应；"源码在不在"因此是"tsc 会不会产出它"的独立证据。
+ *  在构建期落一份产物清单要**每次构建都改它**（`#111` 已用同一理由否掉该方向用于 chunk 面）。
+ *
+ *  **`.d.ts` 也要收**（复核 C2）：tsc 在 `include: ["src"]` 下会把 `src/foo.d.ts` 原样镜像为
+ *  `lib/types/foo.d.ts`，它是**合法产物**；早先那版把它剔掉，于是若 `src/` 真出现手写 ambient
+ *  `.d.ts`，本判据会把合法产物误报成杂散件。emit 映射本身由 `emittedDeclarationOf` 单一来源。
+ *
+ *  `src/` 不存在时返回 `[]` —— 调用方（判据 6）据此**报出全部** `.d.ts`：读不到源码面
+ *  不是"没有杂散件"的证据（响亮，不静默；与判据 5 "形状不合法就放行"的克制方向相反，
+ *  理由写在 `strayTypeDeclarations` 头注）。
+ */
+async function listSourceFiles(dir = join(repoRoot, 'src')) {
+  const found = []
+  async function walk(current, prefix) {
+    let items
+    try {
+      items = await readdir(current, { withFileTypes: true })
+    } catch {
+      return // `src/` 不存在：按"读不到"处理，返回已收集的（通常为空）
+    }
+    for (const item of items) {
+      const rel = prefix === '' ? item.name : `${prefix}/${item.name}`
+      if (item.isDirectory()) await walk(join(current, item.name), rel)
+      else if (emittedDeclarationOf(`src/${rel}`) !== null) found.push(`src/${rel}`)
+    }
+  }
+  await walk(dir, '')
+  return found.sort()
+}
+
+/** CLI 主体（碰真实文件系统 / 打包器，故覆盖它要真实环境；见下方"导出"说明）：装箱 → 解包 → 逐条判据。
+ *
+ *  **判据清单不在这里复述** —— 单一来源是本文件 `@module` 头注（那条清单的序号与下方各分支注释
+ *  的序号一致，按号 grep 即可）。此处曾写"四条断言"，随判据增多（#111 两条 / #118 一条 /
+ *  #117 一条）而变成陈旧计数，故改为指针。
  *
  *  **返回退出码（#90），不在内部 `process.exit`**：loud-skip 分支原先在自己 `try` 内直接
  *  `process.exit(0)`，而 `process.exit` 同步终止进程 ⇒ 该 `try` 的 `finally`（`rmSync(packdir)`）
@@ -453,11 +604,13 @@ export async function main({ detect } = {}) {
   // 同样被 tarball 的 `files` 面决定 —— 缺件只在装载期炸，故这里与 exports 同等对待。
   const manifestPointers = manifestTargets(pkg)
   // Node-side import smoke covers the host entries only: `./package.json` is not an
-  // ES module. (`./client` is vestigial — ADR-0013 removed the web bundle — and
-  // `./src/*` never gets here because the wildcard targets are filtered out above.
-  // Both exclusions stay verbatim: #86 does not touch the boxing criteria.)
+  // ES module. `./src/*` never gets here because the wildcard targets are filtered
+  // out above. (`./client` used to be excluded here as well; ADR-0013 removed the
+  // web bundle, so `exports` carries no such entry and the exclusion was a dead
+  // branch — dropped in #92. `tests/verify-pack.spec.ts` pins that premise: if
+  // `./client` ever returns to `exports`, that case goes red.)
   const importableEntries = [...new Map(entries.filter(([entry]) =>
-    entry !== './client' && entry !== './package.json'
+    entry !== './package.json'
   ).map(([entry]) => [entry, true])).keys()]
   // 判据 2/3/4/5 共同累积的退出码（#90）：这些分支**不提前返回**，末尾一次性 return。
   let exitCode = 0
@@ -603,6 +756,33 @@ export async function main({ detect } = {}) {
   } else {
     console.log(
       `verify-pack: no unexpected lib/ files in tarball (defensive check; ${packedFiles.size} packed)`,
+    )
+  }
+
+  // 6. **本判据的修复面**（#117，可达判据）：`lib/types/**\/*.d.ts` 是**内容盲** glob，
+  //    手写的、tsc 永远不会产出的 `.d.ts` 会进 tarball，而判据 3/4/5 **全不报警**
+  //    （票面 2026-10-17 实测：`lib/types/zz-not-real.d.ts` 在文件面里，判据 5 读数为空）。
+  //    对照面 = **`src/` 的当前内容**（tsc 的 emit 是 `src/<X>.ts` → `lib/types/<X>.d.ts` 双射，
+  //    `tsconfig.build.json` 的 rootDir/outDir/include 固定了这条），故"这件的源码在不在"
+  //    就是"tsc 会不会产出它"的独立证据 —— 不需要构建期清单（票面 Direction 3 不采纳，
+  //    理由同 #111 否掉 chunk 面的那条）。`.d.ts.map` 不在声明面上（后缀不同），本判据不碰它。
+  //    与判据 3/4/5 一样用 `exitCode` 累积、**不提前返回**。
+  const sourcePaths = await listSourceFiles()
+  const stray = strayTypeDeclarations(packedFiles, sourcePaths)
+  if (stray.length > 0) {
+    console.error(
+      'verify-pack: tarball carries lib/types/ declarations with no matching src/ file ' +
+        '(tsc never emits these; the `lib/types/**/*.d.ts` glob is content-blind):\n  ' +
+        stray.join('\n  '),
+    )
+    console.error(
+      'verify-pack: 删除这些杂散件，或为它们补上真实的 src/ 源码。不要靠收紧 `files` 收口 —— ' +
+        '那条 glob 的宽窄是它的定义（详见 #117）。',
+    )
+    exitCode = 1
+  } else {
+    console.log(
+      `verify-pack: every lib/types/ declaration has a matching src/ file (${sourcePaths.length} sources)`,
     )
   }
 
