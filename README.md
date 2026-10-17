@@ -216,9 +216,11 @@ source deployment and build gotchas.
   (ADR-0005 anchors).
 - Dependencies: `peerDependencies` = `@deepseek-ai/cordis` +
   `@deepseek-ai/schemastery` + the current `@deepseek-ai/dsh-tools` **direct peer
-  set** (10 `dsh-*` pins that swap with the anchor — ADR-0005, dev-environment
-  §4.4); deps are `@deepseek-ai/dsh-tools` + `@lydell/node-pty`; tooling
+  set** (10 `dsh-*` pins that track the certified anchor — ADR-0005, dev-environment
+  §4.4); admission is gated separately by the `engines.dsh` range (ADR-0005
+  decision 6, dev-environment §2.1); deps are `@deepseek-ai/dsh-tools` +
+  `@lydell/node-pty`; tooling
   (typescript/vitest/tsdown) comes from npm.
 
-Status: v0.2.1-rc.1-r1, tools-only (ADR-0012/0013): `./pty` + `./terminal` +
+Status: v0.2.1-rc.2-r1, tools-only (ADR-0012/0013): `./pty` + `./terminal` +
 `./wsl`; remote one-shot via the standalone `dsh-shell-remote` plugin.

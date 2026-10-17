@@ -28,6 +28,21 @@ independent per-repo semver drifts and hides that mapping.
 5. Compatibility contract: a module tagged `-r<N>` against anchor X is built
    and verified against X's seam types; no claim is made about other
    anchors.
+6. **(2026-10-17) The admission gate and the certified anchor are separate.**
+   A module declares `engines.dsh` as a **range** over the release line it
+   tolerates (`~0.2.1-rc.1` today). Because a plugin's own `engines.dsh`
+   decides alone, DSH `peerDependencies` no longer gate admission, so
+   intermediate releases inside that line install and boot without a
+   per-release landing. The exact pins (the `dsh-tools` dependency and the
+   peer set) and the release tag still name the single version the module was
+   actually built and verified against.
+
+   Rationale (measured 2026-10-17): the desktop follows the `next` channel
+   and moved `0.2.1-rc.1 → 0.2.1-rc.2` within hours; that delta changed
+   version numbers only — no `src/` change across the seam packages and an
+   identical `dsh-tools` peer set. Exact-pin admission turned every such
+   release into a user-visible outage (the bundle is skipped whole at profile
+   load), which the range removes.
 
 ## Consequences
 

@@ -16,28 +16,28 @@ allowBuilds:
   '@deepseek-ai/dsh-subprocess-local': true
   koffi: true
   node-pty: true
-# 供给链最小发布年龄（pnpm 11 `minimumReleaseAge`）的显式豁免。切锚到
-# `dsh-v0.2.1-rc.1` 时整条 @deepseek-ai 依赖链都是当天刚发布的版本，pnpm 在
-# install 时自行追加了这一组。**逐条 = 我们确实钉的精确版本**；下次切锚应让
-# pnpm 重新生成这一组（旧的应当消失），不要手工累加。
+# 供给链最小发布年龄（pnpm 11 `minimumReleaseAge`）的显式豁免：切锚当天整条
+# @deepseek-ai 依赖链都是刚发布的版本，pnpm 在 install 时**自行追加**这一组。
+# **实测（2026-10-17，rc.1 → rc.2）：pnpm 只追加、不清理** —— 旧锚那一组必须
+# 手工删掉，所以每次切锚都要 prune 一遍，让清单恰好 = 我们钉的那个精确版本。
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cordis-plugin-loader@1.0.6'
   - '@deepseek-ai/cordis@4.0.5'
   - '@deepseek-ai/cosmokit@1.8.6'
-  - '@deepseek-ai/dsh-agent@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-brand@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-llm@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-ptc-runtime@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-sandbox-policy@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-sandbox@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-scope@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-session@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-system-prompt@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-timeout@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-tools@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-typert-protocol@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-user-approval@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-util-crypto@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-util-values@0.2.1-rc.1'
-  - '@deepseek-ai/dsh-working-directory@0.2.1-rc.1'
   - '@deepseek-ai/schemastery@3.18.5'
+  - '@deepseek-ai/dsh-agent@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-brand@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-llm@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-ptc-runtime@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-sandbox-policy@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-sandbox@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-scope@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-session@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-system-prompt@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-timeout@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-tools@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-typert-protocol@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-user-approval@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-util-crypto@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-util-values@0.2.1-rc.2'
+  - '@deepseek-ai/dsh-working-directory@0.2.1-rc.2'

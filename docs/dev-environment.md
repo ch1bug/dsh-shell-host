@@ -201,9 +201,9 @@ node --run test
 
 ## 2. 宿主锚点（ADR-0005）
 
-跟随 DSH 运行时 **rc 线**：本仓 `0.2.1-rc.1-r1` ↔ 宿主 tag
-`dsh-v0.2.1-rc.1`（commit `1600d8a1`）。旧锚（`0.2.0-rc.2` ↔ `639ed015`）的
-历史事实保留下表与 [GLOSSARY.md #82](../GLOSSARY.md)。
+跟随 DSH 运行时 **rc 线**：本仓 `0.2.1-rc.2-r1` ↔ 宿主 tag
+`dsh-v0.2.1-rc.2`（commit `687f282e`）。旧锚（`0.2.1-rc.1` ↔ `1600d8a1`、
+`0.2.0-rc.2` ↔ `639ed015`）的历史事实保留下表与 [GLOSSARY.md #82](../GLOSSARY.md)。
 
 **宿主契约核对优先读源码树**：`bundlePatchFiles()`、patch op 语义、profile 组合这类问题，
 直接读 `dsh-host-src` 的 TS 源码（如 `packages/boot/app-boot/src/profile.ts:58-64`）。
@@ -217,31 +217,40 @@ node --run test
 
 ```bash
 git clone --depth 1 https://github.com/deepseek-ai/deepseek-harness.git <src>
-cd <src> && git fetch --depth 1 origin tag dsh-v0.2.1-rc.1 && git checkout dsh-v0.2.1-rc.1
+cd <src> && git fetch --depth 1 origin tag dsh-v0.2.1-rc.2 && git checkout dsh-v0.2.1-rc.2
 ```
 
 **RC 与 alpha 的接口差异（切锚时必查）**：
 
-| 项 | alpha（历史调查） | **RC2**（旧锚） | **RC1 = 现锚** |
+| 项 | alpha（历史调查） | **0.2.0-rc.2**（旧锚） | **0.2.1-rc.2 = 现锚** |
 |---|---|---|---|
 | `session/initializeDefaultModel` | 有 | **有**（`@Remote`） | **有**（两侧一致） |
-| `dsh-tools` peer 集 | 无 `dsh-invariants`；`cordis ~4.0.5-alpha.1`、`schemastery ~3.18.5-alpha.1` | **有 `dsh-invariants`**；`cordis ~4.0.4`、`schemastery ~3.18.4` | **无 `dsh-invariants`、新增 `dsh-working-directory`**；`cordis ~4.0.5`、`schemastery ~3.18.5` |
+| `dsh-tools` peer 集 | 无 `dsh-invariants`；`cordis ~4.0.5-alpha.1`、`schemastery ~3.18.5-alpha.1` | **有 `dsh-invariants`**；`cordis ~4.0.4`、`schemastery ~3.18.4` | **无 `dsh-invariants`、新增 `dsh-working-directory`**；`cordis ~4.0.5`、`schemastery ~3.18.5`（rc.1→rc.2 只动版号、成员不变） |
 | `scripts/build.ts` 参数 | `--scope artifacts` | `--profile` | `--scope`（`complete`/`artifacts`/`check`/`typecheck`）与 `--profile` 并存 |
 
 照 alpha 抄 peer 会**漏声明**（本仓 #82 即此）。
 
-**2026-10-17 更正（切锚 `0.2.1-rc.1` 时按源码树复核）**：上表原把
+**2026-10-17 更正（切锚 `0.2.1-rc.1` 时按源码树复核，rc.2 复核同结论）**：上表原把
 `session/initializeDefaultModel` 记成「RC 无」（[GLOSSARY.md #82](../GLOSSARY.md) 同），
-与同一 tag 的源码树矛盾 —— `dsh-v0.2.0-rc.2` 与 `dsh-v0.2.1-rc.1` **两侧都有**
+与同一 tag 的源码树矛盾 —— `dsh-v0.2.0-rc.2` 与 `dsh-v0.2.1-rc.1`/`-rc.2` **两侧都有**
 `@Remote initializeDefaultModel`（两侧各 19 个 `@Remote`；rc.2 另有未进旧清单的
 `@Remote canOpenWorkspacePath`）。**会话 RPC 侧切锚零影响**，选模型仍走 `selectModel`。
 `dsh-invariants` 的移除见现锚列与 §4.4。
 
-### 2.1 锚不匹配时的行为与精确版本豁免（`0.2.1-rc.1` 实测）
+### 2.1 锚不匹配时的行为与精确版本豁免（`0.2.1-rc.*` 实测）
 
 bundle 声明的 DSH 版本要求不满足运行版本时（规则：声明了 `engines.dsh` 就**只**看它、
 peer 被忽略；否则逐条 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` peer 必须满足），
-rc.1 分两处体现：
+rc.1 起分两处体现：
+
+**本仓现行口径 = 门禁走区间、认证走精确**（ADR-0005 决策 6，2026-10-17 拍板）：
+`package.json` 声明 `"engines": { "node": ">=24", "dsh": "~0.2.1-rc.1" }` —— 门禁只看这个
+区间（`~0.2.1-rc.1` = `>=0.2.1-rc.1 <0.2.2`，放行 `0.2.1-rc.*` 与 `0.2.1` 正式版，排除
+alpha 线与 `0.2.0-rc.2`）；精确钉（`dsh-tools` 依赖 + 10 个 peer）与 release tag 仍表示
+**我们构建并验证过的那个版本**。动机：桌面端跟随 `next` 通道，`rc.1 → rc.2` 只隔数小时
+且只动版号（接缝包无 `src` 变更、peer 集成员不变），精确钉门禁把每次这样的发布都变成
+一次「bundle 被整层跳过」的故障。代价：**区间内的未验证版本会被放行 —— 「装得上」不再
+等于「验过」**；所以升级认证版本时仍照 §2.2 走一遍。
 
 - **安装侧**（`dsh plugin --profile <p> add <spec>`）：以 `incompatible-version` 拒绝，
   stderr 打印 `installation rejected: Plugin <name>@<ver> is incompatible with dsh <runtime>:
@@ -271,12 +280,12 @@ dsh plugin --profile <p> add <spec>     # 重试 → 接受（pnpm 另会 warn p
 - HMR 下对**已安装**的包再 `installBundle` 直接以 `already-installed` 拒绝（不再是
   `restart-required`）：换版本 / 来源要先 `removeBundle` 再装。
 
-### 2.2 升级到 rc.1 的顺序（旧锚用户 / 桌面端）
+### 2.2 升级顺序（旧锚用户 / 桌面端）
 
 锚定义的是「**产物 × 运行版本**」的成对契约（§2.1）：两者不匹配时不会以「可用但降级」的
 形态出现 —— 安装侧 fail-closed，启动侧整层跳过。所以升级是**有序动作**：
 
-1. **先升运行版本**：把 DSH 运行时（桌面端 = app 的 runtime）升到本版锚 `0.2.1-rc.1`
+1. **先升运行版本**：把 DSH 运行时（桌面端 = app 的 runtime）升到本版锚（见 §2）
    （桌面端 profile 的操作窗口见 §2.1）。
 2. **再让 profile 重新判定 manifest**：重启 / 重载 profile —— 宿主只在启动时组合一次，
    patch 与组合变更**不热更新**（[profile-install.md](agents/profile-install.md)）。
@@ -291,8 +300,8 @@ dsh plugin --profile <p> add <spec>     # 重试 → 接受（pnpm 另会 warn p
 要保留**旧锚产物**（而不是装锚匹配的版本）只能走 §2.1 的**精确版本豁免**
 （豁免按精确「包版本 × 运行时版本」对生效，锚一变即失效）。
 
-本版发布时打 tag `dsh-v0.2.1-rc.1-r1`（ADR-0005 的 `dsh-v<锚版本>-r<模块修订号>` 形态；
-`package.json` 的 `version` = `0.2.1-rc.1-r1`，即 tag 去 `dsh-v` 前缀）。tag / publish 是
+本版发布时打 tag `dsh-v0.2.1-rc.2-r1`（ADR-0005 的 `dsh-v<锚版本>-r<模块修订号>` 形态；
+`package.json` 的 `version` = `0.2.1-rc.2-r1`，即 tag 去 `dsh-v` 前缀）。tag / publish 是
 maintainer 动作，不由开发票触发。
 
 ## 3. 源码部署步骤（msys2 侧）
@@ -301,7 +310,7 @@ maintainer 动作，不由开发票触发。
 # 宿主（自建，不复用相邻工作区的树）
 git clone https://github.com/deepseek-ai/deepseek-harness.git ~/dsh-host-src
 cd ~/dsh-host-src
-git fetch --depth 1 origin tag dsh-v0.2.1-rc.1 && git checkout dsh-v0.2.1-rc.1
+git fetch --depth 1 origin tag dsh-v0.2.1-rc.2 && git checkout dsh-v0.2.1-rc.2
 pnpm install --ignore-scripts --package-import-method=copy   # 见 §4.1
 git clean -fxd && pnpm install --ignore-scripts --package-import-method=copy
 pnpm build                                                   # 见 §4.2/§4.3（约 290s）
@@ -413,7 +422,8 @@ RC2 构建会报 `MISSING_EXPORT "principalOf"`（该符号只存在于 alpha �
 
 ### 4.4 本插件的依赖锚（#82）
 
-`@deepseek-ai/dsh-tools` 必须锚 **当前 RC 线**（`0.2.1-rc.1`），且其 **10 个
+`@deepseek-ai/dsh-tools` 必须锚 **当前 RC 线**（`0.2.1-rc.2`；门禁已由 `engines.dsh`
+区间接管，这里的精确钉表示**认证版本**，见 §2.1），且其 **10 个
 peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-ptc-runtime` /
 `dsh-sandbox` / `dsh-sandbox-policy` / `dsh-scope` / `dsh-session` /
 `dsh-system-prompt` / `dsh-user-approval` / **`dsh-working-directory`**；
