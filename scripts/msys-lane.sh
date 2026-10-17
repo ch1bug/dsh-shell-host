@@ -162,20 +162,32 @@ export DSH_E2E_PNPM_DIR="${DSH_E2E_PNPM_DIR:-$(to_win "$MSYS_HOME/dsh-host-src/n
 scope="${LANE:-全量（unit + machine）}"
 [ "$NO_LIVE" = 1 ] && scope="$scope（已排除真实层）"
 step "车道=$scope  副本=$copy_short  node=$(node -v)"
-log=$(mktemp)
-trap 'rm -f "$log"' EXIT
 # 真实层（`tests/e2e-real-llm-machine.spec.ts`）打的是**外部端点**：交接与本会话都实测到偶发
-# `TRANSPORT`（BACKEND 侧网络问题，重跑即绿）。故 `--no-live` 把它排除 —— 那是「日常推送口径」：
+# `TRANSPORT`（外部网络问题，重跑即绿）。故 `--no-live` 把它排除 —— 那是「日常推送口径」：
 # pre-push 不该因外部端点抖动阻断推送（否则大家只会常按 SKIP_HOOKS，闸门形同虚设）。
 # 发布 / 手动验收仍跑默认（含真实层）。
 LIVE_SPEC="tests/e2e-real-llm-machine.spec.ts"
+# **为什么全量也直调 vitest、而不是 `node --run test`**：`node --run test` 会把额外参数转交
+# `scripts/verify-all.mjs`，而它只认自己的参数（实测：`--exclude` → `verify-all: 未知参数`，
+# 套件一次都没跑就红）。要排除真实层就必须直调 vitest。
+# 代价与补偿：这条路少了 `verify-all` 的**汇总口径与 `PASS*` 计数**，也少了它包的 typecheck
+# → 故这里**显式跑一次 typecheck**，读数表里再照 `PASS*` 的口径标出含 loud skip 的档。
+# 真要「唯一检查入口」的验收口径（`node --run test`），照 §0.1.1 的手工等价跑法在副本里跑它。
+log=$(mktemp)
+typeslog=$(mktemp)
+trap 'rm -f "$log" "$typeslog"' EXIT
+step "typecheck（规范要求：与 vitest 同批跑）"
+if ! (cd "$COPY" && node --run typecheck) >"$typeslog" 2>&1; then
+  tail -20 "$typeslog" | sed 's/^/  /'
+  fail "typecheck 未通过（副本 $copy_short）"
+fi
+
 if [ -n "$LANE" ]; then
   runner=(node node_modules/vitest/vitest.mjs run --project "$LANE")
   [ "$NO_LIVE" = 1 ] && runner+=(--exclude "$LIVE_SPEC")
 else
-  runner=(node --run test)
-  # 经包脚本跑时，附加参数要显式分隔后转交 vitest。
-  [ "$NO_LIVE" = 1 ] && runner+=(-- --exclude "$LIVE_SPEC")
+  runner=(node node_modules/vitest/vitest.mjs run)
+  [ "$NO_LIVE" = 1 ] && runner+=(--exclude "$LIVE_SPEC")
 fi
 (cd "$COPY" && "${runner[@]}") >"$log" 2>&1
 rc=$?
@@ -191,8 +203,14 @@ else
 fi
 loud=$(grep -c "!! SKIP (loud)" "$log" || true)
 guard=$(grep -E "privacy-scan: (干净|命中)" "$log" | tail -1 || true)
+files_line=$(grep -E "^ *Test Files" "$log" | tail -1 | sed 's/^ *//' || true)
+tests_line=$(grep -E "^ *Tests " "$log" | tail -1 | sed 's/^ *//' || true)
 echo "  ---"
-echo "  loud skip 行数：$loud${guard:+  ·  $guard}"
+echo "  typecheck=ok（副本 $copy_short）  ·  loud skip 行数：$loud"
+[ -n "$files_line" ] && echo "  $files_line"
+[ -n "$tests_line" ] && echo "  $tests_line"
+[ -n "$guard" ] && echo "  $guard"
+echo "  注：直调 vitest，故没有 verify-all 的 PASS* 计数（含 loud skip 的档看上面行尾 skipped / loud 行数）"
 echo "  exit=$rc"
 if [ "$rc" != 0 ]; then
   echo ""
@@ -200,5 +218,5 @@ if [ "$rc" != 0 ]; then
   tail -40 "$log" | sed 's/^/  /'
   fail "套件红（exit $rc）—— 完整输出见上面末 40 行"
 fi
-step "全绿 ✅（验收口径见 docs/agents/TESTING.md；machine 档的 PASS* 表示含 loud skip）"
+step "全绿 ✅（读数口径见上；验收依据 docs/agents/TESTING.md，machine 档含 loud skip 时看 skipped 数与 loud 行数）"
 exit 0
