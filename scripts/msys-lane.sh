@@ -182,6 +182,13 @@ if ! (cd "$COPY" && node --run typecheck) >"$typeslog" 2>&1; then
   fail "typecheck 未通过（副本 $copy_short）"
 fi
 
+# 逐档读数走 **json reporter → 临时文件 → 小段 node 解析**。为什么不靠控制台行：
+#   - 默认 reporter 只在 **TTY** 下打逐档行，本脚本重定向后只剩汇总两行（实测）；
+#   - `--reporter=verbose` 会把**逐用例**行也打出来（300+ 行）；
+#   - `--reporter=tree` 有逐档行但同样拖出全部用例；
+#   - vitest 4 已没有旧版的 `basic`（实测：`Failed to load custom Reporter from basic`）。
+# 读 JSON 是确定口径：每个 spec 文件一条，带 status 与用例计数。
+JSON_OUT="dsh-lane-results.json"
 if [ -n "$LANE" ]; then
   runner=(node node_modules/vitest/vitest.mjs run --project "$LANE")
   [ "$NO_LIVE" = 1 ] && runner+=(--exclude "$LIVE_SPEC")
@@ -189,22 +196,76 @@ else
   runner=(node node_modules/vitest/vitest.mjs run)
   [ "$NO_LIVE" = 1 ] && runner+=(--exclude "$LIVE_SPEC")
 fi
-(cd "$COPY" && "${runner[@]}") >"$log" 2>&1
+(cd "$COPY" && rm -f "$JSON_OUT" && "${runner[@]}" --reporter=json --outputFile="$JSON_OUT") >"$log" 2>&1
 rc=$?
+trap 'rm -f "$log" "$typeslog"; [ -n "${COPY:-}" ] && rm -f "$COPY/$JSON_OUT"' EXIT
 
 # —— 6. 读数汇总：逐文件四态 + loud skip 原文 + 汇总行（**绿红都收**）——
 echo ""
 echo "=== msys 车道读数（副本 $copy_short${LANE:+ · lane=$LANE}） ==="
-if [ -n "$LANE" ]; then
-  grep -E "^ *(✓|×|↓) \|" "$log" | sed 's/^/  /' || true
-  tail -3 "$log" | sed 's/^/  /'
+# 逐档读数：跑测试时已用 `--reporter=json --outputFile` 把结果写到副本根的临时 JSON，
+# 这里用小段 node 解析成与 verify-all 同形的表（`✓ |lane| tests/x.spec.ts (7 tests | 1 skipped) 20529ms`）。
+# 解析器读不到（json 没写成 / 形状变了）就退回控制台尾部 —— 读数表宁可短，不能空。
+JSON_OUT_PATH="$COPY/$JSON_OUT"
+per_file=$(node -e '
+  const fs = require("node:fs");
+  const path = process.argv[1];
+  if (!fs.existsSync(path)) process.exit(0);
+  const report = JSON.parse(fs.readFileSync(path, "utf8"));
+  // vitest 的 json 报告**不带 project 名**（实测：testResult 只有 name/status/…），故车道标记
+  // 由这份**与 vitest.config.ts 的 machineLane 同口径**的清单判：机器档是串行车道那 5 个文件。
+  // 清单漂移的表现只是表里标记错，不影响判绿红（判据是退出码与标记本身）。
+  const MACHINE = [
+    "ssh-pty-live", "terminal-machine", "e2e-tool-call-machine",
+    "e2e-real-llm-machine", "e2e-tarball-machine",
+  ];
+  const rows = (report.testResults ?? []).map((file) => {
+    const rel = String(file.name ?? "").replace(/\\/gu, "/").replace(/^.*?\/tests\//u, "tests/");
+    const lane = MACHINE.some((m) => rel.includes(m)) ? "machine" : "unit";
+    const assertions = file.assertionResults ?? [];
+    const total = assertions.length;
+    const skipped = assertions.filter((a) => a.status === "skipped").length;
+    const failed = assertions.filter((a) => a.status === "failed").length;
+    const mark = failed > 0 ? "×" : total > 0 && skipped === total ? "↓" : "✓";
+    const detail = `${total} tests${skipped > 0 ? ` | ${skipped} skipped` : ""}`;
+    const ms = Number.isFinite(file.endTime - file.startTime) ? ` ${Math.round(file.endTime - file.startTime)}ms` : "";
+    return `  ${mark} |${lane}| ${rel} (${detail})${ms}`;
+  });
+  process.stdout.write(rows.join("\n"));
+' "$JSON_OUT_PATH" 2>/dev/null || true)
+if [ -n "$per_file" ]; then
+  printf '%s\n' "$per_file" | sed 's/^/  /'
 else
-  grep -E "PASS|SKIP|OK —|FAILED|FAIL " "$log" | tail -30 | sed 's/^/  /'
+  tail -3 "$log" | sed 's/^/  /'
 fi
+rings=$(grep -E "^ *(✓|×|–) [0-9]" "$log" || true)
+[ -n "$rings" ] && printf '%s\n' "$rings" | sed 's/^/  /'
 loud=$(grep -c "!! SKIP (loud)" "$log" || true)
 guard=$(grep -E "privacy-scan: (干净|命中)" "$log" | tail -1 || true)
 files_line=$(grep -E "^ *Test Files" "$log" | tail -1 | sed 's/^ *//' || true)
 tests_line=$(grep -E "^ *Tests " "$log" | tail -1 | sed 's/^ *//' || true)
+# json reporter 下控制台没有 `Test Files` / `Tests` 两行（那是默认 reporter 的），故从 json 自己拼
+# 一份同形汇总。**注意 `numTotalTestSuites` 数是 suite 不是文件**（实测 22 个文件报成 96），
+# 文件级计数只能从 `testResults` 数。
+if [ -z "$files_line" ] && [ -f "$JSON_OUT_PATH" ]; then
+  summary_lines=$(node -e '
+    const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    const files = r.testResults ?? [];
+    // 「整档跳过」= 该文件有断言、但**一条都没跑**（如 ssh-pty-live 门禁未开）：算 skipped 不算 passed。
+    const fullySkipped = (f) => {
+      const a = f.assertionResults ?? [];
+      return a.length > 0 && a.every((x) => x.status === "skipped");
+    };
+    const fFail = files.filter((f) => f.status === "failed").length;
+    const fSkip = files.filter((f) => f.status !== "failed" && fullySkipped(f)).length;
+    const fPass = files.length - fFail - fSkip;
+    const t = { pass: r.numPassedTests ?? 0, fail: r.numFailedTests ?? 0, skip: (r.numPendingTests ?? 0) + (r.numTodoTests ?? 0), total: r.numTotalTests ?? 0 };
+    process.stdout.write(`Test Files  ${fPass} passed | ${fFail} failed | ${fSkip} skipped (${files.length})\nTests  ${t.pass} passed | ${t.fail} failed | ${t.skip} skipped (${t.total})`);
+  ' "$JSON_OUT_PATH" 2>/dev/null || true)
+  files_line=$(printf '%s\n' "$summary_lines" | sed -n '1p')
+  tests_line=$(printf '%s\n' "$summary_lines" | sed -n '2p')
+fi
+[ -f "$JSON_OUT_PATH" ] && rm -f "$JSON_OUT_PATH"
 echo "  ---"
 echo "  typecheck=ok（副本 $copy_short）  ·  loud skip 行数：$loud"
 [ -n "$files_line" ] && echo "  $files_line"
