@@ -7,8 +7,13 @@
  * 连 import 它都无从下手。改前实测：`node -e "import('./scripts/verify-pack.mjs')"` 会真打包并
  * 打印 5 行 `verify-pack: …`。
  *
- * 本套件只测纯逻辑那半截（`entryTargets` / `manifestTargets` / `untarGz` / `isDirectInvocation`）；跑打包器的
- * `main()` 要真实环境（先 `node --run build`），由 `node --run test:release` 自身覆盖。
+ * 本套件以**纯逻辑**那半截为主（`entryTargets` / `manifestTargets` / `untarGz` /
+ * `compileFilesMatcher` / `chunkFamilyDeclarations` / `duplicateChunkFamilies` /
+ * `unexpectedPackedFiles` / `guardSelfCheck` / `isDirectInvocation`），另有**三条**用例
+ * 从 `main()` 的**注入缝 / 临时副本**驱动它（不依赖真实打包器与真实 `lib/` 的在场窗口）：
+ *   - `#90` loud-skip 的 `packdir` 回收面 —— 注入 `detect` 制造"必然找不到打包器"；
+ *   - `#118` 守卫自检的 CLI 通路 —— 在 `%TEMP%` 的**仓库副本**里改副本的 `files`，真跑副本入口。
+ * 跑打包器的**完整** `main()` 要真实环境（先 `node --run build`），由 `node --run test:release` 自身覆盖。
  *
  * 两处刻意的写法：
  *   - **`import` 零副作用**由子进程实测（不是断言源码文本）：import 一次，要求零输出、退出码 0。
@@ -20,6 +25,7 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -35,7 +41,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { chunkFamilyDeclarations, compileFilesMatcher, duplicateChunkFamilies, entryTargets, isDirectInvocation, main, manifestTargets, unexpectedPackedFiles, untarGz } from "../scripts/verify-pack.mjs";
+import { chunkFamilyDeclarations, compileFilesMatcher, duplicateChunkFamilies, entryTargets, guardSelfCheck, isDirectInvocation, main, manifestTargets, unexpectedPackedFiles, untarGz } from "../scripts/verify-pack.mjs";
 
 /** 被测脚本自己的路径与 URL（与 CLI 启动时 `process.argv[1]` / `import.meta.url` 同源）。 */
 const SCRIPT_URL = new URL("../scripts/verify-pack.mjs", import.meta.url).href;
@@ -242,6 +248,50 @@ describe("duplicateChunkFamilies", () => {
   it("no chunk families declared ⇒ nothing to judge (no crash, no false red)", () => {
     expect(duplicateChunkFamilies(["lib/pty/index.js", "cordis.patch.yml"], ["lib/a.js", "lib/b.js"])).toEqual([]);
     expect(duplicateChunkFamilies(undefined as never, ["lib/a.js"])).toEqual([]);
+  });
+});
+
+describe("guardSelfCheck", () => {
+  const realFiles: string[] = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).files;
+
+  it("THE POINT (#118): a `files` face widened to `lib/**` is reported, not silently green", () => {
+    // 票面证据逐字（2026-10-17 实测）：`lib/**` 下两条判据**双双**返回空 —— 无族可数，
+    // 无件在声明面之外。守卫因此全绿放行历史 chunk。本函数是那条"我这次没在守"的**可见信号**。
+    const findings = guardSelfCheck(["lib/**"]);
+    expect(findings.map((finding) => finding.code)).toEqual(["no-chunk-family"]);
+    // 诊断必须点名**是哪条声明**把族面吃掉了 —— 否则拿到红的人不知道改哪一行。
+    expect(findings[0].detail).toContain("lib/**");
+  });
+
+  it("deleting the family declarations wholesale is reported too — same silence, another spelling", () => {
+    // 票面 Direction 1 的另一半：不是宽写，而是把族声明整行删掉只留具体名。
+    const findings = guardSelfCheck(["lib/pty/index.js", "lib/types/**/*.d.ts", "cordis.patch.yml"]);
+    expect(findings.map((finding) => finding.code)).toEqual(["no-chunk-family"]);
+  });
+
+  it("NO FALSE ALARM: the real `files` face is clean — the guard IS armed there", () => {
+    // 变异验证的另一半（票面 AC2）：正常 `files` 下这条响亮路径**不得**触发。
+    // 真实声明面有 5 条 chunk 族，判据可达且有效。
+    expect(guardSelfCheck(realFiles)).toEqual([]);
+  });
+
+  it("a face with SOME families left is clean even if a wildcard is also present", () => {
+    // `lib/**` 与族声明**共存**时不报：族判据仍有触发面 —— 逐族计数用的是**该族自己的 glob**，
+    // `lib/**` 本身不是族（`chunkFamilyDeclarations` 排除含 `**` 的声明），故不会污染任何族的命中数。
+    // 本判据只问"族面是否整体消失"，不越界管宽窄 —— 那是 #117 的面（`lib/types/` 下的内容盲声明）。
+    expect(guardSelfCheck([...realFiles, "lib/**"])).toEqual([]);
+    expect(guardSelfCheck(["lib/pty-*.js", "lib/**"])).toEqual([]);
+  });
+
+  it("an unreadable `files` shape is reported too — 'cannot parse' is not evidence of 'armed'", () => {
+    // 与 `unexpectedPackedFiles` 的对比：那边形状不合法时**放行**（`[]`，为的是不假红）；
+    // 这边若照抄成"放行"，就等于把**未知**当成**已守** —— 一份读不懂的 `files` 恰恰是最该响亮的形态。
+    // 故方向相反：非数组 / 全非字符串一律报 `unreadable-files`。
+    // ⚠️ 这比票面 AC 多守一格（票面只点"族清单为空"）：理由是它同属"守卫被架空"这一族，
+    // 而非新增判据面 —— 实现里的取舍写在 `guardSelfCheck` 头注，此处只锁行为。
+    for (const malformed of [undefined, null, 42, [], [42, null]] as never[]) {
+      expect(guardSelfCheck(malformed).map((finding) => finding.code)).toEqual(["unreadable-files"]);
+    }
   });
 });
 
@@ -718,6 +768,229 @@ describe("loud skip 路径（#90）：注入驱动，environment-independent", (
     } finally {
       console.warn = originalWarn;
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * #118 的 **CLI 层**实证：`main()` 里那段自检接线是**活代码**，不是摆设。
+ *
+ * ## 为什么必须有这条（纯函数单测不够）
+ *
+ * 纯函数级用例锁的是 `guardSelfCheck` 的**判定**（AC3 的字面要求）。但 AC1 要的是
+ * 「有**可达**的响亮路径」—— 若 `main()` 里那段 `if (selfCheck.length > 0)` 被误删、被短路、
+ * 或干脆没接上，**纯函数用例照样全绿**（它压根不经过 `main()`）。这正是 `#111` 留下的教训：
+ * 一个看起来在守、实际守不住的判据比没有更危险。故这里从**真实 CLI** 取读数。
+ *
+ * ## 手法：临时副本，**绝不写产品文件**（沿用 #90 的变异取证纪律）
+ *
+ * 要把 `files` 改成 `lib/**`，又不能碰权威树的 `package.json`（那是产品文件，写它 = 污染工作树；
+ * 且 `git cat-file blob > file` / `Set-Content -NoNewline` 这类还原手法本仓**真损坏过文件**）。
+ * 那条纪律的**本体**在**本文件上方** #90 用例的头注（搜「取红时**绝不写产品文件**」），
+ * **不在** `docs/agents/TESTING.md` —— 后者只讲「实验标记要死掉再提交」那条（调试 / 变异探针
+ * 要带方括号大写前缀，见 `TESTING.md` §证据纪律），并不含"变异取证不得写产品文件"这一条。
+ * 故：把 `scripts/` 与 `package.json` 复制进 `%TEMP%` 的独立子目录，**只改副本**的 `files`，
+ * 用真实 node 跑副本入口。
+ *
+ * ## 本票实测的一条附加陷阱：还原用 `git checkout --` 会连**未提交的实现**一起抹掉
+ *
+ * 本票的变异取证（M1 = 短路 `main()` 的自检接线；M2 = 让自检永远报）**两次**都红在正确的位置
+ * （M1 只红 CLI 用例、纯函数全绿 ⇒ 证明该用例堵的正是"接线被删"这个洞；M2 红 6 条 ⇒ 证明
+ * "永远报"的退化也会被拦）。但 M1 的还原用了 `git checkout -- scripts/verify-pack.mjs` ——
+ * 该文件当时**整个实现都还没提交**，于是 checkout 把**变异体与实现一起**退回 HEAD，
+ * `guardSelfCheck` 一度从工作树消失（靠变异前留的 `%TEMP%` 备份才恢复）。
+ *
+ * **教训**：`git checkout -- <path>` 是"退回 HEAD"，不是"撤销上一次编辑"。在**未提交**的树上做
+ * 变异，还原手段必须与"实现尚未入库"这个事实匹配 —— 要么变异前后各留一份备份（本票的做法），
+ * 要么先把实现提交再做变异。
+ *
+ * ⚠️ **这条修正了本文件上方 #90 用例头注里的一句**：那里写"**至少**要还原时用
+ * `git checkout -- <path>`，不要手工重定向"—— 那是在**已提交**的前提下成立的建议（较手工重定向
+ * 确实更安全）。但#90 当时同样是**未提交**的树上做的变异，故那句在它自己的场景里也有同一个洞，
+ * 只是那次没踩到。两处口径以本条为准：**未提交的树上，`git checkout --` 不是还原手段**。
+ * （保留 #90 那句不删，是因为它对"已提交"的情形仍是对的建议；但读它的人必须先读本条。）
+ *
+ *   为什么这样仍是真读数：`repoRoot` 取的是**脚本自己所在目录**的上级（`import.meta.url` 推导），
+ *   不是 cwd ⇒ 副本入口天然把副本当仓库根，读的就是副本那份被宽写的 `package.json`。
+ *
+ * ## 判据为什么能判（两个面各锁一半）
+ *
+ *   - **响亮面**（AC1）：`lib/**` 下必须 `exit 1` 且 stderr 出现自检文案。自检在**判据 1 之前**
+ *     运行（`main()` 里它是第 0 步），故副本**不需要** `lib/` / `cordis.patch.yml` / `node_modules`
+ *     —— 判据 1/1b 的缺件输出会跟在后面，但那不影响本用例的断言（只看自检那三行与退出码）。
+ *     这也是本用例**便宜**的原因：不到打包那一步就返回了，不会 spawn 打包器。
+ *   - **不假报面**（AC2）：同一手法跑**真实** `files`（不改副本的 `package.json`）时，自检文案
+ *     必须**不出现**。这一步会走完打包与判据 4/5（副本能自洽跑通到那一步；判据 2 的 import smoke
+ *     在副本里会因够不到权威树的 `node_modules` 而红，故**只断言自检面、不断言总退出码**）。
+ *
+ * ⚠️ **它不锁**：判据 4/5 的产物判定正确性（判据 0 只问"我还有没有触发面"）、文案的逐字稳定性
+ * （按子串判"确实走到了自检分支"）、`files` 宽窄本身（那是 #117 的面）。
+ */
+describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写产品文件", () => {
+  /** 把脚本与 manifest 复制成一个独立"仓库根"，返回该目录。 */
+  function makeRepoCopy(tag: string): string {
+    const root = tempDir(tag);
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    for (const name of ["verify-pack.mjs", "script-entry.mjs"]) {
+      writeFileSync(join(root, "scripts", name), readFileSync(join(repoRoot, "scripts", name)));
+    }
+    writeFileSync(join(root, "package.json"), readFileSync(join(repoRoot, "package.json")));
+    return root;
+  }
+
+  /** 在副本入口上真跑一次 CLI，返回 stdout / stderr / 退出码。 */
+  function runCopy(root: string) {
+    return spawnSync(process.execPath, [join(root, "scripts", "verify-pack.mjs")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+  }
+
+  /**
+   * **并发前置门槛**（task-5 的同一手法，#90 用例已验证过）：等权威树 `lib/` 里判据 1/1b 需要的
+   * 指针全部就位，再去复制它们。
+   *
+   * **为什么 #118 也需要它**（本票在全量套件里实测到的红）：车道里 `tests/clean-lib.spec.ts` 会
+   * **删掉 `lib/` 三个 entry 目录再真跑 `node --run build` 重建**。本套件的副本 fixture 从权威树
+   * `cpSync` 那棵 `lib/` —— 若正好落在重建窗口内，复制到的是**半棵**，于是副本里的判据 1/1b
+   * 早退 `return 1`，本用例的"自检确实跑了"断言随之红。实测：单档 50/50 绿，而 `node --run test`
+   * 全量里 4 条红（含 #90 那条）—— **只在并发环境下红，不是确定性缺陷**。
+   *
+   * 复刻用的是脚本**已导出**的 `entryTargets` / `manifestTargets` ⇒ 等待条件就是 `main()` 判据 1/1b
+   * 自己的前置条件，不是近似物。**等不到就响亮红**（绝不降级 skip）；上界 {@link PRELUDE_WAIT_MS}
+   * 与轮询间隔 {@link PRELUDE_POLL_MS} 复用上面 #90 用例的常量（同一份并发事实，不另立一套）。
+   *
+   * 本函数**只读**权威树，不改它 —— 修 `lib/` 是 `clean-lib` 的写域，抢它只会制造更坏的窗口。
+   */
+  async function waitForRepoLibReady(): Promise<void> {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+    const targets = [
+      ...entryTargets(pkg.exports).filter(([, target]) => !target.includes("*")),
+      ...manifestTargets(pkg),
+    ].map(([, target]) => target.replace(/^\.\//, ""));
+    const missing = () => targets.filter((target) => !existsSync(join(repoRoot, target)));
+    const deadline = Date.now() + PRELUDE_WAIT_MS;
+    let still = missing();
+    while (still.length > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, PRELUDE_POLL_MS));
+      still = missing();
+    }
+    expect(
+      still,
+      `权威树 lib/ 的判据 1/1b 指针在 ${PRELUDE_WAIT_MS} ms 内未就位（并发重建窗口或真缺件）：` +
+        `${still.join(", ")} —— 缺件会让副本 fixture 复制到半棵树`,
+    ).toEqual([]);
+  }
+
+  /**
+   * 让副本能走完判据 1/1b，从而**到达**判据 4/5：判据 1/1b 是**早失败**
+   * （指针不在就 `return 1`），所以"只跑判据 0 的响亮用例"不需要这些件，
+   * 而"要看判据 4/5 正常绿行"的用例**必须**备齐。
+   *
+   * 备的是**权威树已有的真件**（只读复制，不改）：`lib/` 整棵 + `cordis.patch.yml`。
+   * 判据 2 的 import smoke 会因副本够不到权威树 `node_modules` 而红 —— 那是**副本的环境性**
+   * 结果，与本用例无关（故下方只断言自检面与判据 4/5 的 stdout，不碰总退出码）。
+   */
+  function furnishForPackedCriteria(root: string): void {
+    cpSync(join(repoRoot, "lib"), join(root, "lib"), { recursive: true });
+    cpSync(join(repoRoot, "cordis.patch.yml"), join(root, "cordis.patch.yml"));
+  }
+
+  it("THE POINT (#118): `files` 宽写成 `lib/**` ⇒ 真实 CLI exit 1 并打出自检文案（AC1 可达）", async () => {
+    const root = makeRepoCopy("selfcheck-wide");
+    try {
+      // 备齐 lib/ 与 cordis.patch.yml，让判据 1/1b **不是**早退的那条路 —— 否则退出码会被
+      // 判据 1 的 `return 1` 污染，"exit 1" 就失去判别力（复核 C2 指出的一点，实测确认）。
+      await waitForRepoLibReady();
+      furnishForPackedCriteria(root);
+      // 只改**副本**的 files：族声明全部消失，等价于票面"宽写成 lib/**（或删掉族声明）"。
+      const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+      pkg.files = ["lib/**"];
+      writeFileSync(join(root, "package.json"), JSON.stringify(pkg, null, 2));
+
+      const run = runCopy(root);
+      // **先证明"真的走到了自检分支"**（防空转假绿）：文案是这条用例真正的判别面 ——
+      // 判据 1 早退、判据 2 环境性红都会给出 status 1，故 status 单靠自己**证明不了**自检跑过。
+      expect(run.stderr, "必须真的走到自检分支（否则本用例什么都没验）").toContain("守卫自检失败");
+      expect(run.stderr).toContain("[no-chunk-family]");
+      expect(run.stderr).toContain("lib/**");
+      // 响亮：非零退出码。前提（判据 1/1b 已过）由上面的 furnish 保证。
+      expect(run.stderr, "判据 1/1b 不该早退（备齐后它们必须过）").not.toContain("pointers to missing files");
+      expect(run.status, "自检失败必须响亮（exit 1）").toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("NO FALSE ALARM (AC2)：真实 `files` 下同一条通路**不**报 —— 判据 4/5 照常跑出正常绿行", async () => {
+    // 副本 = 真实 package.json（**不改** files）。这条是变异验证的另一半：
+    // 若自检写成了"永远报"，上面的响亮用例照样绿，只有这条能拦。
+    const root = makeRepoCopy("selfcheck-real");
+    try {
+      await waitForRepoLibReady();
+      furnishForPackedCriteria(root);
+      // 判据 0 在**最前**且早于打包：先按下自检静默取证，再看判据 4/5 是否照常报告。
+      const run = runCopy(root);
+      expect(run.stderr, "真实 files 下自检不得触发（不假报）").not.toContain("守卫自检失败");
+      // 判据 1/1b 必须真的过了（否则下面的判据 4/5 根本没跑 —— 断言会假绿成"没输出"）。
+      expect(run.stderr, "副本缺 lib/ 或缺 cordis.patch.yml 会让判据 1/1b 早退").not.toContain(
+        "pointers to missing files",
+      );
+      // 判据 4/5 仍**有触发面**：它俩照常执行并打出各自的正常读数（证明守卫确实"武装着"）。
+      expect(run.stdout).toContain("no chunk family has two generations in tarball");
+      expect(run.stdout).toContain("no unexpected lib/ files in tarball");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("THE POINT (#118，复核 C1 的回归): loud skip **不得吞掉**判据 0 已判定的红", async () => {
+    // 复核发现、本票实测确认的真洞：loud-skip 分支原先写死 `return 0`，把判据 0 已设的
+    // `exitCode = 1` **直接丢弃** ⇒ "找不到打包器"的环境下自检**报了红却退出 0**（假绿的一种）。
+    // 这与 #90 修的是**同一类**洞（一条退出路径悄悄丢弃先前累积的结论），故就地补锁。
+    //
+    // 手法：**同进程**用 `main({ detect })` 注入"必然找不到打包器"（#90 已开的缝，不新增第二道），
+    // 并把副本的 `files` 宽写。判据 1/1b 在 `main()` 里读的是**脚本自己所在仓库**的 package.json
+    // ——故这里必须在**副本**里跑：权威树的 `files` 不能被改。
+    const root = makeRepoCopy("selfcheck-skip");
+    try {
+      await waitForRepoLibReady();
+      furnishForPackedCriteria(root);
+      const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+      pkg.files = ["lib/**"];
+      writeFileSync(join(root, "package.json"), JSON.stringify(pkg, null, 2));
+
+      // 在副本里用同一个 main() 注入驱动 —— 副本入口是独立模块，故这里动态 import 副本的那份。
+      const copyUrl = new URL(`file://${join(root, "scripts", "verify-pack.mjs").replaceAll("\\", "/")}`).href;
+      const copyMain: (options: { detect: object }) => Promise<number> = (await import(copyUrl)).main;
+
+      const warnings: string[] = [];
+      const errors: string[] = [];
+      const originalWarn = console.warn;
+      const originalError = console.error;
+      try {
+        console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+        console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+        const status = await copyMain({
+          detect: {
+            candidateExists: () => false,
+            probe: () => {
+              throw new Error("no packer on PATH");
+            },
+          },
+        });
+        // (a) 自检**确实**判了红（否则下面 (b) 是空断言）。
+        expect(errors.join("\n"), "必须真的走到自检分支").toContain("守卫自检失败");
+        // (b) 又**确实**走到了 loud skip（两个分支在同一次运行里都发生过）。
+        expect(warnings.join("\n"), "必须真的走到 loud skip 分支").toContain("!! SKIP (loud)");
+        // (c) THE POINT：loud skip 返回的码必须**带着**判据 0 的红，而不是写死 0。
+        expect(status, "loud skip 不得吞掉判据 0 已判定的红（原为写死的 return 0）").toBe(1);
+      } finally {
+        console.warn = originalWarn;
+        console.error = originalError;
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

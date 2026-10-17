@@ -17,6 +17,8 @@
  *   6. (#111, DEFENSIVE) no `lib/` file outside the `files` face. Honestly downgraded: npm's
  *      `files` allowlist already blocks these at pack time, so the CLI never sees them — kept
  *      for a future looser `files` / packer. Wording must never imply it guards stale chunks.
+ *   0. (#118) 守卫**自检**（先于以上各条）：判据 4/5 的判据清单来自 `files`，`files` 被宽写成
+ *      `lib/**` 时两者**双双静默失效**。自检没有触发面时**响亮**报错（exit 1），不静默全绿。
  *
  * Exit 0 = all pointers resolvable. **Requires a prior build** (`node --run build`),
  * so it is not part of `node --run test`; run it via `node --run test:release`, which
@@ -24,7 +26,8 @@
  * `!! SKIP (loud)`) rather than reporting an unearned pass.
  *
  * 结构（#86）：`entryTargets` / `manifestTargets` / `untarGz` / `compileFilesMatcher` /
- * `chunkFamilyDeclarations` / `duplicateChunkFamilies` / `unexpectedPackedFiles` 是**纯函数**
+ * `chunkFamilyDeclarations` / `duplicateChunkFamilies` / `unexpectedPackedFiles` /
+ * `guardSelfCheck`（#118）是**纯函数**
  * （导出，见 `tests/verify-pack.spec.ts` 的离线单测）；
  * `findPacker` 亦导出但**非纯**（碰文件系统与 PATH 探针）：装箱交付链 e2e 现场打包时复用它，
  * 否则打包器候选顺序会有第二份。
@@ -349,6 +352,67 @@ export function duplicateChunkFamilies(files, packedPaths) {
   return violations
 }
 
+/** 守卫**自检**（纯函数，导出）：判"本轮这两条判据是否还有触发面"，而不是判产物。
+ *
+ *  ## 它修的是什么（#118）
+ *
+ *  判据 4/5 的**判据清单本身**来自 `package.json` 的 `files`：
+ *  `duplicateChunkFamilies` 从 `files` 里挑 chunk 族再计数，`unexpectedPackedFiles`
+ *  判"没被 `files` 任何一条 glob 覆盖的 `lib/` 件"。两者都**假定族声明在场**。
+ *  于是有人把族名宽写成 `lib/**`（或把族声明整行删掉）时，**两条判据双双静默失效** ——
+ *  无族可数、无件在声明面之外，守卫全绿放行历史 chunk（票面证据逐字复现：
+ *  `duplicateChunkFamilies(['lib/**'], …)` → `[]`，`unexpectedPackedFiles(['lib/**'], …)` → `[]`）。
+ *
+ *  一个**看起来在守、实际守不住**的判据比没有更危险（#111 已把这条写进本文件的口径）。
+ *  本函数就是那条**可见信号**：让守卫在被架空时自己说出来，而不是安静地打绿行。
+ *
+ *  ## 为什么是"自检"而不是"再加一条产物判据"
+ *
+ *  票面 Out of scope 明写不改 `files` 面本身、不改族判据语义。故本函数**只读 `files` 声明**、
+ *  不碰产物，也就不可能对正常构建假红（它连 `packedPaths` 都不接）。方向 2（`lib/*.js` 总数上限）
+ *  被否：它与 #111 已论证过的"rolldown 将来可能切多个 chunk"的假红面直接冲突。
+ *
+ *  ## 判据（返回违规清单，空数组 = 自检通过）
+ *
+ *  - `no-chunk-family`：可读的 `files` 里**一条 chunk 族都没有** ⇒ 判据 4 被架空。
+ *    这是 `lib/**` 宽写与"删掉族声明"的共同归宿，故 `detail` 列出**实际声明**，让人一眼看出是哪一行。
+ *  - `unreadable-files`：`files` 非数组 / 全非字符串 ⇒ 连声明面都读不懂，同样不能算"已守"。
+ *
+ *  **`lib/**` 与族声明共存时不报**：那时族判据仍有触发面 —— `duplicateChunkFamilies` 逐族用
+ *  **该族自己的 glob** 计数，`lib/**` 本身不是族（`chunkFamilyDeclarations` 排除含 `**` 的声明），
+ *  故它不会把子目录件或 `.d.ts` 混进任何族的命中数。实测（本票）：`['lib/**','lib/pty-*.js']`
+ *  喂两代 `pty` chunk ⇒ 照常报 `lib/pty-*.js -> 2 matches`；喂单代 + 子目录件 ⇒ 空（无假红）。
+ *  多一条宽声明是**宽窄**问题，不是**有无**问题 —— 宽窄归 `#117` 的面（那份 `lib/types/` 下的
+ *  跨段 `.d.ts` 声明是**内容盲** glob），本判据不越界；票面 Comments 已明写两票"判据面不同，别合并"。
+ *
+ *  ⚠️ **本判据不覆盖"部分宽写"**：若族声明只剩一条而 `files` 同时含 `lib/**`，自检静默 ——
+ *  因为判据 4 对**剩下的那条族**仍有效。这是刻意的边界（票面 Out of scope：不改族判据语义），
+ *  不是漏洞；真要收紧"族声明条数"属结构断言，票面列为**非强制**方向 ③，未采纳。
+ *
+ *  @param files `package.json` 的 `files` 列表。
+ *  @returns `[{ code, detail }]`，空数组表示自检通过（判据 4 有触发面）。
+ */
+export function guardSelfCheck(files) {
+  const declarations = Array.isArray(files) ? files.filter((pattern) => typeof pattern === 'string') : []
+  if (declarations.length === 0) {
+    return [
+      {
+        code: 'unreadable-files',
+        detail: `package.json 的 "files" 不是可读的字符串数组：${JSON.stringify(files)}`,
+      },
+    ]
+  }
+  if (chunkFamilyDeclarations(declarations).length === 0) {
+    return [
+      {
+        code: 'no-chunk-family',
+        detail: `没有任何 chunk 族声明（形如 lib/<name>-*.js）—— 实际声明：${declarations.join(', ')}`,
+      },
+    ]
+  }
+  return []
+}
+
 /** 逐个契约指针查**工作树**存在性（碰 I/O，故不导出）：返回缺失行 `label -> target`。
  *
  *  存在性判据**只此一处** —— exports 指针（判据 1）与 manifest 指针（#88）走同一实现：
@@ -369,8 +433,10 @@ async function missingInTree(pairs) {
  *  `process.exit(0)`，而 `process.exit` 同步终止进程 ⇒ 该 `try` 的 `finally`（`rmSync(packdir)`）
  *  永远跑不到，`%TEMP%` 每次遗留一个空的 `dsh-shell-host-pack-*`。改为 return 后由调用点统一
  *  `process.exit(await main())`，回收走正常控制流。
- *  判据 1/1b 是**早失败**（`return 1`：指针都不存在时没必要继续）；判据 2/3/4/5 用局部
+ *  判据 1/1b 是**早失败**（`return 1`：指针都不存在时没必要继续）；判据 0/2/3/4/5 用局部
  *  `exitCode` 累积（保住"多条判据可同时红、不提前返回"的既有语义），末尾 `return exitCode`。
+ *  loud-skip 分支（找不到打包器）同理 `return exitCode`（#118 前写死的 `return 0` 会吞掉
+ *  判据 0 已设的红 —— 见该分支内的说明）。
  *
  *  `detect` 是给用例的**可选**注入（#90），原样透传给 `findPacker()`；不传时探测依赖
  *  回落到真实实现 —— 真实入口（下方调用点）**不传参**，故行为零变化。
@@ -395,6 +461,22 @@ export async function main({ detect } = {}) {
   ).map(([entry]) => [entry, true])).keys()]
   // 判据 2/3/4/5 共同累积的退出码（#90）：这些分支**不提前返回**，末尾一次性 return。
   let exitCode = 0
+
+  // 0. **守卫自检**（#118）：判据 4/5 的判据清单来自 `files`，`files` 宽写成 `lib/**`（或族声明
+  //    被删）时两条判据**双双静默失效**。故先问一句"这轮我还有触发面吗" —— 没有就**响亮**，
+  //    而不是打绿行。放在最前：族面都不存在时，后面的判据 4 输出只会是空洞的绿。
+  const selfCheck = guardSelfCheck(pkg.files)
+  if (selfCheck.length > 0) {
+    console.error(
+      'verify-pack: !! 守卫自检失败 —— 本次运行的 chunk 族判据没有触发面，其"全绿"不代表产物干净：',
+    )
+    for (const { code, detail } of selfCheck) console.error(`  [${code}] ${detail}`)
+    console.error(
+      'verify-pack: 若确实要放宽 "files"，请同时确认族声明仍在（`lib/<name>-*.js` 形态）；' +
+        '详见 #118。',
+    )
+    exitCode = 1
+  }
 
   // 1. every concrete pointer names a real file in the working tree.
   const missing = await missingInTree(entries)
@@ -426,7 +508,13 @@ export async function main({ detect } = {}) {
           '本次未验证 tarball 完整性：exports 指针只做了存在性检查。',
       )
       rmSync(unpackRoot, { recursive: true, force: true })
-      return 0
+      // **`return exitCode`，不是 `return 0`（#118）**：loud skip 只该放弃**tarball 那半**的验证，
+      // 不该赦免**已经判定过的**失败。守卫自检（上面的判据 0）在这之前就设了 `exitCode = 1`；
+      // 早先写死的 `return 0` 会把它**吞掉** —— 于是"`files` 已被宽写到没有族声明"的环境下，
+      // 自检**报了红却退出 0**（实测：注入 `detect` 造"必然找不到打包器" ⇒ `main()` 返回 0，
+      // 而 stderr 同时有自检红与 SKIP 文案）。这与 #90 修的是**同一类**洞：一条退出路径
+      // 悄悄丢弃先前累积的结论。判据 1/1b 的 `return 1` 是**早失败**，不走这里，保持不变。
+      return exitCode
     }
     const args = ['pack', '--pack-destination', packdir]
     const out = packer.kind === 'npm-cli'
