@@ -237,6 +237,40 @@ cd <src> && git fetch --depth 1 origin tag dsh-v0.2.1-rc.1 && git checkout dsh-v
 `@Remote canOpenWorkspacePath`）。**会话 RPC 侧切锚零影响**，选模型仍走 `selectModel`。
 `dsh-invariants` 的移除见现锚列与 §4.4。
 
+### 2.1 锚不匹配时的行为与精确版本豁免（`0.2.1-rc.1` 实测）
+
+bundle 声明的 DSH 版本要求不满足运行版本时（规则：声明了 `engines.dsh` 就**只**看它、
+peer 被忽略；否则逐条 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` peer 必须满足），
+rc.1 分两处体现：
+
+- **安装侧**（`dsh plugin --profile <p> add <spec>`）：以 `incompatible-version` 拒绝，
+  stderr 打印 `installation rejected: Plugin <name>@<ver> is incompatible with dsh <runtime>:
+  requirements {...}` + 精确的豁免命令；`exit 1`，profile 不改（**fail-closed**）。
+- **启动侧**：bundle **不是行**，它自身要求不满足时**整层被跳过**，启动器每次启动打印一次
+  `skipping profile bundle "<name>": <reason>`；该 bundle 的行不出现在组合里
+  （`--dump-config` 亦然）。普通**行**不满足则是逐行 `disabled` + stderr 报告，语义不同。
+
+**精确版本豁免**（#107 实测，rc.1 宿主 + `0.2.0-rc.2` 钉的 bundle）：
+
+```bash
+dsh plugin --profile <p> allow-version <name>@<ver> --dsh-version <exact-runtime> --accept-risk
+# → 先打印「可能崩溃 / 数据损坏」警告，再 "allowed <name>@<ver> for DSH <exact>"
+#   记录写进 profile 的 compatibility.json
+dsh plugin --profile <p> add <spec>     # 重试 → 接受（pnpm 另会 warn peer 未解析）
+```
+
+豁免按**「精确包版本 × 精确运行时版本」对**生效：切锚后旧豁免不再匹配（等于自动失效），
+`revoke-version` 可显式撤销。桌面端 `desktop` profile 由 app 持有，只能用随桌面交付的
+`dsh` 命令、且在 app 退出时操作。
+
+**rc.1 的两条安装 / 组合行为变化**（与锚无关，但会影响挂具与操作脚本）：
+
+- `dsh --profile <p> --from-default-profile <t>` 现在**替换**已存在的目标 profile
+  （连同其 `package.json` 依赖、`node_modules`、`cordis.patch.yml` 一起删除重建），
+  以前是拒绝 —— 重复执行等于重置。
+- HMR 下对**已安装**的包再 `installBundle` 直接以 `already-installed` 拒绝（不再是
+  `restart-required`）：换版本 / 来源要先 `removeBundle` 再装。
+
 ## 3. 源码部署步骤（msys2 侧）
 
 ```bash
