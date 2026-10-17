@@ -102,6 +102,24 @@ Gotchas (learned the hard way):
 
 - 提交或复核前先 `git add -A` 再 `git diff --staged` —— **否则新增文件不进 diff**
   （`docs/code-review-brief.md` §1；此前真实踩过：审出的面少了新文件）
+- **但同一个工作树可能有并行会话在写**（本机实测多次：两个会话共用一个 `<repo>` 检出，
+  各自提交、各自推送）。此时 `git add -A` 会把**别人的未提交改动**一起收进你的提交 ——
+  实测（2026-10-17/18）一次纯文档提交吞掉了另一会话正在改的 `tests/verify-pack.spec.ts`：
+  内容没丢、也过了 pre-commit typecheck 与 pre-push 全量车道，但**归属与意图混了**。
+  ⇒ 暂存前先 `git status --short` 看清有哪些文件；**不属于你本次改动的一律不要收**，
+  用**显式路径** `git add <path> …` 代替 `-A`（只在确认自己是唯一写者时才用 `-A`），
+  提交后再核 `git show --stat` 的清单是否恰好等于你的改动面。
+- **而且别人可能已经把改动放进了暂存区**（`git status --short` 第一列是 `M`）—— 此时
+  `git add <你的路径>` **挡不住**它，`git commit` 会把**整份索引**一起提交（本仓第二次踩到：
+  修本条 gotcha 的提交自己就把对方已 staged 的 `tests/verify-pack.spec.ts` 收进去了）。
+  ⇒ 提交前看 `git diff --staged --name-only`；发现别人的条目就先
+  `git restore --staged <path>`（工作树内容不动、对方不丢东西），或者干脆**带 pathspec 提交**：
+  `git commit -F <msg> -- <你的路径>`（只提交该路径，索引里其余条目原样留着）。
+- **共享工作树还会让 pre-push 车道互相阻塞**：`.githooks/pre-push` 跑车道前要求**权威树工作树
+  干净** —— 只要另一个会话还有未提交改动（哪怕与你无关），推送就会被拒（实测：一次纯文档提交
+  因此推不上去）。这是**前置未满足，不是产品红**：等对方收尾，或确认自己的提交面已单独验过
+  （`node --run typecheck` + 与改动相关的 spec + `scripts/privacy-scan.mjs`）后，走钩子自己写的
+  逃生口 `SKIP_HOOKS=1 git push …`，并把「跳了什么、为什么」写进当次汇报。
 - `!!js` values inside `cordis.patch.yml` that contain a colon-space (`: `)
   must be block scalars (`!!js >-`) — colon-space breaks YAML plain-scalar
   parsing. Colon-free inline expressions (the platform guards) are fine;
