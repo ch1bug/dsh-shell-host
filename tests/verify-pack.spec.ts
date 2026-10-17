@@ -555,6 +555,17 @@ describe("import 本脚本零副作用", () => {
   });
 });
 
+/**
+ * 并发门槛的边界（task-5）：等 `main()` 判据 1/1b 的指针就位，最多等这么久（每 `PRELUDE_POLL_MS`
+ * 一探）。取值依据：车道里 `clean-lib.spec.ts` 的「删 `lib/` → `node --run build` 重建」窗口
+ * 实测在秒级到十几秒级；给到 60 s 是**宽松上界**（专治慢机器），而等不到就红 ⇒ 真缺件仍会响亮
+ * 失败（不会因为上界宽就把缺陷吞成绿）。轮询只做 `existsSync`，无 I/O 压力。
+ */
+const PRELUDE_WAIT_MS = 60_000;
+
+/** 前置门槛的轮询间隔（ms）。 */
+const PRELUDE_POLL_MS = 250;
+
 describe("loud skip 路径（#90）：注入驱动，environment-independent", () => {
   /**
    * #90：**loud skip 路径**（`findPacker()` 返回 null）不得在 %TEMP% 下遗留 packdir。
@@ -586,12 +597,35 @@ describe("loud skip 路径（#90）：注入驱动，environment-independent", (
    *     ⇒ 两者前缀不重叠，直接读 `tmpdir()` 条目即可，不必在用例与脚本之间做集合差。
    *     且**只**拿调用前后两次快照的**差集**判红（不是"快照必须为空"）：本机有 2 个修复前历史
    *     残留，用绝对计数会假红 —— 残留是泄漏的后果，不是前提。
-   *   - **空 `package/` 让判据 1/1b 拿到空输入**：`repoRoot` 恒取被测脚本所在目录、`pkg` 恒读其
-   *     `package.json`（与 cwd 无关），故无法自造一份 manifest。改为铺设空的 `package/` 目录 ⇒
-   *     `entryTargets` / `manifestTargets` 全空 ⇒ missing 是**空集合**（不是"检查通过"）⇒
-   *     不进早退分支（`return 1`）⇒ 抵达建 packdir 与 skip 判据。
+   *   - **空 `package/` 是早期写法的残留，判据 1/1b 实际查的是真 `lib/`**（第二轮的前提修正）：
+   *     `repoRoot` 恒取被测脚本所在目录、`pkg` 恒读其 `package.json`（与 cwd 无关）⇒
+   *     `entryTargets(pkg.exports)` / `manifestTargets(pkg)` **永远**是那份真实指针集合
+   *     （`.`→`./lib/pty/index.js`、`./pty`→…、`main`→`lib/pty/index.js` 等），**不会**因为
+   *     cwd 或空 `package/` 而变空。故本用例**必须**先等这些指针在磁盘上齐全（见下面的前置门槛），
+   *     否则 `main()` 会在判据 1/1b 早退 `return 1`，根本到不了 loud-skip。
    *   - **`probe` 必须抛错才算"不可用"**（与默认 `execFileSync` 的语义一致：不抛 = 命中）。
    *     故用 `() => { throw … }`，**不能**用空函数当"未找到"。
+   *
+   * ## 并发下的确定性（task-5：msys 车道红的根因与修法）
+   *
+   * **根因**：`main()` 的判据 1/1b 查的是**仓库真实 `lib/`**（见上）。而车道里
+   * `tests/clean-lib.spec.ts` 会**删掉 `lib/` 的三个 entry 目录再真跑 `node --run build` 重建**
+   * —— 重建窗口内 `./lib/pty/index.js` 之类**瞬时不存在** ⇒ 判据 1/1b 拿到非空 missing ⇒
+   * **早退 `return 1`** ⇒ 到不了 loud-skip ⇒ 断言 (a) 红。实测：车道内红（连两次）、同一副本
+   * 单独跑 42 passed、Windows 树连跑 5 次 5/5 绿 ⇒ **只在并行环境下红，不是确定性缺陷**。
+   *
+   * **修法（选 C 的变体：前置门槛，而非盲目重试）**：调用 `main()` **之前**，用**已导出**的
+   * `entryTargets` / `manifestTargets` **精确复刻**判据 1/1b 的输入集合，等这些指针在磁盘上
+   * 全部就位再调用。这样等待的条件就是 `main()` 自己的前置条件，不是近似物。
+   *   - **为何不用 B（够不到就 skip）**：那等于把这条判据退回"恒 skip"，正是上一轮开注入缝要
+   *     消灭的形态 —— 它会静默失去实证价值。
+   *   - **为何不用盲目重试**：重试只有在窗口关闭后才有意义；先等前置条件（而非"重试到不红"）
+   *     语义更准，也避免把真正的缺陷（指针真的缺失）误当成并发而吞掉。
+   *   - **上界与失败姿态**：最多等 {@link PRELUDE_WAIT_MS} 毫秒（每 {@link PRELUDE_POLL_MS} 一探）；
+   *     **等不到就是红**，报出仍缺失的指针与等待时长 —— **绝不**降级为 skip 或静默通过。
+   *     故并发窗口只是"等一会儿"，而真正缺件（例如有人在删 `lib/` 却不重建）仍然响亮失败。
+   *   - **不 spawn、不 build**：本用例只读文件存在性，不去修 `lib/`（修 `lib/` 是他人的写域，
+   *     也会与 `clean-lib` 抢）。
    *
    * ⚠️ 它**只**锁 #90 的**回收面**（loud-skip 时 packdir 是否遗留）。以下都**不在**覆盖内，
    * 别让它冒充更强的保证：打包器在场时的清理路径；判据 3/4/5 的判定正确性；loud-skip 文案的
@@ -627,12 +661,35 @@ describe("loud skip 路径（#90）：注入驱动，environment-independent", (
       },
     };
 
+    // ── 前置门槛（task-5）：等 main() 的判据 1/1b 所需指针就位，避免车道内 `clean-lib` 重建
+    //    `lib/` 的窗口把本用例打成"早退 return 1"。复刻用的是脚本**已导出**的同一个
+    //    entryTargets / manifestTargets ⇒ 输入集合与 main() 完全一致，不是近似复刻。
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+    const preludeTargets = [
+      ...entryTargets(pkg.exports).filter(([, target]) => !target.includes("*")),
+      ...manifestTargets(pkg),
+    ].map(([, target]) => target.replace(/^\.\//, ""));
+
+    const missingPreludeTargets = () =>
+      preludeTargets.filter((target) => !existsSync(join(repoRoot, target)));
+
+    const waitDeadline = Date.now() + PRELUDE_WAIT_MS;
+    let stillMissing = missingPreludeTargets();
+    while (stillMissing.length > 0 && Date.now() < waitDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, PRELUDE_POLL_MS));
+      stillMissing = missingPreludeTargets();
+    }
+    // 等不到就**响亮失败**（绝不降级 skip）：并发窗口只是"等一会儿"，真缺件必须红。
+    expect(
+      stillMissing,
+      `判据 1/1b 的指针在 ${PRELUDE_WAIT_MS} ms 内未就位（并发重建 lib/ 的窗口或真缺件）：` +
+        `${stillMissing.join(", ")} —— 缺件则 main() 会早退 return 1，验不到 loud-skip`,
+    ).toEqual([]);
+
     const dir = tempDir("loudskip");
     const warnings: string[] = [];
     const originalWarn = console.warn;
     try {
-      // 空 `package/` 是判据 1/1b 的**空输入**：没有指针要查 ⇒ missing 为空 ⇒ 不早退。
-      mkdirSync(join(dir, "package"));
       const before = packdirsInTmp();
 
       // 捕获 loud-skip 的 `console.warn`（脚本用它输出那行 `!! SKIP (loud)`）。
