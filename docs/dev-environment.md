@@ -271,6 +271,30 @@ dsh plugin --profile <p> add <spec>     # 重试 → 接受（pnpm 另会 warn p
 - HMR 下对**已安装**的包再 `installBundle` 直接以 `already-installed` 拒绝（不再是
   `restart-required`）：换版本 / 来源要先 `removeBundle` 再装。
 
+### 2.2 升级到 rc.1 的顺序（旧锚用户 / 桌面端）
+
+锚定义的是「**产物 × 运行版本**」的成对契约（§2.1）：两者不匹配时不会以「可用但降级」的
+形态出现 —— 安装侧 fail-closed，启动侧整层跳过。所以升级是**有序动作**：
+
+1. **先升运行版本**：把 DSH 运行时（桌面端 = app 的 runtime）升到本版锚 `0.2.1-rc.1`
+   （桌面端 profile 的操作窗口见 §2.1）。
+2. **再让 profile 重新判定 manifest**：重启 / 重载 profile —— 宿主只在启动时组合一次，
+   patch 与组合变更**不热更新**（[profile-install.md](agents/profile-install.md)）。
+3. **`link:` 形态**（profile 依赖指向本仓检出，即本机桌面端现状）：权威树
+   `node --run build` 重建 `lib/` 后按第 2 步重载即可 —— **无需重装**
+   （不必再 `dsh plugin add`）。
+4. **顺序错的形态**（运行版本已升、profile 没重载）：本 bundle 在启动侧被整层跳过（§2.1），
+   症状是**插件工具面整体消失**、而实例与会话照常可用。判据 =
+   `dsh --profile <p> --dump-config` 里没有 `dsh-shell-host/pty` 行（口径见
+   [profile-install.md](agents/profile-install.md) 的「装好后必须 dump 组合树」）。
+
+要保留**旧锚产物**（而不是装锚匹配的版本）只能走 §2.1 的**精确版本豁免**
+（豁免按精确「包版本 × 运行时版本」对生效，锚一变即失效）。
+
+本版发布时打 tag `dsh-v0.2.1-rc.1-r1`（ADR-0005 的 `dsh-v<锚版本>-r<模块修订号>` 形态；
+`package.json` 的 `version` = `0.2.1-rc.1-r1`，即 tag 去 `dsh-v` 前缀）。tag / publish 是
+maintainer 动作，不由开发票触发。
+
 ## 3. 源码部署步骤（msys2 侧）
 
 ```bash
@@ -285,7 +309,6 @@ pnpm build                                                   # 见 §4.2/§4.3�
 # 本插件（部署副本）
 git clone <repo> ~/dsh-shellhost-src
 cd ~/dsh-shellhost-src && pnpm install && pnpm build
-```
 
 # 把插件挂进 profile —— 官方两步命令，顺序固定
 export PATH="$HOME/.corepack/bin:$PATH"                      # dsh plugin 会调 pnpm
@@ -295,8 +318,9 @@ dsh plugin --profile dsh-host-dev add ~/dsh-shellhost-src             # ② 注�
 
 **完整规则与理由见 [profile-install.md](agents/profile-install.md)**（为何 ① 不能省、
 为何不许手工 symlink、三处断言、dump 组合树验证）。此处只记部署侧要点：
-`dsh plugin` 需要 PATH 上有 pnpm shim，而 corepack 装 shim 要避开 Program Files
-权限（写进去会 EPERM）—— 用上方那个 `--install-directory` 路径即可。
+`dsh plugin` 需要 PATH 上有 pnpm shim；引导脚本已把它前置（`scripts/msys-env.sh` 把
+`$HOME/.corepack/bin` 放进 PATH）—— shim 落在**家目录**而不是 Program Files 下，
+避开写权限（写进去会 EPERM）。
 
 ## 4. 工具链结论（全部实测，别重复试错）
 
@@ -317,7 +341,7 @@ ucrt64 node 上报 `platform=win32-x64-gnu`，而 rolldown 等只发布 `-msvc` 
 | `tsc` typecheck / 声明产出（纯 JS） | msys2 ucrt64 node 可 |
 | `tsdown` 打包（rolldown） | **必须 Windows node** |
 
-### 4.3 切 tag 后必须清理构建产物
+### 4.3 构建产物必须清理（切 tag / 发布）
 
 `lib/` 被 `.gitignore` 忽略，`git status` 看着干净，实际残留上一 tag 的产物 ——
 RC2 构建会报 `MISSING_EXPORT "principalOf"`（该符号只存在于 alpha 源码）。
@@ -328,6 +352,15 @@ RC2 构建会报 `MISSING_EXPORT "principalOf"`（该符号只存在于 alpha �
 两树 `lib/` 却逐文件哈希相同（唯一差异是权威树里一个 tsdown 不清理的孤儿 chunk）。
 所以：`ls` 时间戳只能当线索，判据是**同名文件哈希比对**（`Get-FileHash`），
 而车道已改为同步后**无条件重建**（§0.1.1），不存在靠猜的场景。
+
+**发布构建前必须先清 `lib/`**：`package.json` 的 `files` 用 glob（`lib/pty-*.js` 等），
+而 `lib/` 是**累积**目录 —— 不清就打包会把上一版遗留的 chunk 一起发出去（2026-10-17 实测：
+未清时 tarball 同时含当次构建的 `lib/pty-C0_H63de.js`（46520 B）与前一天遗留的
+`lib/pty-g32VoH8_.js`（46509 B，内容不同）；复核 = `npm pack --dry-run` 的文件面）。
+`verify-pack` 的判据是「声明目标**在不在** tarball 里」（+ 逐个 import 冒烟），**不查多余件**，
+所以这类残留不会让它变红。发布口径 = 先 `rm -rf lib`（PowerShell：
+`Remove-Item -Recurse -Force lib`）再 `node --run test:release`。tsdown 的 `clean` 不能代劳：
+`lib/types/` 的声明由 tsc 产出、与 tsdown 共享 outDir 根（`tsdown.config.ts`）。
 
 ### 4.4 本插件的依赖锚（#82）
 
@@ -350,7 +383,8 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
 
 ## 5. 实例相关文档
 
-- 驱动实例 / 读耐久证据 / RPC 参数名 / mock LLM：[dsh-runtime-cheatsheet.md](dsh-runtime-cheatsheet.md)
+- 上游契约 / RPC 参数名（typert 逐方法三种形态）/ 会话证据与计费判据：[GLOSSARY.md #82](../GLOSSARY.md)
+- 驱动实例（隔离契约、端口、profile）：本文件 §1
 - 验证分层与门禁：[TESTING.md](agents/TESTING.md)
 - 隔离与构建的**本机落地记录**（机器相关，不入库）：
   `<DSH_HOME>/REGISTRY.md`
