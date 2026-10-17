@@ -11,6 +11,15 @@
 | **② single-module** | 该模块/包自己的套件 | 改动局限在单模块内 |
 | **③ full high-risk suite** | 完整 verify 集（+ e2e） | 票关闭时；以及改动触及**高危面** |
 
+对应命令（Windows 权威树；迭代别拿 `node --run test` 当单档用）：
+
+- **单档**：`node node_modules/vitest/vitest.mjs run --project unit tests/<file>.spec.ts`（machine 档换 `--project machine`）
+- **单车道**：`node scripts/verify-all.mjs --lane unit`（msys 侧是 `bash scripts/msys-lane.sh --lane machine`）
+- **收集口径**：unit 车道按**位置**收集（`#44`）—— 新增 `tests/**/*.spec.ts` 无需登记；machine 车道是
+  `vitest.config.ts` 的显式清单（只放串行、碰真实环境的档）。所以新增/改动 spec 时不必再去读元守卫档
+  确认"要不要登记"。
+- **验收口径**仍只有 `node --run test`：`--lane` 的输出自带「非验收口径」提示，别把单车道读数当验收。
+
 本仓高危面：**loader 行 / 组合树 / 入口导出（pty·terminal·wsl）/ 原生件路径 /
 依赖锚（peer、RC 锚）**。
 
@@ -24,6 +33,9 @@
 - **验收口径的套件必须在最后一次写入之后起跑**（`node --run test` / `test:release`）：
   跑完 `git diff` 为空（或起跑前后文件 hash 一致）才采信输出。跑着的时候改文件 =
   跑的那份不是要交付的那份，只能重跑 —— 2026-10-16 实测踩过一次（多烧一轮全量套件）。
+  **review 阶段的修改同样算写入**：`implement` 流程里 review 排在最终全量**之前**（review 读
+  staged diff 即可，不必先提交），否则 review 一改就作废前一次全量 —— 2026-10-17 实测：一次
+  三文件的测试面改动起跑了 3 次全量，其中一次完整跑的存在只因为 review 落在它之后。
   **且等其它 agent / 子代理静默之后再跑**：并发负载会扰动真实层（#97 会话唯一一次真实
   端点 `TRANSPORT` 恰好落在两个复核 subagent 与全量套件并跑的窗口里，此后未并跑的四次
   真实回合全绿 —— n=1 的观察，当**顺序纪律**用，别当因果结论）。

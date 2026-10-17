@@ -71,6 +71,7 @@ No CI (maintainer decision 2026-09-30; boundaries in ADR-0014): verification is 
 Do not propose adding ci.yml. Local guardrails ARE allowed — enable once per clone:
 
     git config core.hooksPath .githooks      # pre-commit: detached HEAD + lockfile + typecheck + 实验标记 + 隐私扫描
+    git config push.autoSetupRemote true     # 首次 push 不必 -u（否则 git push 报 no upstream）
     # bypass deliberately: SKIP_HOOKS=1 git commit …
 ```
 
