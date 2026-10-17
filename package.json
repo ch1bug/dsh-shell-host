@@ -57,7 +57,7 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && tsdown",
+    "build": "node scripts/clean-lib.mjs && tsc -p tsconfig.build.json && tsdown",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:pack": "node scripts/verify-pack.mjs",
     "test:release": "node --run build && node --run verify:pack",

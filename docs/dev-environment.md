@@ -411,14 +411,26 @@ RC2 构建会报 `MISSING_EXPORT "principalOf"`（该符号只存在于 alpha �
 所以：`ls` 时间戳只能当线索，判据是**同名文件哈希比对**（`Get-FileHash`），
 而车道已改为同步后**无条件重建**（§0.1.1），不存在靠猜的场景。
 
-**发布构建前必须先清 `lib/`**：`package.json` 的 `files` 用 glob（`lib/pty-*.js` 等），
-而 `lib/` 是**累积**目录 —— 不清就打包会把上一版遗留的 chunk 一起发出去（2026-10-17 实测：
-未清时 tarball 同时含当次构建的 `lib/pty-C0_H63de.js`（46520 B）与前一天遗留的
-`lib/pty-g32VoH8_.js`（46509 B，内容不同）；复核 = `npm pack --dry-run` 的文件面）。
-`verify-pack` 的判据是「声明目标**在不在** tarball 里」（+ 逐个 import 冒烟），**不查多余件**，
-所以这类残留不会让它变红。发布口径 = 先 `rm -rf lib`（PowerShell：
-`Remove-Item -Recurse -Force lib`）再 `node --run test:release`。tsdown 的 `clean` 不能代劳：
-`lib/types/` 的声明由 tsc 产出、与 tsdown 共享 outDir 根（`tsdown.config.ts`）。
+**`lib/` 是累积目录，而 `package.json` 的 `files` 用 glob**（`lib/pty-*.js` 等）⇒ 不清就会把上一版
+遗留的 chunk 一起发出去。**rc.1 期历史读数（当时锚，非当前锚 `0.2.1-rc.2-r1` 的读数）**：2026-10-17
+实测未清时 tarball 同时含当次构建的 `lib/pty-C0_H63de.js`（46520 B）与前一天遗留的
+`lib/pty-g32VoH8_.js`（46509 B，内容不同），tarball = 16 文件 / 59771 B；清后 = 15 文件 / 45527 B。
+复核 = `npm pack --dry-run` 的文件面。
+
+**清理已做进 `build`，不再是手工处方** ⇒ `node --run test:release`（先 `build` 再 `verify:pack`）
+本身就是发布口径，不需要任何前置命令。实现与确切删除/保留语义的**唯一来源**是
+[`scripts/clean-lib.mjs`](../scripts/clean-lib.mjs)（`build` 的第一步）：清 tsdown 上一代产物
+（`lib/` 顶层 `*.js` chunk + 三个入口目录整棵），**保留 `lib/types/**` 整棵**，其余一切不删
+（判不准就不删）；`lib/` 不存在时也照常通过。tsdown 自己的 `clean` **不能**代劳：`lib/types/` 的
+声明由 tsc 产出、与 tsdown 共享 outDir 根（`tsdown.config.ts`），打开它会把声明面一并清掉。
+
+**守卫面（#111）：`verify-pack` 现在能判「历史 chunk 同行」**。原来的判据只问「声明目标**在不在**
+tarball 里」（+ 逐个 import 冒烟）—— 而 `lib/pty-*.js` 这类宽松 glob **合法声明了上一代 chunk**，
+所以残留不会让它变红。真正的修复面是 `scripts/verify-pack.mjs` 的 `duplicateChunkFamilies`
+（纯函数，`files` 的 chunk glob 族命中数 **≥2 即红**）：同一次构建里一个模块只该产出一个 chunk，
+两代同行只可能是累积残留。该文件另有一条 `unexpectedPackedFiles`（`files` 之外的 `lib/` 件），
+但它是**防御性/前瞻性**检查 —— `files` 之外的件在打包阶段就被 npm 白名单挡掉，CLI 端**结构性
+收不到触发输入**，故**不得**把它当成守住了本票症状的那条。分工与可达性边界见该文件头注释。
 
 ### 4.4 本插件的依赖锚（#82）
 

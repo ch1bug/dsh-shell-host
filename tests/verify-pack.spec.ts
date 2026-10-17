@@ -35,7 +35,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { entryTargets, isDirectInvocation, manifestTargets, untarGz } from "../scripts/verify-pack.mjs";
+import { chunkFamilyDeclarations, compileFilesMatcher, duplicateChunkFamilies, entryTargets, isDirectInvocation, manifestTargets, unexpectedPackedFiles, untarGz } from "../scripts/verify-pack.mjs";
 
 /** 被测脚本自己的路径与 URL（与 CLI 启动时 `process.argv[1]` / `import.meta.url` 同源）。 */
 const SCRIPT_URL = new URL("../scripts/verify-pack.mjs", import.meta.url).href;
@@ -152,6 +152,227 @@ describe("manifestTargets", () => {
     expect(manifestTargets({ dsh: { bundle: { patch: [42, "b.patch.yml"] } } })).toEqual([
       ["dsh.bundle.patch[1]", "b.patch.yml"],
     ]);
+  });
+});
+
+describe("chunkFamilyDeclarations", () => {
+  it("picks the chunk-glob families out of the real `files` face — and only those", () => {
+    const realFiles: string[] = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).files;
+    expect(chunkFamilyDeclarations(realFiles)).toEqual([
+      "lib/pty-*.js",
+      "lib/posix-quote-*.js",
+      "lib/detect-*.js",
+      "lib/launchers-*.js",
+      "lib/src-*.js",
+    ]);
+    // 具体文件名（`lib/pty/index.js`）与跨段通配（`lib/types/**/*.d.ts`）都不是族：前者点一个文件，
+    // 后者的 `**` 不是哈希位。非 lib/ 声明（`cordis.patch.yml`）同样不是。
+    expect(chunkFamilyDeclarations(["lib/pty/index.js", "lib/types/**/*.d.ts", "cordis.patch.yml"])).toEqual([]);
+    expect(chunkFamilyDeclarations(undefined as never)).toEqual([]);
+  });
+
+  it("a family name containing `-` stays ONE family (the `posix-quote-` trap)", () => {
+    // 族粒度取自 `files` 声明的 glob，故 `lib/posix-quote-*.js` 天然是一个族 —— 不需要（也不该）
+    // 去猜"主干到哪个 `-` 为止"，那正是被 `src-v2-Ab12Cd34.js` 那类名字证伪的启发式。
+    expect(chunkFamilyDeclarations(["lib/posix-quote-*.js"])).toEqual(["lib/posix-quote-*.js"]);
+    expect(duplicateChunkFamilies(["lib/posix-quote-*.js"], ["lib/posix-quote-aaaa.js"])).toEqual([]);
+  });
+});
+
+describe("duplicateChunkFamilies", () => {
+  const realFiles: string[] = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).files;
+
+  it("THE POINT (#111): two generations of the same chunk family ⇒ flagged, with names", () => {
+    // 票面原始症状：当次 `lib/pty-C0_H63de.js` + 上一代 `lib/pty-g32VoH8_.js` 同行。
+    expect(
+      duplicateChunkFamilies(realFiles, ["lib/pty-C0_H63de.js", "lib/pty-g32VoH8_.js", "lib/pty/index.js"]),
+    ).toEqual([{ family: "lib/pty-*.js", matches: ["lib/pty-C0_H63de.js", "lib/pty-g32VoH8_.js"] }]);
+    // matches 排序稳定：输入顺序不影响读数（报告可比对）。
+    expect(
+      duplicateChunkFamilies(realFiles, ["lib/pty-g32VoH8_.js", "lib/pty-C0_H63de.js"]),
+    ).toEqual([{ family: "lib/pty-*.js", matches: ["lib/pty-C0_H63de.js", "lib/pty-g32VoH8_.js"] }]);
+  });
+
+  it("exactly one member is green (the healthy build), and zero members is green too", () => {
+    expect(duplicateChunkFamilies(realFiles, ["lib/pty-C0_H63de.js"])).toEqual([]);
+    // 0 命中必须绿：`lib/posix-quote-*.js` 这类 helper 族当前一次构建都不产成员（实测四族均为 0），
+    // "没产出"不是缺陷 —— 红在那里就是假红。
+    expect(duplicateChunkFamilies(realFiles, [])).toEqual([]);
+    expect(
+      duplicateChunkFamilies(realFiles, ["lib/pty-C0_H63de.js", "lib/types/pty/index.d.ts", "package.json"]),
+    ).toEqual([]);
+  });
+
+  it("two DIFFERENT families with one member each are both green (families never share a bucket)", () => {
+    // 反证"族粒度"没有被实现成"凡 lib/*.js 数总数"：两个无关 chunk 各一个成员 → 全绿。
+    expect(
+      duplicateChunkFamilies(realFiles, ["lib/pty-C0_H63de.js", "lib/detect-Ab12Cd34.js"]),
+    ).toEqual([]);
+    expect(
+      duplicateChunkFamilies(realFiles, [
+        "lib/pty-C0_H63de.js",
+        "lib/detect-Ab12Cd34.js",
+        "lib/src-Ef56Gh78.js",
+        "lib/launchers-Ij90Kl12.js",
+      ]),
+    ).toEqual([]);
+  });
+
+  it("multiple violating families are all reported, in `files` declaration order", () => {
+    expect(
+      duplicateChunkFamilies(realFiles, [
+        "lib/pty-C0_H63de.js",
+        "lib/pty-zzz-fake.js",
+        "lib/detect-Ab12Cd34.js",
+        "lib/detect-Zz99Yy88.js",
+        "lib/src-Ef56Gh78.js",
+      ]),
+    ).toEqual([
+      { family: "lib/pty-*.js", matches: ["lib/pty-C0_H63de.js", "lib/pty-zzz-fake.js"] },
+      { family: "lib/detect-*.js", matches: ["lib/detect-Ab12Cd34.js", "lib/detect-Zz99Yy88.js"] },
+    ]);
+  });
+
+  it("a `./`-prefixed packed path counts the same (no false green by spelling)", () => {
+    expect(duplicateChunkFamilies(realFiles, ["./lib/pty-C0_H63de.js", "lib/pty-zzz-fake.js"])).toEqual([
+      { family: "lib/pty-*.js", matches: ["lib/pty-C0_H63de.js", "lib/pty-zzz-fake.js"] },
+    ]);
+  });
+
+  it("no chunk families declared ⇒ nothing to judge (no crash, no false red)", () => {
+    expect(duplicateChunkFamilies(["lib/pty/index.js", "cordis.patch.yml"], ["lib/a.js", "lib/b.js"])).toEqual([]);
+    expect(duplicateChunkFamilies(undefined as never, ["lib/a.js"])).toEqual([]);
+  });
+});
+
+describe("unexpectedPackedFiles / compileFilesMatcher", () => {
+  /** 生产 `package.json` 的 `files` 面（判据的**真实**输入，不是简化样本）。 */
+  const realFiles: string[] = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).files;
+
+  it("accepts the whole current build face — every declared shape matches (positive case)", () => {
+    expect(
+      unexpectedPackedFiles(realFiles, [
+        "lib/types/pty/index.d.ts",
+        "lib/types/wsl-plugin/index.d.ts",
+        "lib/types/terminal/index.d.ts", // 深层声明：`lib/types/**/*.d.ts` 必须真的跨段
+        "lib/pty/index.js",
+        "lib/pty-C0_H63de.js", // tsdown 的真实 chunk 形态（hash 名）
+        "lib/posix-quote-Y4b21.js",
+        "lib/detect-Ab12.js",
+        "lib/launchers-Cd34.js",
+        "lib/src-Ef56.js",
+        "lib/wsl-plugin/index.js",
+        "lib/terminal/index.js",
+        "cordis.patch.yml", // 声明面里的非 lib/ 件：范围内不判、也不该被判（`lib/` 前缀之外）
+      ]),
+    ).toEqual([]);
+  });
+
+  it("THE POINT (#111): a lib/ file outside the declared face is flagged, stably sorted", () => {
+    // ⚠️ 防御性判据：这条红**只在纯函数级可达**。CLI 端收不到这种输入 —— npm 的 `files` 白名单
+    // 在打包阶段就把 `files` 之外的 `lib/` 件挡掉了（实证：放 `lib/sta.js` 后 tarball 仍 16 files）。
+    // 本票真正的可达守卫面是同族的"两代同行"，见上面的 `duplicateChunkFamilies`。
+    expect(
+      unexpectedPackedFiles(realFiles, [
+        "lib/pty/index.js",
+        "lib/pty-g32VoH8_.js.old", // glob 面之外的旧产物（`lib/pty-*.js` 只认 .js 结尾）
+        "lib/legacy/index.js", // 多余目录
+        "lib/sta.js", // 未被任何声明覆盖的散件
+      ]),
+    ).toEqual(["lib/legacy/index.js", "lib/pty-g32VoH8_.js.old", "lib/sta.js"]);
+    // 排序稳定：同一集合不同输入顺序 → 同一读数（报告可比对）。
+    expect(
+      unexpectedPackedFiles(realFiles, ["lib/sta.js", "lib/legacy/index.js", "lib/pty-g32VoH8_.js.old"]),
+    ).toEqual(["lib/legacy/index.js", "lib/pty-g32VoH8_.js.old", "lib/sta.js"]);
+  });
+
+  it("it does NOT catch a stale chunk that its own glob declares — that is `duplicateChunkFamilies`' job", () => {
+    // 判据边界（写进注释也写进测试）：`lib/pty-*.js` 合法声明了两代 chunk，故"多余件"判据**放行**
+    // `lib/pty-C0_H63de.js` + `lib/pty-zzz-fake.js` 同行的局面 —— 这正是它**不能**当本票修复面的原因。
+    // 对照组证明两者分工：同一个输入，多余件判据空、族判据红。
+    const twoGenerations = ["lib/pty-C0_H63de.js", "lib/pty-zzz-fake.js"];
+    expect(unexpectedPackedFiles(realFiles, twoGenerations)).toEqual([]);
+    expect(duplicateChunkFamilies(realFiles, twoGenerations)).toEqual([
+      { family: "lib/pty-*.js", matches: ["lib/pty-C0_H63de.js", "lib/pty-zzz-fake.js"] },
+    ]);
+  });
+
+  it("`lib/types/**/*.d.ts` really crosses directories — a single-segment `*` would miss the deep one", () => {
+    // 这条锁的是"简化成单层 `*` 就漏检深层声明"的回归：深层 .d.ts 必须**被认可**（不误报）。
+    const [deepMatcher] = compileFilesMatcher(["lib/types/**/*.d.ts"]);
+    expect(deepMatcher.test("lib/types/pty/index.d.ts")).toBe(true);
+    expect(deepMatcher.test("lib/types/pty/deep/deeper/index.d.ts")).toBe(true);
+    // 零层同样命中（`**/` 吸收后的零段）；且**不**跨过 `.d.ts` 之外的扩展名。
+    expect(deepMatcher.test("lib/types/top.d.ts")).toBe(true);
+    expect(deepMatcher.test("lib/types/pty/index.js")).toBe(false);
+    // 非 .d.ts 的深层件落在声明面之外 —— 必须被判为多余件。
+    expect(unexpectedPackedFiles(realFiles, ["lib/types/pty/orphan.js"])).toEqual(["lib/types/pty/orphan.js"]);
+  });
+
+  it("`*` is single-segment (never crosses `/`) while `**` is cross-segment", () => {
+    const [single] = compileFilesMatcher(["lib/pty-*.js"]);
+    expect(single.test("lib/pty-C0_H63de.js")).toBe(true);
+    expect(single.test("lib/pty-zzz-fake.js")).toBe(true); // 真 chunk 形态被 `lib/pty-*.js` 认可
+    expect(single.test("lib/pty/index.js")).toBe(false); // `*` 不跨 `/`
+    expect(single.test("lib/pty-sub/dir.js")).toBe(false);
+    expect(single.test("lib/pty-C0_H63de.mjs")).toBe(false); // 扩展名逐字
+  });
+
+  it("literal characters are escaped — `.` is a dot, not a wildcard", () => {
+    const [literal] = compileFilesMatcher(["cordis.patch.yml"]);
+    expect(literal.test("cordis.patch.yml")).toBe(true);
+    expect(literal.test("cordisXpatch.yml")).toBe(false);
+    // `index.js` 里的点同理：`lib/pty/indexXjs` 不是声明面里的件。
+    expect(unexpectedPackedFiles(realFiles, ["lib/pty/indexXjs"])).toEqual(["lib/pty/indexXjs"]);
+  });
+
+  it("scope is `lib/` ONLY — packer-added files outside it are never judged (the no-false-red guard)", () => {
+    // 打包器总会带上这些（与 `files` 无关）：判它们必然假红 —— 这正是判据只覆盖 lib/ 的理由。
+    expect(
+      unexpectedPackedFiles(realFiles, [
+        "package.json",
+        "README.md",
+        "LICENSE",
+        "LICENSE.md",
+        "CHANGELOG.md",
+        ".npmignore",
+        "package-lock.json",
+        "cordis.patch.yml",
+      ]),
+    ).toEqual([]);
+    // 前缀必须以 `/` 收口：`libfoo/x.js` 不是 `lib/` 里的件。
+    expect(unexpectedPackedFiles(realFiles, ["libfoo/x.js", "lib"])).toEqual([]);
+  });
+
+  it("a `./`-prefixed packed path is normalised before matching (no false red on spelling)", () => {
+    expect(unexpectedPackedFiles(realFiles, ["./lib/pty/index.js", "./package.json"])).toEqual([]);
+    expect(unexpectedPackedFiles(realFiles, ["./lib/sta.js"])).toEqual(["lib/sta.js"]);
+  });
+
+  it("a directory-level declaration still covers its whole subtree (npm semantics, not a false red)", () => {
+    expect(
+      unexpectedPackedFiles(["lib/pty", "lib/types/**/*.d.ts"], [
+        "lib/pty/index.js",
+        "lib/pty/deep/nested.js",
+        "lib/types/pty/index.d.ts",
+      ]),
+    ).toEqual([]);
+  });
+
+  it("an empty / malformed `files` judges NOTHING — 'declared nothing' is not evidence of 'nothing extra'", () => {
+    const paths = ["lib/pty/index.js", "lib/sta.js"];
+    expect(unexpectedPackedFiles([], paths)).toEqual([]);
+    expect(unexpectedPackedFiles(undefined as never, paths)).toEqual([]);
+    expect(unexpectedPackedFiles(null as never, paths)).toEqual([]);
+    // 全非字符串：等同"没有可用声明"，同样不判（否则整棵 lib/ 会被报成违规 = 假红）。
+    expect(unexpectedPackedFiles([42, null] as never, paths)).toEqual([]);
+    expect(compileFilesMatcher(undefined as never)).toEqual([]);
+  });
+
+  it("a `*` inside a declaration covers the whole scope (variation: the criterion keeps biting)", () => {
+    // 变异面：若 `files` 被宽化成 `lib/**`，`lib/` 里就"没有任何多余件"——判据的正确读数随之变成空。
+    // 这条同时反证上面的正例不是靠"匹配器恰好全过"得来的假绿。
+    expect(unexpectedPackedFiles(["lib/**"], ["lib/sta.js", "lib/legacy/index.js"])).toEqual([]);
   });
 });
 

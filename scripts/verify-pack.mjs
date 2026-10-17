@@ -10,15 +10,24 @@
  *      ordered array) names a real file AND is present in the tarball: the install face that
  *      `exports` alone never covered (#88). It adds no new pass — the existence half rides
  *      criterion 1 (noted 1b below) and the tarball half rides criterion 3.
+ *   5. (#111, THE fix) no chunk FAMILY has two generations in the tarball: criteria 1–4 only
+ *      ever ask "is the declared target THERE", and `lib/pty-*.js` legitimately declares the
+ *      PREVIOUS generation too — so a stale chunk rides along and everything stays green.
+ *      `duplicateChunkFamilies` counts members per `files` chunk glob; ≥2 = stale output.
+ *   6. (#111, DEFENSIVE) no `lib/` file outside the `files` face. Honestly downgraded: npm's
+ *      `files` allowlist already blocks these at pack time, so the CLI never sees them — kept
+ *      for a future looser `files` / packer. Wording must never imply it guards stale chunks.
  *
  * Exit 0 = all pointers resolvable. **Requires a prior build** (`node --run build`),
  * so it is not part of `node --run test`; run it via `node --run test:release`, which
  * builds first. When no packer is reachable it skips LOUDLY (exit 0, printing
  * `!! SKIP (loud)`) rather than reporting an unearned pass.
  *
- * 结构（#86）：`entryTargets` / `manifestTargets` / `untarGz` 是**纯函数**（导出，见
- * `tests/verify-pack.spec.ts` 的离线单测）；`findPacker` 亦导出但**非纯**（碰文件系统与
- * PATH 探针）：装箱交付链 e2e 现场打包时复用它，否则打包器候选顺序会有第二份。
+ * 结构（#86）：`entryTargets` / `manifestTargets` / `untarGz` / `compileFilesMatcher` /
+ * `chunkFamilyDeclarations` / `duplicateChunkFamilies` / `unexpectedPackedFiles` 是**纯函数**
+ * （导出，见 `tests/verify-pack.spec.ts` 的离线单测）；
+ * `findPacker` 亦导出但**非纯**（碰文件系统与 PATH 探针）：装箱交付链 e2e 现场打包时复用它，
+ * 否则打包器候选顺序会有第二份。
  * `isDirectInvocation` **原样转出**自 `scripts/script-entry.mjs`（#85 的单一来源，本文件不再自带
  * 一份实现）。顶层流程收进 `main()` —— **只有直接执行才跑 CLI**，import 本模块零副作用
  * （改前顶层 `await` 会直接打包 + 写 `.scratch/`）。
@@ -149,6 +158,172 @@ export function manifestTargets(pkg) {
   return targets
 }
 
+/** 把 `files` 声明**编译**成匹配器（纯函数，导出）。
+ *
+ * 支持 npm 打包面实际用到的 glob 形态（不引 minimatch/picomatch —— 仓里没有这两个依赖，
+ * 也不该为一条判据加一个；本仓 `files` 里**从未**出现 `!` 取反 / `?` / 花括号 / 字符类，
+ * 故刻意不实现：真出现只会被读成普通字面量字符，从而响亮误报"声明了却没进 tarball"，
+ * 属 fail-visible，不会静默假绿）：
+ *   - `*`  —— **单段**内任意字符（不跨 `/`）；`lib/pty-*.js` → `^lib/pty-[^/]*\.js$`；
+ *   - `**` —— **跨段**任意字符（`**` 与相邻 `/` 一起吸收，覆盖 `lib/types/**\/*.d.ts` 命中
+ *             `lib/types/pty/index.d.ts` 这类深层声明 —— 退化成单层 `*` 正是本判据要堵的漏检）；
+ *   - 其余字符**逐字转义**（`.js` 里的点必须是字面点，不能当通配）。
+ *
+ * @returns 锚定的 `RegExp` 数组；`files` 非数组（形状不合契约）时为空数组。
+ */
+export function compileFilesMatcher(files) {
+  if (!Array.isArray(files)) return []
+  return files
+    .filter((pattern) => typeof pattern === 'string')
+    .map((pattern) => new RegExp(`^${globToRegExpBody(pattern)}$`))
+}
+
+/** 单个 glob 模式 → 正则体（不含锚定），供 `compileFilesMatcher` 使用。 */
+function globToRegExpBody(pattern) {
+  let body = ''
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i]
+    if (char !== '*') {
+      body += char.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+      continue
+    }
+    // `**` 连写：跨段；后随的 `/` 一并吸收，这样 `a/**/b` 同时命中 `a/b`（零层）与 `a/x/b`。
+    // `***` 这类怪形态按 `**` + `*` 理解 —— `**` 已能跨段，多加一颗星不改变匹配集。
+    if (pattern[i + 1] === '*') {
+      i += 1
+      if (pattern[i + 1] === '/') i += 1
+      body += '.*'
+    } else {
+      body += '[^/]*'
+    }
+  }
+  return body
+}
+
+/** tarball 里的**多余件**（纯函数，导出）—— ⚠️ **防御性判据，不是本票的修复面**。
+ *
+ *  ## 可达性边界（先读这段，否则会误以为它守住了历史 chunk）
+ *
+ *  **它在 CLI 端收不到 `files` 之外的输入。** 实测：往 `lib/` 放 `lib/sta.js` 与
+ *  `lib/legacy/index.js` 后 `npm pack --dry-run --json` 的 tarball 仍是 16 files，这两件
+ *  **完全不在**其中 —— npm 的 `files` 白名单已在**打包阶段**把"多余件"挡掉，`main()` 的
+ *  `walk(unpacked)` 自然永远看不到它们。所以本函数在 CLI 上**结构性无触发面**；它的红只在
+ *  离线单测（直接喂 `packedPaths`）里出现过。
+ *
+ *  **它也管不了 `files` 之内的多余件**：`lib/pty-*.js` 这类宽松 glob 同时合法声明了两代 chunk，
+ *  上一代因此"在声明面之内"—— 那正是本票的原始症状，由 `duplicateChunkFamilies` 负责
+ *  （按族计数 ≥2 判红），**不是本函数**。
+ *
+ *  ⇒ 保留它是因为**将来仍可能有触发面**（`files` 放宽 / 换一个不严格过滤的打包器），届时它立刻有用。
+ *  但**不得**在任何输出里宣称它守住了历史 chunk —— 一个看起来在守、实际守不住的判据比没有更危险。
+ *
+ *  ## 判据
+ *
+ *  从解包后的文件全集里挑出**既没被 `files` 任何一条 glob 覆盖**、又在判据范围内（见下）的路径。
+ *
+ *  **为什么只覆盖 `lib/`**（判据边界 = 该判据不假红的关键）：打包器**总会**带上 `package.json` /
+ *  `README.md` / `LICENSE` 之类与 `files` 无关的文件（npm 的强制集 + 默认忽略规则），对它们做
+ *  "多余件"判定必然假红 —— 而假红会让人学会忽略这条判据，比没有更糟。范围写死在 `SCOPE_PREFIX`，
+ *  越界的路径一律不判。
+ *
+ *  目录形态（`lib/zzz-fake/x.js`）同样会被判为多余件：其父目录 `lib/zzz-fake/` 若不在声明面，
+ *  该目录整棵在 tarball 里就是多余载荷 —— 放行它等于留着同一个缺口换条路径进来。
+ *
+ *  其余克制之处：`files` 为空 / 非数组 / 全是非字符串时**不做判定返回空**——"什么都没声明"
+ *  不是"什么都没多余"的证据，此时普通 glob 会命中所有路径，把整棵 `lib/` 报成违规（假红）。
+ *
+ *  @param files      `package.json` 的 `files` 列表（glob 字符串）。
+ *  @param packedPaths tarball 内全部文件的相对路径（`/` 分隔，如 `lib/pty/index.js`）。
+ *  @returns 违规路径，**排序稳定**（字典序）；无违规 / 判据不适用时为空数组。
+ */
+export function unexpectedPackedFiles(files, packedPaths) {
+  const matchers = compileFilesMatcher(files)
+  if (matchers.length === 0) return []
+  const declarations = files.filter((pattern) => typeof pattern === 'string')
+  // 判据范围：`lib/`（见函数头注释）。前缀必须以 `/` 收口 —— `libfoo/x.js` 不是 `lib/` 里的件。
+  const SCOPE_PREFIX = 'lib/'
+  const violations = []
+  for (const raw of packedPaths) {
+    const path = String(raw).replace(/^\.\//u, '')
+    if (!path.startsWith(SCOPE_PREFIX)) continue
+    if (matchers.some((matcher) => matcher.test(path))) continue
+    // 目录级声明（`files: ["lib/pty"]`）照 npm 口径覆盖整棵子树 —— 少了这一步，合法的
+    // 目录形态声明会被判成"多余件"（假红）。
+    if (declarations.some((pattern) => path.startsWith(pattern.replace(/\/+$/u, '') + '/'))) continue
+    violations.push(path)
+  }
+  return violations.sort()
+}
+
+/** `files` 里的 **chunk glob 族**（纯函数，导出）：形如 `lib/<name>-*.js` 的声明。
+ *
+ *  为什么是这个形状：tsdown 把每个源码模块切成一个带内容哈希的 chunk（`lib/pty-C0_H63de.js`），
+ *  而 `files` 用 **`lib/pty-*.js`** 这类宽松 glob 声明它 —— 一条 glob 覆盖"该模块的任意一代 chunk"。
+ *  于是两代 chunk（当次的 + 上一代的）**在声明面上无法区分**：它能进 tarball，多余件判据也放行它。
+ *  本函数把这类声明单独挑出来，交给 `duplicateChunkFamilies` 数成员。
+ *
+ *  识别口径：basename 里含 `-*` 且以 `.js` 结尾、且 `-*` 之后没有 `/`（即通配落在文件名段内）。
+ *  `lib/pty/index.js`（具体名）与 `lib/types/**\/*.d.ts`（跨段通配）都**不是** chunk 族 —— 前者点名
+ *  一个文件，后者的 `**` 不是哈希位。故意收窄到"文件名段内的 `-*`"，避免把结构性通配误判成族。
+ *
+ *  @returns 族声明字符串，按 `files` 声明顺序（报告顺序稳定、可复现）。
+ */
+export function chunkFamilyDeclarations(files) {
+  if (!Array.isArray(files)) return []
+  return files.filter((pattern) => {
+    if (typeof pattern !== 'string') return false
+    const segments = pattern.split('/')
+    const basename = segments[segments.length - 1] ?? ''
+    return basename.endsWith('.js') && basename.includes('-*') && !basename.includes('**')
+  })
+}
+
+/** 每个 chunk 族在 tarball 里的命中数（纯函数，导出，#111 路线 B 的**可达**守卫面）。
+ *
+ *  判据：**每个 chunk 族的命中数必须 ≤ 1**。同一次构建里，一个模块只该产出一个 chunk，故
+ *  **≥2 即**是上一代 chunk 与前一代同时躺在 `lib/` 里 —— 正是本票的原始症状
+ *  （`lib/pty-g32VoH8_.js` 46509 B 与 `lib/pty-C0_H63de.js` 46520 B 同行）。
+ *
+ *  **粒度取舍：族 = `files` 声明的 glob，不是 chunk 主干。** 另一条口径是"剥掉 hash 段得主干
+ *  （`lib/pty-C0_H63de.js` → `lib/pty-`），按主干聚合"。实测后**不采用**，理由是可判性：
+ *  剥离必须假定 hash 段可识别（当前 8 字符、`[A-Za-z0-9_-]`），但**主干自身可能长得一样** ——
+ *  `src-v2-Ab12Cd34.js` 剥成主干 `src-v2` 还是 `src-`？`my-module-12345678.js` 更不可判。
+ *  而两条口径的**唯一分歧形态**（同族出现两个主干不同的**合法** chunk）在本仓实测**不存在**：
+ *  连续多次构建顶层 chunk 恒为 `pty-C0_H63de.js` 一个，且它只 import 外部包与 `node:*`，
+ *  没有兄弟 chunk import（rolldown 当前未做 chunk 拆分）。用确定的可判性去换一个尚未发生
+ *  的形态的正确性不划算，故取族粒度。
+ *
+ *  那个分歧形态若真出现（同族两个不同 chunk），红的归因是**声明面与产物面脱节**：`files` 用
+ *  一条 `lib/pty-*.js` 同时声明了两个语义不同的产物，此刻"该收敛声明"是事实，红是正确信号，
+ *  不是误伤 —— 归因写在这里，它因此是判据的定义，而不是判据的例外。
+ *
+ *  **为什么是 `≤ 1` 而不是 `== 1`**：某族**可能**在某次构建里一个成员都不产（`lib/posix-quote-*.js`
+ *  这类 helper 是否被内联进某个 entry chunk，取决于内联结果；实测四族当前均为 0 命中）——
+ *  "没产出"不是缺陷，红在那里就是假红。而 `≥ 2` 在任何情况下都表示累积残留，没有合法解释。
+ *
+ *  **为什么它比 `unexpectedPackedFiles` 有意义（可达性）**：本函数判的是"`files` **之内**的件
+ *  多了一份"，输入是 tarball 里真实解包出的文件 —— **CLI 端收得到**，所以能被变异验证触发。
+ *  反过来"`files` **之外**的 `lib/` 件"在打包阶段就被 npm 白名单挡掉了，CLI 端永远收不到
+ *  （详见 `unexpectedPackedFiles` 的可达性说明）。
+ *
+ *  @param files       `package.json` 的 `files` 列表。
+ *  @param packedPaths tarball 内全部文件的相对路径（`/` 分隔）。
+ *  @returns `[{ family, matches }]`，**只含违规族**（matches 已排序）；无违规时空数组。
+ */
+export function duplicateChunkFamilies(files, packedPaths) {
+  const families = chunkFamilyDeclarations(files)
+  if (families.length === 0) return []
+  const paths = [...packedPaths].map((raw) => String(raw).replace(/^\.\//u, ''))
+  const violations = []
+  for (const family of families) {
+    // 逐族复用同一份 glob 编译（`compileFilesMatcher` 是单一来源，这里不写第二套匹配逻辑）。
+    const [matcher] = compileFilesMatcher([family])
+    const matches = paths.filter((path) => matcher.test(path)).sort()
+    if (matches.length > 1) violations.push({ family, matches })
+  }
+  return violations
+}
+
 /** 逐个契约指针查**工作树**存在性（碰 I/O，故不导出）：返回缺失行 `label -> target`。
  *
  *  存在性判据**只此一处** —— exports 指针（判据 1）与 manifest 指针（#88）走同一实现：
@@ -260,6 +435,45 @@ async function main() {
     process.exitCode = 1
   } else {
     console.log(`verify-pack: all ${entries.length} export entries packed and importable`)
+  }
+
+  // 4. **本票的修复面**（#111 路线 B，可达判据）：同一个 chunk 族在 tarball 里不得有两代同行。
+  //    判据 3 只问"声明目标在不在"，而 `lib/pty-*.js` 这类宽松 glob 把上一代 chunk 也合法声明了 ——
+  //    于是历史 chunk 能一直跟着 tarball 走而**全绿**（实测：`lib/pty-C0_H63de.js` + `lib/pty-zzz-fake.js`
+  //    会一起进 tarball，且旧判据放行）。用已 walk 出的 `packedFiles`（不第二次 walk），
+  //    用 `process.exitCode` 累积报告 —— 与判据 3、5 一样**不提前返回**；判据 1/1b 则是**早失败**
+  //    （`process.exit(1)`：指针都不存在时没必要继续，那时本判据不会执行）。
+  const duplicateFamilies = duplicateChunkFamilies(pkg.files, packedFiles)
+  if (duplicateFamilies.length > 0) {
+    console.error(
+      'verify-pack: tarball carries more than one generation of a chunk family ' +
+        '(stale build output alongside the current one):',
+    )
+    for (const { family, matches } of duplicateFamilies) {
+      console.error(`  ${family} -> ${matches.length} matches: ${matches.join(', ')}`)
+    }
+    console.error('verify-pack: clean lib/ (node --run build) and re-run.')
+    process.exitCode = 1
+  } else {
+    console.log(`verify-pack: no chunk family has two generations in tarball (${packedFiles.size} packed)`)
+  }
+
+  // 5. **防御性判据**（#111 路线 B，CLI 端结构性无触发面）：tarball 里不得有 `files` 之外的 `lib/` 件。
+  //    文案**如实**说明它是防御性的 —— 不宣称它守住了历史 chunk（那是判据 4 的活）：
+  //    实测 npm 的 `files` 白名单已在打包阶段挡掉这类件（放 `lib/sta.js` 后 tarball 仍是 16 files），
+  //    故 CLI 端收不到输入，它的红只在离线单测里出现过。保留是因为将来仍可能有触发面
+  //    （`files` 放宽 / 换不严格过滤的打包器）。看似在守、实则守不住的判据比没有更危险，故如实降级。
+  const unexpected = unexpectedPackedFiles(pkg.files, packedFiles)
+  if (unexpected.length > 0) {
+    console.error(
+      'verify-pack: tarball carries lib/ files outside the package.json "files" face:\n  ' +
+        unexpected.join('\n  '),
+    )
+    process.exitCode = 1
+  } else {
+    console.log(
+      `verify-pack: no unexpected lib/ files in tarball (defensive check; ${packedFiles.size} packed)`,
+    )
   }
 }
 
