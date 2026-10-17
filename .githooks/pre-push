@@ -1,0 +1,48 @@
+#!/bin/sh
+# .githooks/pre-push —— 推送前跑 **msys 侧日常口径**（scripts/msys-lane.sh，见 AGENTS.md）。
+#
+# 为什么放在 pre-push：本仓无 CI（ADR-0014），本地守卫就是唯一自动闸。`pre-commit` 管的是
+# 「提交物本身」（detached HEAD / lockfile / typecheck / 实验标记 / 隐私面），快而确定；
+# 而「**推送**」是这套仓库离开本机的时刻 —— 值得在那之前跑一遍**唯一检查入口在 msys 车道上
+# 的全量**（含三档 e2e 的安装 → 配置 → 启动 → 建会话 → 真实调用）。约一分钟（`--lane machine`），
+# 相对「推出去才发现安装环红」是划算的。
+#
+# 只针对 **branch refs** 触发；`--tags` 单独推 / 删远端 ref 时不跑（那不是「推代码」）。
+# 也没有 ref 能推（如 `--dry-run`）时不跑。
+#
+# 绕过（明确知道在跳什么时）：`SKIP_HOOKS=1 git push …`
+# 拿不到 msys bash 时**响亮跳过**（不阻断推送）：把结果写清是「未验证」，不写成通过。
+#
+# 注意：钩子由 git 用 **POSIX sh** 调起（msys git 下即 msys 的 /usr/bin/sh），所以本文件只用
+# POSIX 语法；真正的逻辑在 bash 脚本里（用 `bash` 显式调起）。
+
+[ -n "$SKIP_HOOKS" ] && { echo "pre-push: SKIP_HOOKS 已设 —— 跳过 pre-push 守卫（本次推送未经验证）"; exit 0; }
+
+# stdin = refs 行：`<local ref> <local sha> <remote ref> <remote sha>`（删除远端 ref 时 local sha 全 0）
+REFS=$(cat)
+echo "$REFS" | while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "$local_ref" ] || continue
+  [ "$local_ref" = "(delete)" ] && continue
+  echo "pre-push: 将推 $local_ref → $remote_ref"
+done
+# 没有 branch 推送就不跑（纯 tag 推送 / 空推送）。
+echo "$REFS" | grep -qE '^refs/heads/' || { echo "pre-push: 本次没有 branch 推送 —— 跳过车道"; exit 0; }
+
+REPO=$(git rev-parse --show-toplevel 2>/dev/null)
+[ -n "$REPO" ] || REPO="."
+LANE="$REPO/scripts/msys-lane.sh"
+[ -f "$LANE" ] || { echo "pre-push: 找不到 $LANE —— 跳过车道（本次推送未经验证）"; exit 0; }
+
+BASH_BIN=""
+for c in bash /usr/bin/bash /bin/bash; do
+  command -v "$c" >/dev/null 2>&1 && { BASH_BIN="$c"; break; }
+done
+[ -n "$BASH_BIN" ] || { echo "pre-push: 找不到 bash —— 跳过 msys 车道（本次推送未经验证）"; exit 0; }
+
+echo "pre-push: $BASH_BIN $LANE（全量：同步副本 → unit + machine）"
+if "$BASH_BIN" "$LANE"; then
+  echo "pre-push: msys 车道全绿 ✅（完整口径见 docs/dev-environment.md §0.1.1）"
+  exit 0
+fi
+echo "pre-push: msys 车道 FAIL —— 推送已阻断。修掉，或明确知道在跳什么时 SKIP_HOOKS=1 git push …" >&2
+exit 1
