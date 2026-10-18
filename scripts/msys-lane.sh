@@ -3,7 +3,8 @@
 #
 # 为什么存在：本仓有三条验证车道（见 docs/dev-environment.md §0.1.1）——
 #   ① Windows 侧权威树（`node --run test`，开发时最常跑）
-#   ② Windows 侧对副本（PowerShell + ucrt64 node **指过去**跑）
+#   ② Windows 侧对副本（PowerShell 指过去跑，node 同样是 Windows node —— 三条车道的
+#      node 归属见 docs/dev-environment.md §0.1.1 的表，那里是单一来源）
 #   ③ **msys 侧对副本**（msys 的 git/sh/tar + Windows 的 node，真在副本里跑）
 # 第 ③ 条此前只活在文档的散文里，每次都要手敲六条命令，且极容易踩「路径形态」坑（POSIX `/c/…`
 # 交给 Windows node → 安装环红而装箱档绿，看着像产品缺陷）。本脚本把那条车道**口子化**：

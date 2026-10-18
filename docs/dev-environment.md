@@ -120,7 +120,39 @@ export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
 
 ### 0.1.1 副本的 msys 侧全流程验证（**第三条车道**，2026-10-17 落地）
 
-默认的副本验证是「Windows 侧 PowerShell + ucrt64 node 指过去」；本仓的 e2e 挂具用**显式 env**
+**三条车道用哪个 node**（**订正**：本节开篇此前写「默认的副本验证是『Windows 侧 PowerShell +
+ucrt64 node 指过去』」—— 那句话与挂具默认值和车道前置检查**都对不上**（ucrt64 在车道上会
+**响亮失败**，不是被选中的 node），故删去，改成下面这张显式表）：
+
+| 车道 | 跑在哪 | 用哪个 node | 在哪个环节 | 这条归属的**依据** |
+|---|---|---|---|---|
+| ① Windows 侧权威树 | `<repo>` | Windows node | 全部：`node --run test`（typecheck + unit + machine） | 见下第 1、2 条（挂具默认值 + 车道前置检查） |
+| ② Windows 侧对副本 | `~/dsh-shellhost-src` | **Windows node** | 全部（含 e2e 三档的宿主 CLI 调用） | 见下第 1 条（同一份挂具，副本只换路径） |
+| ③ msys 侧对副本 | 副本内，msys 的 git/sh/tar | **Windows node** | 全部；生效 node 是 ucrt64 时车道**响亮失败** | 见下第 2、3 条（车道自己的 `fail` + 从生效 node 推导） |
+
+**三条为什么都是 Windows node**（逐条对照，可复核）：
+
+- `tests/helpers/e2e-install.ts:29`：`DSH_E2E_NODE ?? "C:/Program Files/nodejs/node.exe"`
+  —— e2e 挂具驱动宿主 CLI 的默认 node **就是 Windows node**。它**同时**是车道 ① 与 ② 的依据：
+  两条差别只在「副本还是权威树」（`DSH_E2E_PLUGIN_DIR` 指向谁），挂具是**同一份**；
+- `scripts/msys-lane.sh:107-109`（票面引作 `:105-108`，本票的头注 +1 行所致）：生效 node 落在
+  `*/ucrt64/*` 时**直接 `fail`**，并提示设 `DSH_MSYS_WIN_NODE_DIR` —— 车道 ③ **不允许**
+  ucrt64 node 走到跑套件那一步；
+- 同文件 `:162`：车道 ③ 把 `DSH_E2E_NODE` 从**当前生效的 node**（`command -v node`）
+  `cygpath -w` 推导出来 —— 而第 0 步的引导已把它前置成 Windows node（§0.1 的引导做法）。
+- §0.1 第 2 条（上文）：ucrt64 node 优先于 Windows node 会让构建 / 打包在原生件绑定上崩掉
+  —— 这是**要防的故障**，是上面三条的**共同动机**，但它**本身不指定**哪条车道用哪个 node。
+
+⚠️ **诚实声明（依据强度不同）**：车道 ① 与 ② 的 node 归属，依据是**挂具默认值**（那一条直接可核）；
+车道 ② 在仓内**没有**对应的 PowerShell 侧车道脚本可引 —— 它的「Windows 侧」形态是**手工口径**
+（§0.1.1 下面的手工等价跑法即其一份实例），其 node 归属由「同一份挂具 + 同一条引导前置」推出，
+属**外推**而非直接引用。本处按实标记，不把它写成与 ① 同等强度的引用。
+
+**`ucrt64` 唯一合法的落点**是 §4.2 的 B1 分工表（那里的**唯一来源**；本处不复述它的分工内容）：
+它落在**单步 `tsc`** 上，**不是任何一条车道**。本仓的车道入口（`node --run test` /
+`node --run build`）都把 Windows node 前置，所以**没有任何一条车道"用 ucrt64 node 指过去"跑**。
+
+本仓的 e2e 挂具用**显式 env**
 （`DSH_E2E_NODE` / `DSH_E2E_PLUGIN_DIR` / `DSH_E2E_HOST_DIR` / `DSH_E2E_PNPM_DIR`）驱动宿主 CLI，
 所以**不依赖 PATH 上的 `dsh`**（这一点被邻仓 `dsh-matt-preset` 的 §0.1 反过来引用，
 其 #83 正要把他们那套 `dsh` 依赖改成这个形态）。但那样跑，**msys 的 git/sh/tar 语义一次都没被行使**。
