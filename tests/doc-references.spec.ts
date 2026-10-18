@@ -1,12 +1,12 @@
 /**
  * 文档引用腐烂检查（`#78`；第 2 条断言是 `/retro` 2026-10-16 的扩展，
  * 第 3 条是**历史重写**同日会话的扩展，第 4 条是 `#112` 的扩展，
- * 第 5 条是 `#93` 的扩展）。
+ * 第 5 条是 `#93` 的扩展，**第 6 条是 `#94` 的扩展**）。
  *
  * 为什么：两轮 code-review 才扫完 6 处引用"已被 ADR-0013 删掉的文件的注释"
  * （`backends.ts` / `wsl-bridge.ts` / `src/client` / `src/remote` …）。机械模式 → 确定检查。
  *
- * 五条断言：
+ * **六条断言**：
  *
  * 1. **仓内路径引用必须存在**（`#78` 的验收面）：扫 `src/**`、`tests/**` 的**注释**，
  *    凡是形如 `src/<path>.ts` / `tests/<path>.ts` 的引用，目标文件必须在仓内。
@@ -51,6 +51,14 @@
  *    结构上都不在旧四条判据的扫描面内，只能靠这条守。
  *    **本票实际覆盖的形态 = 盘符族**；**波浪号族（`~/…`）只出提取器与合成用例、
  *    不做活体存在性** —— 理由见 `tildeRefsIn` 头注的「显式未覆盖声明」。
+ *
+ * 6. **裸写（无 `tests/` 前缀）的 spec 文件名必须能在 `tests/` 下找到同名**（`#94` 的扩展，
+ *    见 `bareSpecRefsIn` 头注）：第 1 条断言只认 `src/…` / `tests/…` **前缀**，故注释里
+ *    裸写的文件名结构上落在它的面外 —— 票面标本（`tests/detect.spec.ts` 头注曾指一个
+ *    随 ADR-0013 被删的 detector spec）正是这样全程无人管的。
+ *    **扫描面**与第 4/5 条一致（`src` + `tests` + `scripts` + `docs`（除 `adr/`）+
+ *    根文档 + `vitest.config.ts`）；**模式/占位符形态**（`<base>.spec.ts` / `*.spec.ts` /
+ *    `xxx.spec.ts`）出豁免面，否则文档里写"新脚本请配对 `xxx.spec.ts`"会**假红**。
  *
  * ⚠️ **AC1 与 AC2 的结构性分歧**（`#93` 实测 + 两轴复核，human 2026-10-18 拍"写清楚"）：
  * 票面 AC2 要求给 `GLOSSARY.md:12` 加 `[History: …]`，而票面 AC1 点名的标本
@@ -398,6 +406,104 @@ export function tildeRefsIn(blocks: string[]): string[] {
 }
 
 /**
+ * **裸 spec 文件名**引用（`#94`）：`[\w-]+\.spec\.ts`，它必须能在 `tests/` 下找到同名。
+ *
+ * 为什么需要：`PATH_REF` 只认 `src/…` / `tests/…` **前缀**，故注释里**裸写**的文件名
+ * （无前缀）结构上落在扫描面外 —— 票面标本正是这条：
+ * `tests/detect.spec.ts` 的头注曾指**已删的那个 detector spec**（随 ADR-0013
+ * 移除执行器世界时删除），全程无人管。
+ *
+ * 本段**只准出现真实存在的文件名**：注释里裸写的每个 `*.spec.ts` 都会被本判据自己
+ * 读一遍（本文件在扫描面内），写一个已删的名字就会当场判红。故此处刻意**不**复写那个
+ * 已删文件名 —— 它的沿革记在 `.scratch/94-landing.md` 与本票正文里（tracker 不在本判据
+ * 的读取面内，票面 Out of scope 已明写）。
+ * ⚠️ **这就是 `#93` 那条硬提醒的第二次实证**：豁免是整块/整行粒度，为了"说清楚一个已删
+ * 文件名"而在本块加 `[History: …]`，会把**整块**判据说明一起移出扫描面 —— 得不偿失。
+ * **与 `PATH_REF` 的分工**（不重复覆盖）：带前缀的写法归 `PATH_REF`（第 1 条断言），
+ * 本判据**只收无前缀**的裸文件名 —— 靠否定环视 `(?<![\w/.-])` 把带 `tests/` 前缀的写法
+ * 整体挡在外面。否则同一个引用会被两条断言各报一次，点名口径也会打架。
+ *
+ * **形态边界**（票面 AC2，逐条有合成用例）：
+ *
+ * 1. **占位符 / 模式形态不进面**：`<base>.spec.ts`、`*.spec.ts`、`xxx.spec.ts` 是
+ *    "该怎么写"的**模式**，不是具体文件名 —— 文档里写"新脚本请配对 `xxx.spec.ts`"
+ *    时若判红就是**假红**。判据见 `isSpecPlaceholder`。
+ * 2. **`*` 必须收进字符类才谈得上排除**：实测 `tests/verify-all.spec.ts` 有 3 处**裸**
+ *    `*.spec.ts`（`:146` / `:235` / `:239`，星号前无 `tests/` 前缀），而票面字面的
+ *    `[\w-]+` **收不到**星号形态（`*` 不在字符类里）—— 那样"排除 `*.spec.ts`"就成了一句
+ *    收不到东西的空话，而那三处会直接**假红**。故字符类放宽为 `[\w*-]+`，
+ *    把星号收到手上、**再**用占位符规则真排除它。
+ *    ⚠️ 复核期间有人主张"那 3 处都在带前缀语境、左边界已挡住"——**实测证伪**：
+ *    原始正则在那三行上返回 `["*.spec.ts"]`（见 `.scratch/t94-probe-tmp7.log`）；
+ *    带前缀的是**同一行里的** `tests/helper.ts`，与 `*.spec.ts` 是两个 token。
+ * 3. **右边界 `(?![\w.-])` 是必需的**（两轴复核发现 c2，**实测有洞**）：没有它时
+ *    一个 spec 文件名后面再跟 `.bak` / `x` 后缀（同目录下另有其文件）都会被**截断**成
+ *    前半段 ⇒ 把**别的文件**当成本文件判，既可能假红、也可能把真断链错判成存在
+ *    （本仓实测三形态全部命中）。右边界必须把 `.` 也排掉，否则 `.bak` 拦不住。
+ * 4. **跨仓引用**（上游宿主树的 `optional-bundles.spec.ts` 这类）走 `BARE_SPEC_ALLOWLIST`
+ *    显式留档，与 `HASH_ALLOWLIST` / `PATH_ALLOWLIST` 同形。
+ *
+ * ⚠️ **本判据只判"能不能在 `tests/` 下找到同名文件"**，不判用例数/内容/是否真跑
+ * （票面 Out of scope 明写）。
+ */
+const BARE_SPEC_REF = /(?<![\w/.-])([\w*-]+\.spec\.ts)(?![\w.-])/gu;
+
+/**
+ * 该命中是否是**模式 / 占位符**形态（不是具体文件名）。
+ *
+ * 三类，覆盖票面 AC2 点名的三种：
+ *
+ * 1. **含 `*`**（`*.spec.ts` / `pty-*.spec.ts`）—— 通配模式，本就没有"同名文件"可言。
+ * 2. **尖括号包裹**（`<base>.spec.ts` / `<file>.spec.ts`）—— 参数占位符。
+ * 3. **基名是 `x+`**（`x.spec.ts` / `xx.spec.ts` / `xxx.spec.ts`）—— 仓内约定俗成的
+ *    "随便一个名字"写法（`docs/agents/issue-tracker.md` 举例的形态即此族；那里的实例带
+ *    `tests/` 前缀，本已出本判据的面，但**别靠前缀兜底** —— 判据自己得站得住）。
+ *
+ * ⚠️ **两条边界都必须锚"整个基名"**，不能用"含某串"这类宽判据 —— 那会把**真文件名**
+ * 假绿放过。两个方向的边界（在面的真名 / 出面的形态）都由下方合成用例锁住，
+ * 且反例一律写成**字符串字面量**：注释会被本判据自己读到（本文件在扫描面内），
+ * 在注释里凑反例会先把测试文件判红。
+ *
+ * **关于"含 `*` 即豁免"的诚实声明**（两轴复核发现 c1，**有意保留的口径**）：
+ * `*` 是通配符，含它的串**根本不指向任何具体文件** —— 故整类出豁免面，而不是只豁免
+ * 基名恰为 `*` 的形态。代价是该形态**前瞻性假绿**：若日后有人真写出
+ * "名字里带星号的具体文件名"引用（本机文件系统里 `*` 本就是非法字符，故实际不可能存在
+ * 这样的文件），它会漏报。**取舍依据**：AC2 要求排除的是**模式**（`*.spec.ts` 的语义就是
+ * "任意文件"），把豁免面收窄到只认 `^\*\.spec\.ts$` 会把 `pty-*.spec.ts` 这类**真模式**
+ * 重新放回面内 ⇒ 假红。两害相权取其轻，且 `*` 在文件名里非法使漏报不可达。
+ */
+function isSpecPlaceholder(name: string): boolean {
+  if (name.includes("*")) return true;
+  if (/^<[^>]*>\.spec\.ts$/u.test(name)) return true;
+  // 基名整体是 `x` 的重复（`x` / `xx` / `xxx`…）：举例用的通用名字，不是真文件。
+  // ⚠️ 大小写**必须**折叠（两轴复核发现 c3）：`X.spec.ts` / `XX.spec.ts` 是小写形态的
+  // 大小写变体，同一族的举例写法；不折叠它们就会**假红**，而 Windows 文件系统本就
+  // 大小写不敏感（`#93` 的 `inNodeModules` 踩过同一个坑，此处不重犯）。
+  return /^x+\.spec\.ts$/u.test(name.toLowerCase());
+}
+
+/** 文本块里的裸 spec 文件名引用（占位符 / 模式形态已排除）。 */
+export function bareSpecRefsIn(blocks: string[]): string[] {
+  return blocks.flatMap((block) =>
+    [...block.matchAll(BARE_SPEC_REF)].map((m) => m[1]).filter((name) => !isSpecPlaceholder(name)),
+  );
+}
+
+/**
+ * 裸 spec 文件名引用的**允许清单**：**跨仓**引用，本仓 `tests/` 下必然找不到同名，
+ * 故显式留档 —— 与 `HASH_ALLOWLIST`（跨仓提交哈希）/ `PATH_ALLOWLIST`（刻意举例的
+ * 机器路径）同形，都是"经判断后显式放行"，而非静默放过。
+ *
+ * - `optional-bundles.spec.ts`：**上游宿主树**的文件 —— `docs/research/research-osc133-shell-integration.md`
+ *   里有它的带前缀写法（被否定环视挡在面外），而**本文件的判据说明**需要举它的名字
+ *   （讲"跨仓引用该走这条清单"时）。本仓 `scripts/` 下确无 `optional-bundles.*`，
+ *   故它是"本仓注定没有"的典型：新增同类条目必须同样写明这条理由。
+ *
+ * 新增条目必须说明"为什么本仓注定没有它"。
+ */
+export const BARE_SPEC_ALLOWLIST = new Set<string>(["optional-bundles.spec.ts"]);
+
+/**
  * 绝对路径引用的**允许清单**：文档里**刻意举例的机器路径**——
  * 讲的是"别的机器/别的布局可能长这样"，**本机不存在是正当的**，
  * 与 `HASH_ALLOWLIST` 同形（跨仓/外部引用的显式留档，而非静默放过）。
@@ -427,6 +533,96 @@ function scriptNames(): string[] {
 }
 
 describe("引用腐烂检查器自身的边界（合成文本）", () => {
+  it("裸 spec 文件名只认 `[\\w*-]+.spec.ts`；占位符与模式形态不进面（#94）", () => {
+    // 票面 AC2：`tests/<base>.spec.ts` / `*.spec.ts` / `xxx.spec.ts` 是**模式**不是具体文件名，
+    // 必须明确排除，否则文档里每写一次"新脚本请配对 xxx.spec.ts"都会假红。
+    //
+    // ⚠️ 用例名里的字符类是 `[\w*-]+`（**含星号**），不是票面字面的 `[\w-]+` ——
+    // 因为提取器刻意放宽收星号，好让"排除 `*.spec.ts`"有真判据可依（human 2026-10-18 拍 Q1）；
+    // 名字写窄了会与实际实现不符（Standards 轴复核发现 S1）。
+    for (const line of [
+      "- 配对 `tests/<base>.spec.ts`",
+      "- 收集口径 `tests/**/*.spec.ts` 无需登记",
+      "- `tests/*.spec.ts` 用 vitest 按位置收集",
+      "- 裸写 xxx.spec.ts 的陈旧指针",
+      "- 非 *.spec.ts",
+    ]) {
+      expect(bareSpecRefsIn([line]), `占位符/模式行 ${JSON.stringify(line)} 不该进面`).toEqual([]);
+    }
+    // ⚠️ **上面五行里带 `tests/` 前缀的，靠的是左边界（前缀）而非占位符规则** ——
+    // 只喂原文证明不了 `isSpecPlaceholder` 有牙齿。故这里**再喂去前缀的裸形态**，
+    // 把两个机制分离：这些串没有前缀可言，唯一能挡住它们的就是占位符判据本身。
+    // （复核发现 S1 的实质：不加这段，占位符规则的覆盖就是**未证明**的。）
+    for (const bare of ["<base>.spec.ts", "*.spec.ts", "**/*.spec.ts", "x.spec.ts", "xx.spec.ts", "xxx.spec.ts"]) {
+      expect(bareSpecRefsIn([`配对 ${bare}`]), `裸形态 ${JSON.stringify(bare)} 该被占位符判据挡住`).toEqual([]);
+    }
+    // 对照：真文件名照旧进面（判据没把裸文件名一起误伤）。
+    expect(bareSpecRefsIn(["- 见 detect.spec.ts 与 doc-references.spec.ts"])).toEqual([
+      "detect.spec.ts",
+      "doc-references.spec.ts",
+    ]);
+    // 对照 2：**只是名字里含 `xxx` 子串**的真文件名照旧进面 —— 占位符判据锚的是整段基名，
+    // 不是子串，否则"名字里含那串字母的真文件名"会被**假绿**放过（收紧边界的反例）。
+    for (const real of ["abcxxx.spec.ts", "xxx-helper.spec.ts", "x-ray.spec.ts"]) {
+      expect(bareSpecRefsIn([`曾指 ${real}`]), `${real} 是真文件名，不该被当占位符放过`).toEqual([real]);
+    }
+    // 对照 3：**含 `*` 的形态一律出豁免面**（不只基名恰为 `*` 的那种）。
+    // ⚠️ 这是**有意保留**的宽口径，代价是前瞻性假绿 —— 取舍与理由见 `isSpecPlaceholder` 头注。
+    // 锁住它，是为了让日后"顺手收窄"的人看见这里有一条**判断过的**决定，而不是遗漏。
+    for (const pattern of ["*.spec.ts", "pty-*.spec.ts", "**/*.spec.ts", "a*b.spec.ts"]) {
+      expect(bareSpecRefsIn([`模式 ${pattern}`]), `${pattern} 含通配符，该出豁免面`).toEqual([]);
+    }
+    // 对照 4：`x+` 占位符族**大小写不敏感**（两轴复核发现 c3）。
+    // 不折叠时 `X.spec.ts` 会进面 ⇒ **假红**（它是小写形态的大小写变体）。
+    for (const pattern of ["x.spec.ts", "X.spec.ts", "XX.spec.ts", "XXX.spec.ts", "Xx.spec.ts"]) {
+      expect(bareSpecRefsIn([`配对 ${pattern}`]), `${pattern} 是同一占位符族，该出豁免面`).toEqual([]);
+    }
+  });
+
+  it("裸 spec 文件名的右边界：`.spec.ts` 后面还有东西就不是它（#94 复核发现 c2）", () => {
+    // 实测洞：没有右边界时，spec 文件名后面再跟 `.bak` 之类的后缀会被**截断**成前半段 ——
+    // 把**别的文件**当成本文件判，可能把真断链错认成"存在"（假绿）。
+    for (const [text, expected] of [
+      ["曾指 descriptor.spec.ts", ["descriptor.spec.ts"]],
+      ["曾指 descriptor.spec.tsx", []],
+      ["曾指 descriptor.spec.ts.bak", []],
+      ["曾指 a.spec.ts.map", []],
+    ] as const) {
+      expect(bareSpecRefsIn([text]), `右边界：${JSON.stringify(text)}`).toEqual([...expected]);
+    }
+  });
+
+  it("裸 spec 文件名不因 `tests/` 前缀而重复进面（那是既有判据的面，#94）", () => {
+    // 带 `tests/` 前缀的写法已被第 1 条断言（仓内路径存在性）覆盖，本判据**不重复**收它，
+    // 否则同一个引用会有两条断言各自报错、点名口径也会打架。
+    expect(bareSpecRefsIn(["见 tests/detect.spec.ts"])).toEqual([]);
+    // 但**裸写**（无前缀）的已删文件名仍要被抓——这正是票面标本的形态。
+    expect(bareSpecRefsIn(["曾指向 descriptor.spec.ts"])).toEqual(["descriptor.spec.ts"]);
+  });
+
+  it("豁免标记对裸 spec 文件名族同样生效（#94 AC3）", () => {
+    // 票面 AC3「历史性提及可豁免（沿用既有 `[History: …]`）」。
+    // 活体正例：`tests/patch-shape.spec.ts` 的 `[History: `c74b2d5`]` 注释块里正提到
+    // 已删的那个 detector spec —— 那是**正当历史叙述**，不能判红。
+    // `.ts` 的豁免粒度是**注释整块**（`commentBlocks`），故标记在注释里任一处即整块出豁免面。
+    const marked = "// 曾与 descriptor.spec.ts 一起消失（[History: `c74b2d5`]）";
+    const bare = "// 曾与 descriptor.spec.ts 一起消失";
+    expect(bareSpecRefsIn(commentBlocks(marked))).toEqual([]);
+    // 对照：同一句话去掉标记 ⇒ 照常进面（判据本身有效，不是"抓不到裸文件名"）。
+    expect(bareSpecRefsIn(commentBlocks(bare))).toEqual(["descriptor.spec.ts"]);
+  });
+
+  it("合成断链真的判红：裸 spec 文件名在 tests/ 下找不到即点名（#94）", () => {
+    // AC1 的「变红并点名」在合成层的证据（不只活体那一处）。
+    const missingIn = (block: string) =>
+      bareSpecRefsIn([block])
+        .filter((name) => !existsSync(join(repoRoot, "tests", name)))
+        .filter((name) => !BARE_SPEC_ALLOWLIST.has(name));
+    expect(missingIn("曾指向 descriptor.spec.ts")).toEqual(["descriptor.spec.ts"]);
+    // 对照：现存文件名绿（`detect.spec.ts` 真在 tests/ 下）。
+    expect(missingIn("见 detect.spec.ts")).toEqual([]);
+  });
+
   it("只认注释：字符串字面量里的路径不算引用", () => {
     const source = ['const sample = "src/ghost.ts";', "// 引用 src/real/thing.ts 见下"].join("\n");
     expect(pathRefsIn(commentBlocks(source))).toEqual(["src/real/thing.ts"]);
@@ -794,6 +990,36 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
       missing,
       "文档引用了本机不存在的绝对路径：修正路径、在同一条注释/该行标 [History: …]，" +
         "或（确属「别的机器长这样」的举例）登记进 PATH_ALLOWLIST 并写明理由",
+    ).toEqual([]);
+  });
+
+  it("注释 / 文档里裸写的 spec 文件名都能在 tests/ 下找到同名（#94）", () => {
+    // 扫描面与 #112 / #93 一致（同族守卫同面）：src + tests + scripts + docs（除 adr）
+    // + 根文档 + vitest.config.ts。
+    //
+    // 为什么这条存在：带前缀的写法（`tests/` + 文件名）由第 1 条断言守，
+    // 而**裸写**的（无前缀）结构上落在它的面外 —— 票面标本
+    // （`tests/detect.spec.ts` 头注曾指已删的那个 detector spec）正是这样漏掉的。
+    const files = [
+      ...walk("src", [".ts", ".tsx"]),
+      ...walk("tests", [".ts"]),
+      ...walk("scripts", [".mjs"]),
+      // docs/adr/** 是决定记录，整体排除（与 #112 / #93 同口径）
+      ...walk("docs", [".md"]).filter((p) => !p.startsWith("docs/adr/")),
+      "vitest.config.ts",
+      ...ROOT_DOCS,
+    ];
+    const missing = files.flatMap((rel) =>
+      bareSpecRefsIn(blocksOf(rel))
+        .filter((name) => !BARE_SPEC_ALLOWLIST.has(name))
+        .filter((name) => !existsSync(join(repoRoot, "tests", name)))
+        .map((name) => `${rel} -> ${name}`),
+    );
+    expect(
+      missing,
+      "注释 / 文档里裸写的 spec 文件名在 tests/ 下不存在：" +
+        "修正文件名、写全 `tests/…` 前缀、在同一条注释/该行标 [History: …]，" +
+        "或（确属跨仓引用）登记进 BARE_SPEC_ALLOWLIST 并写明理由",
     ).toEqual([]);
   });
 
