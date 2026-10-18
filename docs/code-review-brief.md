@@ -27,13 +27,13 @@
 
 ## 3. standards 源（本仓）
 
-- [AGENTS.md](../../AGENTS.md)（导航 + 沟通语言 + Build & verify）
-- [GLOSSARY.md](../../GLOSSARY.md)（已验证的上游事实 + grill 决策 D1–D13）
-- [docs/adr/](../adr/) —— 尤其 **ADR-0012**（只挂自有 id 行、不接管上游行）、
+- [AGENTS.md](../AGENTS.md)（导航 + 沟通语言 + Build & verify）
+- [GLOSSARY.md](../GLOSSARY.md)（已验证的上游事实 + grill 决策 D1–D13）
+- [adr/](adr/) —— 尤其 **ADR-0012**（只挂自有 id 行、不接管上游行）、
   **ADR-0013**（tools-only，执行器 world 已移除）、**ADR-0014**（无 CI 的边界：本地守卫可、CI 服务不可）
-- [docs/agents/TESTING.md](TESTING.md)（分层 / 证据纪律 / loud skip / 失败归因 / e2e 安装规则）
-- [docs/dev-environment.md](../dev-environment.md)（隔离契约、宿主锚点、构建坑）
-- [README.md](../../README.md)（验证段）
+- [agents/TESTING.md](agents/TESTING.md)（分层 / 证据纪律 / loud skip / 失败归因 / e2e 安装规则）
+- [dev-environment.md](dev-environment.md)（隔离契约、宿主锚点、构建坑）
+- [README.md](../README.md)（验证段）
 
 **邻近文件的既有风格**：`src/` 用双引号 + 分号（TypeScript，`verbatimModuleSyntax` 下
 `import type` 显式）；`tests/*.spec.ts` 用 vitest、按位置收集；文档以中文为主
