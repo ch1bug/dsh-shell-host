@@ -34,6 +34,7 @@ import {
   partialSummaryNote,
   perFileEntries,
   readingBlocks,
+  reportsTestCounts,
   summarize,
   summaryLine,
 } from "../scripts/verify-all.mjs";
@@ -197,9 +198,28 @@ describe("collectLane", () => {
 
   it("no collected cases + exit 0 → one SKIP entry that keeps its lane", () => {
     // 同源缺陷：这一分支原先漏了 lane 字段，会被车道过滤吞掉。
+    // 它同时是 `#122` 兜底的**反例**（`no test files found` 没有用例数 ⇒ 不得误判成解析失败）。
     const entries = collectLane({ lane: UNIT, run: run(0, " Test Files  no test files found"), results: [] });
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ label: "project unit", lane: "unit", status: "SKIP", detail: "无收集到的用例" });
+  });
+
+  it("THE POINT (#122): exit 0 + vitest reported test counts but zero parsed rows → FAIL, never 'no cases'", () => {
+    // 带色输出：逐文件行是色块徽标（无 `|lane|`）⇒ 解析不到；但汇总行 `Tests  387 passed` 在。
+    // 这正是把"全绿"读成"没跑"的那个形状（本会话实测踩过）。
+    const out =
+      " ✓ \u001b[30m\u001b[42m unit \u001b[m tests/x.spec.ts (13 tests) 7ms\n" +
+      "\n      Tests  387 passed | 1 skipped (388)\n";
+    const entries = collectLane({ lane: UNIT, run: run(0, out), results: [] });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ label: "project unit", lane: "unit", status: "FAIL", output: out });
+    expect(entries[0]?.detail).toContain("#122");
+  });
+
+  it("reportsTestCounts only fires on a numeric vitest summary (the guard's own boundary)", () => {
+    expect(reportsTestCounts("      Tests  387 passed | 1 skipped (388)")).toBe(true);
+    expect(reportsTestCounts(" Test Files  no test files found")).toBe(false);
+    expect(reportsTestCounts("")).toBe(false);
   });
 
   it("no collected cases + non-zero exit → FAIL with the output attached", () => {

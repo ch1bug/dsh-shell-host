@@ -61,6 +61,9 @@ git log --all --format=%B | grep -inE '<类别词>'             # 提交信息
   `git ls-remote --heads --tags origin`（别忘了**侧分支与 tag**）。
 - **本机 denylist**：`<DSH_HOME>/privacy-denylist.txt`（一行一个 token，`#` 注释，**不进仓**），
   覆盖运行时推不出来的那类。可从重写前的备份镜像自动提取（署名 / 邮箱 / 内网 IP）。
+  它还管**日常提交**（不限历史重写）：**每台机器一次性**建好这个文件 —— 缺失时
+  `scripts/privacy-scan.mjs` 响亮跳过个人 token 那一层（`!! SKIP (loud)`），`pre-commit` 仍放行；
+  读到"干净"前先确认没有那行 loud skip。
 
 ## 3. 重写（一遍跑齐）
 

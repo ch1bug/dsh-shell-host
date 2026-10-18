@@ -92,8 +92,19 @@ export function laneLevelFailure({ lane, exitCode, output, results }) {
 }
 
 /**
+ * 车道输出里有没有 vitest 的**用例数**汇总行（`Tests  387 passed | 1 skipped (388)`）。
+ *
+ * 用途（#122 的机械兜底）：逐文件行**解析不到**、而本轮**确实跑过**用例 ⇒ 那是解析失败
+ * （输出格式漂移：带色时 project 徽标从 `|unit|` 变成色块，正则整条不匹配），**不是**
+ * "没收集到用例"。反例是 `Test Files  no test files found` —— 真没跑，读成 SKIP 才诚实。
+ */
+export function reportsTestCounts(output) {
+  return /^\s*Tests\s+\d+/mu.test(String(output ?? ''))
+}
+
+/**
  * 把一个车道的运行结果收集成汇总条目：逐文件条目 + 兜底条目
- * （「无收集到用例」或「车道级失败」）。
+ * （「无收集到用例」/「逐文件行解析失败」/「车道级失败」）。
  *
  * @param run `{ exitCode, out }` —— 逐文件行**只从 `out` 现场解析**：单测构造输出
  *            文本、生产跑真实输出，两边走的是同一条解析路径（不留测试没走过的分支）。
@@ -105,6 +116,17 @@ export function collectLane({ lane, run, results = [] }) {
   const loud = hasLoudSkip(out)
   const entries = []
   if (perFile.length === 0) {
+    // 解析不到逐文件行的**两种**情形必须分开：跑过但格式漂移（响亮失败）vs 真没收集到用例。
+    if (run.exitCode === 0 && reportsTestCounts(out)) {
+      entries.push({
+        label: `project ${lane.name}`,
+        lane: lane.name,
+        status: 'FAIL',
+        detail: '逐文件行 0 行但 vitest 报过用例数（输出格式漂移，见 #122）',
+        output: out,
+      })
+      return entries
+    }
     // 没有逐文件行：整个车道没收集到用例（全用例 skipIf / 无测试文件），或提前崩了。
     entries.push({
       label: `project ${lane.name}`,

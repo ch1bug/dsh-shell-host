@@ -318,7 +318,10 @@ export function main(argv = [], root = process.cwd()) {
   const { surfaces } = scanned;
   const scope = `files=${String(surfaces.files)} messages=${String(surfaces.messages)} identities=${String(surfaces.identities)} refs=${String(surfaces.refs)}${argv.includes("--gh") ? " tracker=on" : ""}`;
   if (terms.length === 0) {
-    console.log(`  !! SKIP (loud) — 词表缺失（${file}）：只跑了结构性规则与运行时身份，个人 token 未核对`);
+    console.log(
+      `  !! SKIP (loud) — 词表缺失（${file}）：只跑了结构性规则与运行时身份，个人 token 未核对` +
+        `；每台机器一次性建词表见 docs/agents/privacy.md §2`,
+    );
   }
   if (findings.length === 0) {
     console.log(`privacy-scan: 干净（${scope}${terms.length === 0 ? "" : `; denylist ${String(terms.length)} 条`}）`);

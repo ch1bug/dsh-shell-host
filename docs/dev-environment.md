@@ -452,6 +452,20 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
 端口占用报 `EADDRINUSE 127.0.0.1:<port>` 时，用 `netstat -ano` 找 pid +
 `Stop-Process -Id <pid> -Force`。
 
+### 4.6 DSH 沙箱下的执行口径（agent 会话，2026-10-18 实测）
+
+- **跑测试、写 git 走 PTY 会话**（`pty_open` 开 `cmd`）：`pwsh` 工具下 vitest 在**加载配置**
+  阶段就炸 —— `spawn EPERM`（vite `optimizeSafeRealPathSync` → `exec("net use")` 需要管道）；
+  `git add` / `commit` / `push` 报 `Unable to create .git/index.lock: Permission denied`。
+  PTY 内两者都正常（本会话实测：PTY 里 `execSync('cmd /c echo hi')` OK、`git add` OK）。
+- **验收读数加 `NO_COLOR=1`**：带色时 `verify-all` 解析不到逐文件行（整车道塌成一行，
+  纯绿可读成"无收集到的用例"）。根因、复现与修法见 #122；`verify-all` 侧现在还有一条
+  响亮失败兜底（解析不到行但 vitest 报过用例数 ⇒ FAIL，不再是 SKIP）。
+- **判断后台套件在不在跑，看日志文件的 size/mtime**：沙箱下 `tasklist` / `Get-Process node`
+  返回 Access denied。
+- **PTY 会话不跨轮存活**（下一个 tool call 里即报 `no pty session … for this agent`）：
+  多条命令用 `&&` 串成一次做完，读数重定向进 `.scratch/*.log` 再读文件。
+
 ## 5. 实例相关文档
 
 - 上游契约 / RPC 参数名（typert 逐方法三种形态）/ 会话证据与计费判据：[GLOSSARY.md #82](../GLOSSARY.md)
