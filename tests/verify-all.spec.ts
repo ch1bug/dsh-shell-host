@@ -33,6 +33,7 @@ import {
   partialBanner,
   partialSummaryNote,
   perFileEntries,
+  pinnedRunnerEnv,
   readingBlocks,
   reportsTestCounts,
   summarize,
@@ -50,6 +51,45 @@ const MACHINE = { name: "machine", why: "串行；碰真实终端 / 真实实例
 /** 造一行 vitest 逐文件输出（真实形态：`  ✓ |unit| tests/<file>.spec.ts (7 tests) 20ms`）。 */
 function line(mark: string, lane: string, file: string, detail = "") {
   return `  ${mark} |${lane}| ${file}${detail === "" ? "" : ` ${detail}`}`;
+}
+
+/** ANSI SGR 序列（本包实测是 truecolor 无参数形态：`ESC[<n>m`）。 */
+const ESC = "\u001b";
+function sgr(...codes: number[]) {
+  return codes.map((c) => `${ESC}[${String(c)}m`).join("");
+}
+
+/**
+ * 造一行**带色**的 vitest 逐文件输出 —— 逐字节对齐本机实测的原始输出
+ * （`.scratch/t122-colored-vitest-raw.log`，实测单行即含以下五段 SGR）：
+ *
+ * ```
+ *  ESC[32m✓ESC[39m ESC[30mESC[42m unit ESC[49mESC[39m tests/detect.spec.ts ...
+ * ```
+ *
+ * **色块徽标取代了 `|unit|`**：带色时 vitest 的 project 徽标是一段反显色块
+ * （`ESC[30m` 黑字 + `ESC[42m` 绿底 + 项目名 + `ESC[49m` 默认底），两侧没有 `|` ——
+ * 实测带色行**剥完**残留 `|` 数为 **0**。
+ *
+ * **判别依据是"SGR 在不在"，不是空格数** —— 见 `scripts/verify-all.mjs` 的
+ * `parsePerFileLine` 头注：按空格计数判别会让对齐填充静默改判（3 空格填充的合法裸行
+ * 被丢、2 空格的非徽标文本被收），那正是本票要消灭的漂移。故本 helper 保留真实 SGR。
+ * 这是 #122 的现象面：旧正则只认 `|lane|` ⇒ 整张逐文件表一条都解析不到。
+ *
+ * 注意 `✓` 徽记**不在**色块里（它是 `ESC[32m` 前景色），故为跨环境稳定的锚点。
+ */
+function colored(mark: string, lane: string, file: string, detail = "") {
+  return ` ${sgr(32)}${mark}${sgr(39)} ${sgr(30, 42)} ${lane} ${sgr(49, 39)} ${file}${detail === "" ? "" : ` ${detail}`}`;
+}
+
+/** 带色的用例数汇总行（实测形态：`ESC[2m      Tests ESC[22m ESC[1mESC[32m52 passedESC[39mESC[22m...`）。 */
+function coloredTestsSummary(text: string) {
+  return `${sgr(2)}      Tests ${sgr(22)} ${sgr(1, 32)}${text}${sgr(39, 22)}`;
+}
+
+/** 带色的 `Test Files` 汇总行（真没跑用例的那条：`no test files found`）。 */
+function coloredTestFilesSummary(text: string) {
+  return `${sgr(2)} Test Files ${sgr(22)} ${text}`;
 }
 
 /** 造一个车道运行结果 —— 与 `runLane()` 的返回形态同为 `{ exitCode, out }`。 */
@@ -105,8 +145,99 @@ describe("parsePerFileLine", () => {
       "      Tests  29 passed (29)",
       "  ✓ |unit| tests/helper.ts (1 test)", // 非 *.spec.ts
       "  ✓ |unit| (7 tests)", // 缺文件名
-      "  ✓ unit tests/a.spec.ts (1 test)", // 缺 |lane|
+      "  ✓ unit tests/a.spec.ts (1 test)", // 缺包裹符（且只有单空格）—— 保持既有边界
       "Duration  12.34s",
+    ]) {
+      expect(parsePerFileLine(garbage), garbage).toBeNull();
+    }
+  });
+
+  it("THE POINT (#122): reads a COLORED row whose project badge is a colour block, not |lane|", () => {
+    // 带色时 vitest 把 `|unit|` 打成反显色块（两侧没有 `|`）—— 旧正则整条不匹配，
+    // 于是带色会话里**整张逐文件表一条都收不到**（全绿被读成"无收集到的用例"）。
+    expect(parsePerFileLine(colored("✓", "unit", "tests/detect.spec.ts", "(22 tests) 20ms"))).toEqual({
+      mark: "✓",
+      lane: "unit",
+      file: "tests/detect.spec.ts",
+      detail: "(22 tests) 20ms",
+    });
+    expect(parsePerFileLine(colored("×", "machine", "tests/broken.spec.ts", "(1 test)"))).toEqual({
+      mark: "×",
+      lane: "machine",
+      file: "tests/broken.spec.ts",
+      detail: "(1 test)",
+    });
+    expect(parsePerFileLine(colored("↓", "machine", "tests/ssh-pty-live.spec.ts", "(4 tests | 4 skipped)"))).toEqual({
+      mark: "↓",
+      lane: "machine",
+      file: "tests/ssh-pty-live.spec.ts",
+      detail: "(4 tests | 4 skipped)",
+    });
+  });
+
+  it("still reads the BARE (no-colour) `|lane|` form — one contract, two shapes", () => {
+    // 契约 = 恰好两种形态：无 SGR 的裸 `|lane|`，与带 SGR 的色块徽标。
+    expect(parsePerFileLine(`  ✓ |unit| tests/a.spec.ts (1 test)`)?.lane).toBe("unit");
+    expect(parsePerFileLine(colored("✓", "unit", "tests/a.spec.ts", "(1 test)"))?.lane).toBe("unit");
+  });
+
+  it("THE POINT (#122): judge by SGR presence, NOT by space count (alignment padding must not change the verdict)", () => {
+    // 复核发现的缺陷：早先按"剥完后是不是双空格"判别 ⇒ 对齐填充一变就静默改判。
+    // 3 空格填充的**合法裸行**曾被丢（旧实现接受它），2 空格的**非徽标文本**曾被收。
+    // 现在判据落在 SGR 上：无 SGR ⇒ 走裸形态（`\s+` 容忍填充），有 SGR ⇒ 走色块形态。
+    expect(parsePerFileLine("  ✓   |unit|   tests/a.spec.ts (1 test)")?.lane).toBe("unit");
+    expect(parsePerFileLine("  ✓ |unit| tests/a.spec.ts (1 test)")?.lane).toBe("unit");
+    // 没有 SGR 的 `✓␣␣unit␣␣file` **不是**色块形态（那是空格计数认出来的假形态）⇒ 不收。
+    expect(parsePerFileLine("  ✓  unit  tests/a.spec.ts (1 test)")).toBeNull();
+    // 带 SGR 但徽标形状不对 ⇒ 也不收（交给汇总层的响亮兜底，不猜）。
+    expect(parsePerFileLine(`  ${sgr(32)}✓${sgr(39)}  unit  tests/a.spec.ts (1 test)`)).toBeNull();
+  });
+
+  it("keeps the shape BOUNDED: a badge-less row stays rejected (no third '看运气' state)", () => {
+    // 边界用例：既不是裸形态（无 `|`）也不是色块形态（无 SGR）⇒ 不收
+    // （`returns null …` 那条守卫钉着它）。这条把"边界在哪"写死。
+    expect(parsePerFileLine("  ✓ unit tests/a.spec.ts (1 test)")).toBeNull();
+    expect(parsePerFileLine("  ✓ |unit tests/a.spec.ts (1 test)")).toBeNull();
+    expect(parsePerFileLine("  ✓ unit| tests/a.spec.ts (1 test)")).toBeNull();
+  });
+
+  it("is robust against alignment padding on the COLOURED form too", () => {
+    // 色块形态同样不该被填充左右：SGR 在那儿，徽标形状认得，就该读出来。
+    const padded = `  ${sgr(32)}✓${sgr(39)}   ${sgr(30, 42)}  unit  ${sgr(49, 39)}   tests/a.spec.ts (1 test)`;
+    expect(parsePerFileLine(padded)?.lane).toBe("unit");
+    expect(parsePerFileLine(padded)?.file).toBe("tests/a.spec.ts");
+  });
+
+  it("THE POINT (#122 复核发现): repeated calls stay stable — no `/g` lastIndex alternation", () => {
+    // 探针若用带 `/g` 的正则，`test()` 会推进 `lastIndex` ⇒ 连续调用**交替命中**
+    // （复核轴实测第 7 次返回 false），带色行会被误判成裸形态。这里连调 12 次钉死稳定性。
+    const coloredRow = colored("✓", "unit", "tests/a.spec.ts", "(1 test)");
+    const bareRow = "  ✓ |unit| tests/a.spec.ts (1 test)";
+    // 同一行连续问 12 次：交替命中会让其中某次掉成 null。
+    for (let i = 0; i < 12; i += 1) {
+      expect(parsePerFileLine(coloredRow), `same-row call ${String(i)}`).not.toBeNull();
+    }
+    // 再**交替**喂色块 / 裸行，证明两条路径的判定互不污染。
+    for (let i = 0; i < 12; i += 1) {
+      expect(parsePerFileLine(coloredRow)?.lane, `call ${String(i)} colored`).toBe("unit");
+      expect(parsePerFileLine(bareRow)?.lane, `call ${String(i)} bare`).toBe("unit");
+    }
+  });
+
+  it("colors never leak into lane / file / detail (the parse strips every SGR)", () => {
+    const parsed = parsePerFileLine(colored("✓", "unit", "tests/a.spec.ts", "(1 test) 20ms"));
+    expect(parsed?.lane).not.toContain("\u001b");
+    expect(parsed?.file).not.toContain("\u001b");
+    expect(parsed?.detail).not.toContain("\u001b");
+  });
+
+  it("returns null for a colored row that is not a per-file row either", () => {
+    // 边界：色块徽标形态**不是**开放式的 —— 文件名仍必须是 *.spec.ts。
+    for (const garbage of [
+      coloredTestsSummary("29 passed (29)"),
+      coloredTestFilesSummary("no test files found"),
+      colored("✓", "unit", "tests/helper.ts", "(1 test)"), // 非 *.spec.ts
+      colored("✓", "unit", "", "(7 tests)"), // 缺文件名
     ]) {
       expect(parsePerFileLine(garbage), garbage).toBeNull();
     }
@@ -134,6 +265,26 @@ describe("hasLoudSkip", () => {
   it("is true only when the lane printed a loud skip", () => {
     expect(hasLoudSkip("  !! SKIP (loud): DSH_SSH_LIVE_HOST 未设置")).toBe(true);
     expect(hasLoudSkip(line("✓", "unit", "tests/a.spec.ts", "(1 test)"))).toBe(false);
+  });
+});
+
+describe("perFileEntries（#122：带色整表）", () => {
+  it("THE POINT: a fully COLOURED lane output still yields the whole per-file table", () => {
+    // 带色实测输出的形状：逐文件表 + 带色 Test Files / Tests 汇总行。
+    // 旧实现下这里 entries 为 0 —— 整张表消失，只剩兜底的一条 FAIL。
+    const out = [
+      " RUN  v4.1.11 <cwd>",
+      "",
+      colored("✓", "unit", "tests/detect.spec.ts", "22 tests 20ms"),
+      colored("✓", "unit", "tests/verify-all.spec.ts", "52 tests 39ms"),
+      "",
+      coloredTestFilesSummary("2 passed (2)"),
+      coloredTestsSummary("74 passed (74)"),
+    ].join("\n");
+    expect(perFileEntries(out).map((e: { file: string }) => e.file)).toEqual([
+      "tests/detect.spec.ts",
+      "tests/verify-all.spec.ts",
+    ]);
   });
 });
 
@@ -205,21 +356,83 @@ describe("collectLane", () => {
   });
 
   it("THE POINT (#122): exit 0 + vitest reported test counts but zero parsed rows → FAIL, never 'no cases'", () => {
-    // 带色输出：逐文件行是色块徽标（无 `|lane|`）⇒ 解析不到；但汇总行 `Tests  387 passed` 在。
-    // 这正是把"全绿"读成"没跑"的那个形状（本会话实测踩过）。
-    const out =
-      " ✓ \u001b[30m\u001b[42m unit \u001b[m tests/x.spec.ts (13 tests) 7ms\n" +
-      "\n      Tests  387 passed | 1 skipped (388)\n";
+    // 兜底（`dbd8318` 落地）的**触发面**：解析真的 0 行、而汇总行 `Tests  387 passed` 在
+    // ⇒ 响亮 FAIL，绝不读成"没跑"。
+    //
+    // 触发面怎么造成：**再换一种 vitest 未知形态**（这里 = 色块徽标但徽记变成 `❯`，
+    // 或徽标词多了一个 token）。#122 修完以后，真实带色输出**不再**落进这条兜底
+    // （它是失败兜底，不是常态路径）—— 所以这条用例必须用一个**真解析不动**的形态,
+    // 否则它证不了兜底还活着。
+    const out = [
+      " RUN  v4.1.11 <cwd>",
+      " ❯  unit  tests/verify-all.spec.ts (13 tests) 7ms", // 徽记 ×（未知）⇒ 这一行解析不动
+      " ❯  unit  tests/verify-all.spec.ts (3 tests) 2ms",
+      "",
+      coloredTestsSummary("387 passed | 1 skipped (388)"),
+    ].join("\n");
     const entries = collectLane({ lane: UNIT, run: run(0, out), results: [] });
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({ label: "project unit", lane: "unit", status: "FAIL", output: out });
     expect(entries[0]?.detail).toContain("#122");
   });
 
+  it("THE POINT (#122 反例): a COLOURED lane with a full table stays a full table (not the FAIL fallback)", () => {
+    // 本票要的**根因行为**：带色不再是"兜底接住"，而是表本来就在。
+    // 判据 = 条目数 = 逐文件行数（此处 3），三态齐备，且**不含**兜底那条 FAIL。
+    const out = [
+      colored("✓", "unit", "tests/detect.spec.ts", "22 tests 20ms"),
+      colored("✓", "machine", "tests/terminal-machine.spec.ts", "7 tests | 1 skipped 25049ms"),
+      colored("↓", "machine", "tests/ssh-pty-live.spec.ts", "4 tests | 4 skipped"),
+      "",
+      coloredTestFilesSummary("3 passed (3)"),
+      coloredTestsSummary("33 passed | 5 skipped (38)"),
+    ].join("\n");
+    const entries = collectLane({ lane: UNIT, run: run(0, out), results: [] });
+    expect(entries.map((e: { label: string; status: string }) => [e.label, e.status])).toEqual([
+      ["tests/detect.spec.ts", "PASS"],
+      ["tests/terminal-machine.spec.ts", "PASS*"],
+      ["tests/ssh-pty-live.spec.ts", "SKIP"],
+    ]);
+    expect(entries.some((e: { label: string }) => e.label.startsWith("project unit"))).toBe(false);
+  });
+
+  it("THE POINT (#122): the COLOURED shape is no longer what trips the fallback", () => {
+    // 把"修好了"这件事本身钉住：同一份输出（带色 + 有用例数汇总行），
+    // 修前 ⇒ 兜底 FAIL（表全丢）；修后 ⇒ 表完整。
+    // 这条与上面那条配对：一个说表在，一个说兜底没被误触发。
+    const coloredOut = [
+      colored("✓", "unit", "tests/detect.spec.ts", "22 tests 20ms"),
+      "",
+      coloredTestsSummary("22 passed (22)"),
+    ].join("\n");
+    const entries = collectLane({ lane: UNIT, run: run(0, coloredOut), results: [] });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ label: "tests/detect.spec.ts", lane: "unit", status: "PASS" });
+  });
+
+  it("THE POINT (#122 反例): a COLOURED 'no test files found' lane (no numeric totals) is still SKIP", () => {
+    // 批纪律：真没跑用例的车道不得被误判成解析失败 —— 带色版本同样成立
+    // （色块里没有 `Tests  <数字>`，`reportsTestCounts` 不误触发）。
+    const out = [coloredTestFilesSummary("no test files found"), "", "Duration  300ms"].join("\n");
+    const entries = collectLane({ lane: UNIT, run: run(0, out), results: [] });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ label: "project unit", lane: "unit", status: "SKIP", detail: "无收集到的用例" });
+  });
+
   it("reportsTestCounts only fires on a numeric vitest summary (the guard's own boundary)", () => {
     expect(reportsTestCounts("      Tests  387 passed | 1 skipped (388)")).toBe(true);
     expect(reportsTestCounts(" Test Files  no test files found")).toBe(false);
     expect(reportsTestCounts("")).toBe(false);
+  });
+
+  it("THE POINT (#122 同源缺陷): reportsTestCounts must strip SGR — a COLOURED summary still counts", () => {
+    // 带色时这行是 `ESC[2m      Tests ESC[22m ESC[1mESC[32m52 passed…`：
+    // `Tests` 与数字之间夹着着色序列。未剥色的正则**恒不命中** ⇒ 兜底在最需要它的
+    // 场合（带色）恰好失效，把"解析失败"静默读成 SKIP（本会话实测踩到）。
+    expect(reportsTestCounts(coloredTestsSummary("52 passed (52)"))).toBe(true);
+    expect(reportsTestCounts(coloredTestsSummary("387 passed | 1 skipped (388)"))).toBe(true);
+    // 反例仍成立：带色的 `no test files found` 没有数字 ⇒ 不得误判。
+    expect(reportsTestCounts(coloredTestFilesSummary("no test files found"))).toBe(false);
   });
 
   it("no collected cases + non-zero exit → FAIL with the output attached", () => {
@@ -501,6 +714,23 @@ describe("isDirectInvocation", () => {
     } finally {
       rmSync(link, { force: true });
     }
+  });
+});
+
+describe("pinnedRunnerEnv（#122：形态由 spawn 侧钉死）", () => {
+  it("THE POINT: forces NO_COLOR=1 regardless of the caller's session", () => {
+    // 读数稳定性不该靠调用者记得先设变量 —— 验收入口自己 spawn 时就把形态钉死。
+    expect(pinnedRunnerEnv({ PATH: "x" })).toEqual({ PATH: "x", NO_COLOR: "1" });
+    // 调用者会话带色（TERM/CLICOLOR_FORCE 之类）也一律压掉。
+    expect(pinnedRunnerEnv({ TERM: "xterm-256color", FORCE_COLOR: "3" }).NO_COLOR).toBe("1");
+    // 已经是别的值 ⇒ 覆盖成 1（不"尊重"一个会让表消失的取值）。
+    expect(pinnedRunnerEnv({ NO_COLOR: "0" }).NO_COLOR).toBe("1");
+  });
+
+  it("does not mutate the caller's environment object", () => {
+    const base = { PATH: "x" };
+    pinnedRunnerEnv(base);
+    expect(base).toEqual({ PATH: "x" });
   });
 });
 

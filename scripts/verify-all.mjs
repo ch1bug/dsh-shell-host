@@ -16,6 +16,10 @@
  *
  * 注意：**summary 里的 PASS* 数量是要看的数字**。它比"全绿"更有信息量。
  *
+ * #122：读数与颜色**解耦**。子进程环境由 `pinnedRunnerEnv()` 钉成 `NO_COLOR=1`（裸徽标），
+ * 解析层另认带色的色块徽标形态（`parsePerFileLine` 的输入契约）—— 两条路各自成立，
+ * 于是"逐文件表随调用者会话环境时有时无"这个失效模式被关掉（详见票面与 TESTING.md）。
+ *
  * 结构：解析与判定是**纯函数**（导出，见 tests/verify-all.spec.ts 的离线单测），
  * 只有 `runLane()` 与 `main()` 碰真实环境。判定逻辑曾随车道顺序漂移（#83）。
  */
@@ -36,15 +40,82 @@ const LANES = [
 /** 汇总表的状态标签（5 列宽，便于对齐）。 */
 const STATUS_LABEL = { PASS: 'PASS ', 'PASS*': 'PASS*', FAIL: 'FAIL ', SKIP: 'SKIP ' }
 
+/** ANSI SGR 序列（真彩色：`\x1b[<n>m`，本包实测就是这种无参数形态）。 */
+const ANSI_SGR = /\u001b\[[0-9;]*m/gu
+
 /**
- * 逐文件行解析：`  ✓ |machine| tests/x.spec.ts (7 tests | 1 skipped) 17852ms`
- *                      `  ↓ |machine| tests/y.spec.ts (4 tests | 4 skipped)`
- * → `{ mark, lane, file, detail }`；不是逐文件行则 `null`。
+ * "这一行有没有 SGR" 的**无状态**探针 —— 刻意**不带 `/g`**。
+ *
+ * `/g` 正则的 `test()` 会推进 `lastIndex`：同一个正则对象连用会**交替命中**（复核轴实测
+ * 第 7 次返回 false），一条带色行会被误判成裸形态；靠手工 `lastIndex = 0` 复位能修，但那是
+ * **隐式契约** —— 将来谁删掉那行，没有用例会红。用无状态探针根治（`replace` 用 `/g` 无此问题，
+ * 它自己会重置 `lastIndex`）。
+ */
+const HAS_SGR = /\u001b\[[0-9;]*m/u
+
+/** 去掉一行里的全部 ANSI SGR —— 解析前归一，**只在行内做**（跨行状态本脚本不消费）。 */
+function stripAnsi(line) {
+  return String(line).replace(ANSI_SGR, '')
+}
+
+/**
+ * 逐文件行解析。**输入契约（#122 定界）—— 恰好两种形态，没有第三种"看运气"状态**：
+ *
+ * ```
+ * （A）裸徽标：  ✓ |unit| tests/detect.spec.ts (7 tests | 1 skipped) 17852ms
+ * （B）色块徽标：ESC[32m✓ESC[39m ESC[30mESC[42m unit ESC[49mESC[39m tests/….spec.ts (52 tests) 20ms
+ * ```
+ *
+ * 精确的判据是"**这一行有没有 SGR**"：**无 SGR 全行** ⇒ 只能走形态 A；**有 SGR** ⇒ 只能走
+ * 形态 B（形态 A 的正则不再兜底）。因此"混合行"（徽标是裸的、但别处带色）**不收** ——
+ * 真实 vitest 打不出这种行：`formatProjectName` 只在 `!isColorSupported` 时返回 `|name|`，
+ * 而**所有** token 共用同一个 `isColorSupported` 标志，逐进程要么全色要么全无色（复核轴核过）。
+ * 这条写清楚，免得把契约读成"两种形态可以混着来"。
+ *
+ * **判别依据是"SGR 在不在"（即这一行有没有着色），不是空格数**：
+ *
+ * - 形态 **A** 没有 SGR，徽标是 `|lane|` 包裹的文本 ⇒ 用 A 正则（`\s+` 容忍对齐空格，
+ *   与 #122 之前的宽容度一致）；
+ * - 形态 **B** **有** SGR，且着色序列把 `|` 连徽标一起替换掉了 ⇒ 用 B 正则匹配**原始行**
+ *   （SGR 显式写在正则里，`\s+` 仍然容忍对齐空格）—— 这样对齐填充不会被误判成一种新形态；
+ * - 两者都不匹配 ⇒ `null`（交给汇总层的响亮失败兜底，不猜）。
+ *
+ * 为什么不按"剥完后的空格数"判别：那是**空格计数**而非形状，对齐填充一变就静默改判
+ * （3 空格填充的合法裸行会被丢，2 空格的非徽标文本会被收）—— 正是本票要消灭的那种漂移。
+ * 也不按"剥完后有没有 `|`"判别：实测带色行剥完残留 `|` 数为 **0**（本机实测 char code：
+ * **原始**行 `✓` 之后是 `10003,27,91,51,57,109,32,27,91,51,48,109,…`，即 `✓` 与徽标词之间
+ * 夹着 `ESC[39m ESC[30mESC[42m`；**剥完后**才是 `10003,32,32,117,…` = `✓␣␣unit`），
+ * 看似可分，但"剥完无 `|`"这一点**只在"确知带色"时才成立** —— 单看剥完的文本无法与
+ * "用户自己写的无管道文本"区分，所以判据落在 SGR 上。
+ *
+ * SGR 一律**不泄进返回值**（`lane` / `file` / `detail` 都是干净文本）。
+ * 汇总行（`Tests  387 passed (388)` / `Test Files  no test files found`）整行以 `Tests` /
+ * `Test Files` 起头，**不是徽记**，因此不会被误收；`Duration` 同理。
+ *
+ * @param line 车道输出的一行（**可带色也可不带**）
+ * @returns `{ mark, lane, file, detail }`；不是逐文件行则 `null`
  */
 export function parsePerFileLine(line) {
-  const match = /^\s*(✓|×|↓)\s*\|(\w+)\|\s*(\S+\.spec\.ts)(.*)$/u.exec(line)
-  if (match === null) return null
-  return { mark: match[1], lane: match[2], file: match[3], detail: match[4].trim() }
+  const raw = String(line)
+  const hasSgr = HAS_SGR.test(raw)
+  const stripped = stripAnsi(raw).trim()
+  // 形态 B：**带色**行 —— 徽标被色块替换掉，SGR 落在徽记与徽标词之间。
+  if (hasSgr) {
+    const blocked = /^(?:.*?)(✓|×|↓)\u001b\[[0-9;]*m\s+\u001b\[[0-9;]*m\u001b\[[0-9;]*m\s*(\w+)\s*\u001b\[[0-9;]*m/u.exec(raw)
+    if (blocked !== null) {
+      // 文件名与 detail 从**剥干净的文本**里取（避免把残留 SGR 带进字段）。
+      const rest = /^\s*(✓|×|↓)\s+(\w+)\s+(\S+\.spec\.ts)\b(.*)$/u.exec(stripped)
+      if (rest !== null) {
+        return { mark: rest[1], lane: rest[2], file: rest[3], detail: rest[4].trim() }
+      }
+    }
+    // 带色但不是本契约的徽标形状 ⇒ 不收（交给兜底），不再退回裸形态猜。
+    return null
+  }
+  // 形态 A：无色的裸徽标行 —— `✓ |unit| tests/detect.spec.ts …`（`\s+` 容忍对齐填充）。
+  const bare = /^\s*(✓|×|↓)\s*\|(\w+)\|\s*(\S+\.spec\.ts)\b(.*)$/u.exec(stripped)
+  if (bare === null) return null
+  return { mark: bare[1], lane: bare[2], file: bare[3], detail: bare[4].trim() }
 }
 
 /** 从整个车道的输出里收集逐文件行。 */
@@ -95,11 +166,16 @@ export function laneLevelFailure({ lane, exitCode, output, results }) {
  * 车道输出里有没有 vitest 的**用例数**汇总行（`Tests  387 passed | 1 skipped (388)`）。
  *
  * 用途（#122 的机械兜底）：逐文件行**解析不到**、而本轮**确实跑过**用例 ⇒ 那是解析失败
- * （输出格式漂移：带色时 project 徽标从 `|unit|` 变成色块，正则整条不匹配），**不是**
- * "没收集到用例"。反例是 `Test Files  no test files found` —— 真没跑，读成 SKIP 才诚实。
+ * （输出格式漂移），**不是**"没收集到用例"。反例是 `Test Files  no test files found` ——
+ * 真没跑，读成 SKIP 才诚实。
+ *
+ * **必须先剥 SGR（#122）**：带色时这行是
+ * `ESC[2m      Tests ESC[22m ESC[1mESC[32m52 passedESC[39m…` —— `Tests` 与数字之间夹着
+ * 着色序列，未剥色的正则在带色输出上**恒不命中**，于是兜底在最需要它的场合（带色）
+ * 恰好失效，把"解析失败"静默读成 SKIP。与逐文件行是同一处根因：**读数必须与颜色解耦**。
  */
 export function reportsTestCounts(output) {
-  return /^\s*Tests\s+\d+/mu.test(String(output ?? ''))
+  return /^\s*Tests\s+\d+/mu.test(stripAnsi(output ?? ''))
 }
 
 /**
@@ -256,12 +332,27 @@ export function failureExcerpt(output) {
   return [...keep].sort((a, b) => a - b).map((i) => lines[i]).join('\n')
 }
 
+/**
+ * 把子进程（vitest）的**输出形态**钉死 —— 读数稳定性由这里保证，不靠调用者记得先设变量。
+ *
+ * `NO_COLOR=1` 让 vitest 打**裸徽标**（形态 A）：徽标两侧有 `|`、每个 token 一条色带，
+ * 读数与颜色解耦。**这是本票 #122 的一半修法**：调用者会话带不带色，逐文件表都在。
+ *
+ * 解析层（`parsePerFileLine`）另认形态 B（色块徽标），所以忘设也不会塌 —— 两处各自独立，
+ * 不是一处对另一处的备份依赖。
+ *
+ * 变量名对齐 no-color.org（本包实测 `NO_COLOR=1` 即得裸徽标，见 `docs/agents/TESTING.md`）。
+ */
+export function pinnedRunnerEnv(baseEnv) {
+  return { ...baseEnv, NO_COLOR: '1' }
+}
+
 /** 跑一个车道（**碰真实环境**，故不导出、单测不覆盖）→ `{ exitCode, out }`。 */
 function runLane(lane) {
   const run = spawnSync(process.execPath, [VITEST, 'run', '--project', lane.name], {
     cwd: REPO,
     encoding: 'utf8',
-    env: process.env,
+    env: pinnedRunnerEnv(process.env),
   })
   return { exitCode: run.status, out: `${run.stdout ?? ''}${run.stderr ?? ''}` }
 }
@@ -278,7 +369,7 @@ const RINGS_HEADING = /^=== .*\brings\b.* ===$/u
  * 环表读数行：`  ✓ <环>` / `  ✗ <环>` / `  – <说明>`。
  *
  * 末尾的 `(?!\|)` 是必需的：vitest 自己的逐文件行同样以两空格 + `✓` 开头
- * （`  ✓ |machine| tests/x.spec.ts`），不排除就会把汇总行当成读数。
+ * （`  ✓ |machine| tests/detect.spec.ts`），不排除就会把汇总行当成读数。
  */
 const RING_ROW = /^ {2}(?:✓|✗|–) (?!\|)/u
 

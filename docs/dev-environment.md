@@ -458,9 +458,15 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
   阶段就炸 —— `spawn EPERM`（vite `optimizeSafeRealPathSync` → `exec("net use")` 需要管道）；
   `git add` / `commit` / `push` 报 `Unable to create .git/index.lock: Permission denied`。
   PTY 内两者都正常（本会话实测：PTY 里 `execSync('cmd /c echo hi')` OK、`git add` OK）。
-- **验收读数加 `NO_COLOR=1`**：带色时 `verify-all` 解析不到逐文件行（整车道塌成一行，
-  纯绿可读成"无收集到的用例"）。根因、复现与修法见 #122；`verify-all` 侧现在还有一条
-  响亮失败兜底（解析不到行但 vitest 报过用例数 ⇒ FAIL，不再是 SKIP）。
+- **验收读数加 `NO_COLOR=1`**（#122 之后**只影响跨会话可比性**，不再影响 `verify-all` 能否解析）：
+  `verify-all` 自己 spawn 测试运行器时把形态钉成 `NO_COLOR=1`，解析层又同时认裸 `|lane|` 与
+  带色的色块徽标，故逐文件表不再随调用者会话带不带色而时有时无。**你在 `verify-all` 之外**
+  直接跑 vitest 抓日志时仍请显式 `NO_COLOR=1`。历史根因与修法见 #122（`verify-all` 另有
+  响亮失败兜底：解析不到行但 vitest 报过用例数 ⇒ FAIL，不再是 SKIP）。
+- **重定向会吃掉颜色，PTY 控制台不会**（实测 #122）：`set FORCE_COLOR=3 && node … > log` 落地
+  的日志 **ESC 字节 = 0**（stdout 不是 TTY，vitest 自动不打色）——要抓**真实带色**输出，
+  只能在 PTY 控制台里跑并把控制台字节读出来（`.scratch/t122-colored-vitest-raw.log` 即此来源）。
+  别用重定向伪造"带色环境"的读数。
 - **判断后台套件在不在跑，看日志文件的 size/mtime**：沙箱下 `tasklist` / `Get-Process node`
   返回 Access denied。
 - **PTY 会话不跨轮存活**（下一个 tool call 里即报 `no pty session … for this agent`）：
