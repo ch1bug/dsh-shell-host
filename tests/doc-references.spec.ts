@@ -1,11 +1,12 @@
 /**
  * 文档引用腐烂检查（`#78`；第 2 条断言是 `/retro` 2026-10-16 的扩展，
- * 第 3 条是**历史重写**同日会话的扩展，第 4 条是 `#112` 的扩展）。
+ * 第 3 条是**历史重写**同日会话的扩展，第 4 条是 `#112` 的扩展，
+ * 第 5 条是 `#93` 的扩展）。
  *
  * 为什么：两轮 code-review 才扫完 6 处引用"已被 ADR-0013 删掉的文件的注释"
  * （`backends.ts` / `wsl-bridge.ts` / `src/client` / `src/remote` …）。机械模式 → 确定检查。
  *
- * 四条断言：
+ * 五条断言：
  *
  * 1. **仓内路径引用必须存在**（`#78` 的验收面）：扫 `src/**`、`tests/**` 的**注释**，
  *    凡是形如 `src/<path>.ts` / `tests/<path>.ts` 的引用，目标文件必须在仓内。
@@ -44,6 +45,22 @@
  * 而 #93 的 AC 明写"不处理相对路径指向仓外的形态"—— 两票在该语义上**取向相反**，
  * 故不要把它当 #93 的公共前置。
  *
+ * 5. **外部绝对路径引用必须在本机存在**（`#93` 的扩展，见 `absPathRefsIn` 头注）：
+ *    `docs/**` + 根文档全文里的 `<盘符>:\…` / `<盘符>:/…`，目标是**本机文件系统**上的
+ *    条目（`existsSync` 直吃原串）。票面记的两条死指针（`<old-work>\deepseek-harness` 等）
+ *    结构上都不在旧四条判据的扫描面内，只能靠这条守。
+ *    **本票实际覆盖的形态 = 盘符族**；**波浪号族（`~/…`）只出提取器与合成用例、
+ *    不做活体存在性** —— 理由见 `tildeRefsIn` 头注的「显式未覆盖声明」。
+ *
+ * ⚠️ **AC1 与 AC2 的结构性分歧**（`#93` 实测 + 两轴复核，human 2026-10-18 拍"写清楚"）：
+ * 票面 AC2 要求给 `GLOSSARY.md:12` 加 `[History: …]`，而票面 AC1 点名的标本
+ * （`<old-work>\deepseek-harness`）**正落在那一行上**。豁免粒度是**整行**
+ * （`.md` 逐行过滤）⇒ **两条 AC 在同一行上互相抵消**：加豁免后，写在那行的死路径
+ * 再也抓不到。实测 A/B 见 `.scratch/t93-mut2.log`（同一死路径：带标记行→绿/漏报，
+ * 非标记行→红并点名）。故本票的**变异验证改用非豁免行做载体**，并用合成用例
+ * （`blocksOfLine`）把"整行豁免"这条语义本身锁住 —— 它是**有意的语义**，
+ * 不是 bug；要改窄属跨票判据变更（会影响 `#78` / `#112`），须单独立票。
+ *
  * 边界：路径与命令只看**注释**（TS scanner 取 trivia，字符串字面量天然不进来）、
  * `docs/**` 看全文；排除 `node_modules`、`lib/`；外部检出里的路径（宿主树的 CLI 入口）
  * 不算仓内引用。检查器自身的边界有合成文本用例守着，见第一个 describe。
@@ -57,6 +74,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { ALLOWED_USERS } from "../scripts/privacy-scan.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -117,6 +135,17 @@ function blocksOf(rel: string): string[] {
   return rel.endsWith(".md")
     ? text.split("\n").filter((line) => !HISTORICAL.test(line))
     : commentBlocks(text, rel);
+}
+
+/**
+ * 合成用例版：对**一段 markdown 文本**套用与 `blocksOf` **同一套**行级豁免规则。
+ *
+ * 存在的意义：让"整行豁免"这条语义能被合成用例直接锁住，而不必去动产品树里的文档
+ * （合成用例不该依赖某个真实文件恰好长什么样）。判据必须与 `blocksOf` 同源，
+ * 否则锁住的就不是真规则 —— 故这里复用同一个 `HISTORICAL` 常量与同一行过滤式。
+ */
+function blocksOfLine(text: string): string[] {
+  return text.split("\n").filter((line) => !HISTORICAL.test(line));
 }
 
 /** 文本块里的仓内路径引用。 */
@@ -227,6 +256,159 @@ export function resolveLinkTarget(fromFile: string, target: string): string | nu
   if (contributed === 0) return null;
   return out.join("/");
 }
+
+/**
+ * 外部**绝对路径引用**（`#93`）：`<盘符>:\…` / `<盘符>:/…`，目标必须在本机存在。
+ *
+ * 与 `PATH_REF`（仓内相对路径）互补：那个管"仓里有没有这个文件"，这个管
+ * "本机有没有这个外部目标"。两条实测死指针（`<old-work>\deepseek-harness` 等）
+ * 都不是仓内路径，故结构上落在旧判据的扫描面外。
+ *
+ * **形态边界**（票面 AC3，逐条有合成用例）：
+ *
+ * 1. **只认盘符前缀**：`^[A-Za-z]:[\\/]` —— 盘符后**必须是**分隔符，故
+ *    `C:foo`（驱动器相对）不进面；`https://…` 的 `s://` 也不匹配（前面不是单字母+冒号）。
+ * 2. **URL 不进面**：`https://host/C:/x` 里的 `C:/x` 前面紧邻 `/`，由否定环视挡住。
+ * 3. **UNC 不进面**：`\\server\share` 没有盘符，形态上就不匹配。
+ * 4. **`node_modules` 不进面**：本机存在与否与仓库无关，且常是第三方路径。
+ * 5. **行内代码块 `…` **在面内****（票面要求写清的口径）：本仓实测 `#93` 的两条死指针
+ *    都写在行内代码里，若把行内代码整块豁免，标本会漏网 ⇒ **假绿**。故行内代码照扫。
+ * 6. **占位符不进面**：目标是"该怎么写"的示例（`C:\Users\<user>`、`C:/…`、
+ *    `<盘符>:\Work`、`C:\Users\me`）时豁免 —— 它们**本机不存在是正当的**，
+ *    进面就是**假红**。这与 PUBLIC 仓纪律同向：文档本就该用占位符表达个人路径。
+ *    判据见 `isPlaceholder`（复用 privacy-scan 的词表）。
+ *
+ * **⚠️ 两个实测踩到的坑**（都由合成用例锁住）：
+ *
+ * - **占位符必须在匹配串里保留**：若字符类把 `<` 当终止符，`C:\Users\<user>` 会匹配成
+ *   `C:\Users\` —— 占位符被正则吃掉、过滤层看不见它，而 `C:\Users\` 在本机**存在**，
+ *   连存在性都拦不住 ⇒ **假红**。故字符类**不**排除 `<` / `%` / `…`，只排除真正终止
+ *   路径的换行、引号与括号，把占位符交给 `isPlaceholder` 判；匹配后**再**剥尾部标点。
+ * - **路径里的空格是路径的一部分，但不能吃进正文**：`'C:/Program Files/nodejs/node.exe'`
+ *   若在空白处截断会得到 `C:/Program`（本机不存在）⇒ **假红**；但反过来若允许任意空白，
+ *   `` `C:\x → /mnt/c/x` `` 会把后面的正文一起吞进来（实测）。故**只**允许
+ *   "空格 + 仍像路径段的片段"（不含空白、非 `→`/`/` 起头的散文），
+ *   这正是 `C:\Program Files\…` 与 `C:\x → …` 的判别式。
+ *
+ * **只判存在性**（票面 AC4）：不校验内容、不要求是文件（目录也算存在）。
+ * Windows 文件系统天然大小写不敏感、`/` 与 `\` 等价，故 `existsSync` 直接吃原串即可
+ * —— 实测 `C:\MSYS64` / `c:/msys64` / `C:/Windows/Temp` 三形全部 EXISTS，
+ * **不需要额外归一化**；该性质由合成用例锁住，免得日后有人"优化"出一层多余的归一化。
+ */
+const ABS_PATH_REF = /(?<![\w/.\\:-])[A-Za-z]:[\\/](?:[^\n `"'()\[\]|]| (?![\s→])[^\n `"'()\[\]|])*/gu;
+
+/**
+ * 该命中是否其实是**带 scheme 的 URL**（`https://…`、`s://x`）。
+ *
+ * ⚠️ 本票实测的**假绿**：只靠"盘符后必须是分隔符"并不能排除 URL —— 单字母 scheme
+ * （`s://x` / `x://y`）**与盘符形态完全同形**，实测两者都会被匹配。真正的判别式是
+ * 冒号**前面跟着一个词字符**（`https:` 的 `s` 前是 `p`），而真盘符前面是边界。
+ * 故必须显式判 scheme，不能把巧合当机制。
+ */
+const URL_SCHEME = /^[A-Za-z][\w+.-]*:\/\//u;
+
+/** 该命中是否是**光杆盘符根**（`C:\` / `C:/`）—— 没有可判存在性的目标路径。 */
+const BARE_DRIVE_ROOT = /^[A-Za-z]:[\\/]$/u;
+
+/** 占位符判据：**复用 `scripts/privacy-scan.mjs` 的既有词表**，不另立一套
+ * （`#112` AC5「同族守卫别各写一套」的落地形态）。
+ *
+ * 三类，覆盖票面 AC3 的占位符要求：
+ * 1. 尖括号 / 省略号 / `%VAR%` 形态（`<user>`、`C:/…`、`%USERPROFILE%`）；
+ * 2. **家目录段是通用账户名**（`C:\Users\me`、`C:/Users/x`）—— `ALLOWED_USERS` 是
+ *    privacy-scan 导出的权威词表，其头注明写 `C:\Users\me`（README）是本仓既有写法；
+ * 3. 运行期派生形态（`$(whoami)` / `${USER}` / `*`）。
+ *
+ * 为什么 #2 必须复用而不是自判：`C:\Users\me` 在本机**不存在**，但它是**正当的
+ * 脱敏写法**（AGENTS.md 明令个人路径要用 `me` / `x` / `<user>` 表达）。判它红等于
+ * 要求文档写真名 —— 方向恰好反了。用隐私守卫自己的词表，两处口径天然同步。
+ */
+function isPlaceholder(target: string): boolean {
+  if (/<[^<>]*>|…|%[A-Za-z_]\w*%|\$\{?\w+\}?/u.test(target)) return true;
+  // 家目录段（`…/Users/<seg>` 或 `…/home/<seg>`）落在通用账户词表里 ⇒ 占位符。
+  const seg = /[\\/](?:Users|home)[\\/]([A-Za-z0-9._-]+)/iu.exec(target);
+  if (seg !== null) {
+    const user = seg[1].toLowerCase();
+    if (ALLOWED_USERS.has(user) || /[$%{}()+*<>…]/u.test(seg[1])) return true;
+  }
+  return false;
+}
+
+/**
+ * 命中是否是 **`node_modules` 内的路径**（任意层级）。
+ *
+ * ⚠️ 大小写**必须**折叠：Windows 文件系统天然大小写不敏感，本判据却在同一份实现里
+ * 靠"大小写不敏感"吃 `existsSync`（AC4）；实测 `C:\NODE_MODULES\x` 与
+ * `C:/a/Node_Modules/b` 都会因精确小写比较而**漏网**，与票面 AC3 的边界承诺矛盾。
+ */
+function inNodeModules(target: string): boolean {
+  return target
+    .replaceAll("\\", "/")
+    .split("/")
+    .some((seg) => seg.toLowerCase() === "node_modules");
+}
+
+/**
+ * 文本块里的外部绝对路径引用（占位符形态已排除）。
+ *
+ * 剥尾部标点：路径常被写在句中被 `。`/`,`/`)` 收尾，尾缀不是路径的一部分。
+ * 但**保留** `…`（它是占位符信号，要在下一步滤掉整条）。
+ */
+export function absPathRefsIn(blocks: string[]): string[] {
+  return blocks.flatMap((block) =>
+    [...block.matchAll(ABS_PATH_REF)]
+      .map((m) => m[0].replace(/[.,;:!?、。）+]*$/u, ""))
+      .filter((target) => !URL_SCHEME.test(target))
+      .filter((target) => !BARE_DRIVE_ROOT.test(target))
+      .filter((target) => !isPlaceholder(target))
+      .filter((target) => !inNodeModules(target)),
+  );
+}
+
+/**
+ * 文本块里的**波浪号**路径引用（`~/…`）—— `#93` 的第二族。
+ *
+ * 为什么并列成第二族：实测 `~/dsh-host-src` 这类路径才是本仓**真正的舵机面**
+ * （34 条命中，且票面点名的那条死指针改完后落到的正是这个形态）。
+ * 盘符族与波浪号族的**提取**同属"外部绝对路径"，但**存在性基准不同**（见下），
+ * 故拆成两个纯函数、各自配判定，不硬塞进一个返回 `string[]` 的函数。
+ *
+ * **⚠️ 活体存在性未覆盖（human 2026-10-18 拍 D）**：`~` 的基准在本机有两套且不一致 ——
+ * `os.homedir()` = `C:\Users\<user>`，而文档里的 `~` 全是 **msys 语义**
+ * （`C:\msys64\home\<user>`）。实测 `~/dsh-host-src` / `~/dsh-shellhost-src` /
+ * `~/dsh-matt-home` / `~/dsh-shellhost-home` 在 `homedir()` 下**全部 MISSING**、
+ * 在 msys home 下才存在 ⇒ 按 `homedir()` 判会把 **22 行正确文档**判红；
+ * 而按 msys home 判需要探测用户名，**硬编码用户名违反 PUBLIC 仓纪律**。
+ * 故本族**只出提取器 + 合成用例**（形态与占位符判据已锁住），
+ * 活体存在性留给后续票 —— 这是**显式未覆盖声明**，不是静默漏面。
+ * **`~` 后只收"段"**：段的字符集收紧为 `[\w.$-]`，**不允许空格**。
+ * ⚠️ 这是实测修正：用 `[^\s…]*` 时 `` ~/dsh-host-src grep -c foo `` 会把**命令与参数
+ * 一起吞进来**（实测），而波浪号族一旦接上存在性判定，这些串会直接变成假红。
+ * 路径段里本来就没有空格（要空格得引号包裹），故收紧是安全的。
+ */
+const TILDE_REF = /(?<![\w/.\\:-])~\/(?:[\w.$-]+\/?)*/gu;
+
+/** 文本块里的波浪号路径引用（`~/…`；`~user` 与孤立 `~` 不匹配）。 */
+export function tildeRefsIn(blocks: string[]): string[] {
+  return blocks.flatMap((block) =>
+    [...block.matchAll(TILDE_REF)]
+      .map((m) => m[0].replace(/[.,;:!?、。）+]*$/u, ""))
+      .filter((target) => !isPlaceholder(target)),
+  );
+}
+
+/**
+ * 绝对路径引用的**允许清单**：文档里**刻意举例的机器路径**——
+ * 讲的是"别的机器/别的布局可能长这样"，**本机不存在是正当的**，
+ * 与 `HASH_ALLOWLIST` 同形（跨仓/外部引用的显式留档，而非静默放过）。
+ *
+ * - `C:\cygwin64` / `C:\cygwin`：`adr/0001` 列举候选 shell 位置时的**反例**
+ *   （本机是 MSYS2 不是 Cygwin）。
+ * - `C:\x`：`adr/0003` 讲 WSL 跨 VM 路径映射的**示意**（`C:\x → /mnt/c/x`）。
+ *
+ * 每条都带出处理由；新增条目必须同样说明"为什么它本该不存在"。
+ */
+export const PATH_ALLOWLIST = new Set(["C:\\cygwin64", "C:\\cygwin", "C:\\x"]);
 
 /** 递归收集某目录下的相对路径（正斜杠、排除 node_modules 与 lib/）。 */
 function walk(dir: string, exts: string[]): string[] {
@@ -368,6 +550,167 @@ describe("引用腐烂检查器自身的边界（合成文本）", () => {
     expect(resolveLinkTarget("docs/a.md", "../..")).toBeNull();
   });
 
+  it("绝对路径只认盘符形态；URL 与 UNC 不误报（#93）", () => {
+    // 票面 AC3 的显式边界：`C:\…` / `C:/…` 进面，URL 与 UNC 不进面。
+    const block = [
+      "- 本机布局见 `C:\\msys64\\usr\\bin\\bash.exe`",
+      "- 也可以写 `C:/msys64/usr/bin/bash.exe`",
+      "- 上游见 https://example.invalid/C:/fake/path.exe",
+      "- UNC 见 `\\\\server\\share\\x`",
+    ].join("\n");
+    expect(absPathRefsIn([block])).toEqual([
+      "C:\\msys64\\usr\\bin\\bash.exe",
+      "C:/msys64/usr/bin/bash.exe",
+    ]);
+  });
+
+  it("绝对路径里的占位符形态不进面（#93）", () => {
+    // 占位符（`<…>` / `…` / `%VAR%`）的目标在本机**不存在是正当的** ——
+    // 它们是"该怎么写"的示例，不是"本机哪里"的断言；进面就是假红。
+    for (const line of [
+      "- 家目录 `C:\\Users\\<user>`",
+      "- 形态坑：必须是 Windows 形态 `C:/…`",
+      "- 旧布局 `<old-work>\\deepseek-harness`",
+      "- 环境变量 `%USERPROFILE%\\.dsh`",
+      "- 检出 `<盘符>:\\Work`",
+    ]) {
+      expect(absPathRefsIn([line]), `占位符行 ${JSON.stringify(line)} 不该进面`).toEqual([]);
+    }
+    // 对照：**真用户名**（非通用账户名）照旧进面（词表只豁免通用账户名，不豁免一切家目录）。
+    // ⚠️ 这里**必须**用非真名的替身：写本机用户名会当场被 `scripts/privacy-scan.mjs` 抓红
+    // （PUBLIC 仓硬约束，本仓实测踩到过）。`realuser` 不在 `ALLOWED_USERS` 里，语义自明。
+    expect(absPathRefsIn(["- 家目录 `C:\\Users\\realuser`"])).toEqual(["C:\\Users\\realuser"]);
+  });
+
+  it("波浪号路径只取 `~/…` 形态；`~user` 与行内 `~` 不误报（#93）", () => {
+    const block = [
+      "- 宿主树 `~/dsh-host-src` 与 `~/.dsh/profiles/desktop`",
+      "- 波浪号后无斜杠 `~dsh` 不算路径",
+      "- 句中 `~` 只是约等于",
+    ].join("\n");
+    expect(tildeRefsIn([block])).toEqual(["~/dsh-host-src", "~/.dsh/profiles/desktop"]);
+  });
+
+  it("路径里的空格与引号边界不能截断目标（#93 实测假红）", () => {
+    // 实测踩到：`'C:/Program Files/nodejs/node.exe'` 若在空白处截断会得到 `C:/Program`
+    // —— 本机不存在 ⇒ **假红**。空格是路径的一部分，引号才是边界。
+    expect(absPathRefsIn(["- `C:/Program Files/nodejs/node.exe`"])).toEqual([
+      "C:/Program Files/nodejs/node.exe",
+    ]);
+    expect(absPathRefsIn(["node = 'C:/Program Files/nodejs/node.exe'"])).toEqual([
+      "C:/Program Files/nodejs/node.exe",
+    ]);
+    // 反引号仍然终止路径（它才是真的边界）。
+    expect(absPathRefsIn(["- `C:/a/b` 与 `C:/c/d`"])).toEqual(["C:/a/b", "C:/c/d"]);
+  });
+
+  it("通用账户名形态的家目录也是占位符（复用 privacy-scan 词表，#93 实测假红）", () => {
+    // README.md:160 既有 `C:\Users\me` —— 本机不存在，但 AGENTS.md 明令个人路径就该
+    // 这样脱敏写；判红等于要求文档写真名，方向反了。
+    expect(absPathRefsIn(["- 既接受 `C:\\Users\\me` 也接受 `/mnt/c/Users/me`"])).toEqual([]);
+    expect(absPathRefsIn(["- 汇总挂具 `C:/Users/x/AppData`"])).toEqual([]);
+    // 对照：**真用户名**照旧进面（词表只豁免通用账户名，不豁免一切家目录）。
+    expect(absPathRefsIn(["- `C:\\Users\\realuser`"])).toEqual(["C:\\Users\\realuser"]);
+    // 对照 2：无占位符、但**本机存在**的真实家目录形态照常进面。
+    expect(absPathRefsIn(["- `C:/Windows/Temp`"])).toEqual(["C:/Windows/Temp"]);
+  });
+
+  it("豁免标记所在行对绝对路径族同样生效（#93 AC2 的形态）", () => {
+    // GLOSSARY.md:12 的 `<old-work>\deepseek-harness` 是**正当历史叙述**，
+    // 加 `[History: …]` 后整行出豁免面 —— 与 #78 的既有约定同一条 `HISTORICAL`。
+    const live = "- 原政策为从本地源码库 `<old-work>\\deepseek-harness` 解析";
+    expect(absPathRefsIn([live])).toEqual([]); // 占位符已令其出豁免面
+    // 而**无占位符**的历史路径必须靠标记豁免，否则真红。
+    const legacy = "- 原政策为从本地源码库 `D:\\old-work\\deepseek-harness` 解析";
+    expect(absPathRefsIn([legacy])).toEqual(["D:\\old-work\\deepseek-harness"]);
+  });
+
+  it("存在性判定不因大小写与斜杠形态假红（#93 AC4，实测锁住）", () => {
+    // 票面 AC4 明写「不因大小写 / `/` 与 `\` 的等价写法假红」。这是**文件系统性质**，
+    // 不是本判据的代码 —— 故必须**实测锁住**，否则日后有人"顺手"加一层归一化
+    // （或改判成字符串比较）就会把它破坏掉而无人察觉。
+    // 实测：Windows 上四形态全部 EXISTS。
+    for (const p of [
+      "C:\\Windows\\Temp",
+      "C:/Windows/Temp",
+      "C:\\WINDOWS\\TEMP",
+      "c:\\windows\\temp",
+    ]) {
+      expect(existsSync(p), `${JSON.stringify(p)} 应当存在（大小写/斜杠不敏感）`).toBe(true);
+    }
+    // 对照：这些形态**都进面**（判据不因形态差异把人挡在外面）。
+    expect(absPathRefsIn(["- `C:\\WINDOWS\\TEMP`"])).toEqual(["C:\\WINDOWS\\TEMP"]);
+    expect(absPathRefsIn(["- `c:/windows/temp`"])).toEqual(["c:/windows/temp"]);
+    // 对照 2：真不存在的大小写变体仍会被判红（不是"大小写一律豁免"）。
+    expect(absPathRefsIn(["- `C:\\WINDOWS\\NOPE-93`"])).toEqual(["C:\\WINDOWS\\NOPE-93"]);
+  });
+
+  it("URL 的 scheme 判据要真判 scheme，不能靠盘符形态的巧合（#93 实测假绿）", () => {
+    // 实测：`s://x` 与 `x://y` 与盘符形态**完全同形**，只靠「盘符后必须是分隔符」
+    // 排不掉它们 —— 之前那条 `https://…` 用例是"通过得理由不对"（真挡住它的是
+    // `https:` 里 `s` 前紧邻 `p` 触发的否定环视）。故显式判 scheme 并锁住反例。
+    for (const s of ["s://x", "x://y", "a://b/C:/d", "see s://server/share"]) {
+      expect(absPathRefsIn([s]), `${JSON.stringify(s)} 是 URL，不该进面`).toEqual([]);
+    }
+    // 对照：真盘符照旧进面（判据没有把盘符族一起误伤）。
+    expect(absPathRefsIn(["- `C:/Windows/Temp`"])).toEqual(["C:/Windows/Temp"]);
+  });
+
+  it("光杆盘符根（`C:\\`）进不了面：它没有可判存在性的目标（#93 实测）", () => {
+    // 实测：`docs/adr/0013-tools-only-plugin.md:62` 的光杆 `` `C:\` `` 会匹配成功，
+    // 而 `existsSync("C:\\") === true` ⇒ **纯靠侥幸不红**。根目录不是"引用目标"。
+    for (const s of ["(hardcoded `C:\\` somewhere)", "prefix `C:\\` here", "- `C:/` 根"]) {
+      expect(absPathRefsIn([s]), `${JSON.stringify(s)} 的光杆根不该进面`).toEqual([]);
+    }
+    // 对照：同一行里带路径的引用照旧进面。
+    expect(absPathRefsIn(["- `C:\\` 与 `C:\\Windows\\Temp`"])).toEqual(["C:\\Windows\\Temp"]);
+  });
+
+  it("node_modules 边界大小写不敏感（#93 AC3 的边界，实测有洞）", () => {
+    // 实测洞：精确小写比较会让 `C:\NODE_MODULES\x` / `C:/a/Node_Modules/b` 漏网。
+    // Windows 文件系统本就大小写不敏感，同一份实现不该一处折叠一处不折叠。
+    for (const s of ["C:\\node_modules\\x", "C:\\NODE_MODULES\\x", "C:/a/Node_Modules/b"]) {
+      expect(absPathRefsIn([`- \`${s}\``]), `${JSON.stringify(s)} 在 node_modules 内，不该进面`).toEqual([]);
+    }
+    // 对照：只是名字里含 node_modules 的普通目录照旧进面。
+    expect(absPathRefsIn(["- `C:\\my-node_modules\\x`"])).toEqual(["C:\\my-node_modules\\x"]);
+  });
+
+  it("波浪号提取不吞命令与参数（#93 实测）", () => {
+    // 实测：`~/dsh-host-src grep -c foo` 会被旧写法整串吞下 ——
+    // 波浪号族一旦接上存在性判定，这些串就是假红。段里本就不该有空格。
+    expect(tildeRefsIn(["cd ~/dsh-host-src grep -c foo"])).toEqual(["~/dsh-host-src"]);
+    expect(tildeRefsIn(["- 在 `~/dsh-shellhost-src` 里跑 `git fetch --prune origin`"])).toEqual([
+      "~/dsh-shellhost-src",
+    ]);
+    // 对照：正常的深路径照旧完整取到。
+    expect(tildeRefsIn(["- `~/.dsh/profiles/desktop` 与 `~/dsh-host-src`"])).toEqual([
+      "~/.dsh/profiles/desktop",
+      "~/dsh-host-src",
+    ]);
+  });
+
+  it("豁免标记会连整行的绝对路径一起放过——这是它有意的语义（#93 AC1/AC2 的分歧）", () => {
+    // ⚠️ 本票实测踩到的**结构性张力**，必须写清楚（human 2026-10-18 拍"写清楚"）：
+    //
+    // `blocksOf()` 的豁免粒度是**整行**（`.md` 逐行过滤），而票面 AC2 要求给
+    // `GLOSSARY.md:12` 加 `[History: …]` —— 票面 AC1 点名的标本**正好落在那一行上**。
+    // 两条 AC 在同一行上**互相抵消**：加了豁免，那条死路径就再也抓不到了。
+    //
+    // 实测 A/B（`.scratch/t93-mut2.log`）：同一条 `D:\old-work\deepseek-harness`，
+    // 在带标记的行上探针**绿（漏报）**，在不带标记的行上探针**红并点名**。
+    // ⇒ 故本票的变异验证改用**非豁免行**做载体，并把这条分歧写进落地文档。
+    //
+    // 这个用例锁住的就是"整行豁免"这个语义本身 —— 免得日后有人以为它是 bug 而改窄，
+    // 改窄会影响 #78 / #112 的既有豁免行为（那是跨票判据变更，得单独立票）。
+    const marked = "历史：原路径 `D:\\old-work-93\\deepseek-harness` [History: 旧布局，已废止]";
+    const bare = "现路径 `D:\\old-work-93\\deepseek-harness`";
+    // 带标记 ⇒ 整行出豁免面（即使里面有真实存在的死路径）。
+    expect(absPathRefsIn(blocksOfLine(marked))).toEqual([]);
+    // 不带标记 ⇒ 照常进面（判据本身是有效的，不是"抓不到盘符路径"）。
+    expect(absPathRefsIn(blocksOfLine(bare))).toEqual(["D:\\old-work-93\\deepseek-harness"]);
+  });
+
   it("合成断链真的判红：普通链接与图片链接都会被点名", () => {
     // AC2 的「断链红」在合成层的证据（不只活体扫描那一处）。
     const danglingIn = (block: string, from: string) =>
@@ -427,6 +770,31 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
       runnerRefsIn(blocksOf(rel), scripts).map((hit) => `${rel}: ${hit}`),
     );
     expect(stale, "本该 node --run 的调用写成了 pnpm/npm；历史叙述请加 [historical]").toEqual([]);
+  });
+
+  it("docs/** 与根文档里的外部绝对路径在本机存在（#93）", () => {
+    // 扫描面与 #112 一致（docs 全文 + 根文档），但判定面是**本机文件系统**：
+    // 票面记的两条死指针结构上都在旧判据的扫描面外，只能靠这条守。
+    //
+    // ⚠️ **覆盖边界的诚实声明**（别把这条读成"票面点名的标本已被守住"）：
+    // 票面 AC1 点名的标本 `<old-work>\deepseek-harness` 是**占位符形态** —— 按 AC3 的
+    // 口径它本就该出豁免面（否则文档里每一条 `C:\Users\<user>` 都会假红）。而它所在的
+    // `GLOSSARY.md:12` 又被 AC2 要求加了 `[History: …]`（整行豁免）⇒ **那一行的死路径
+    // 抓不到，是两条 AC 相互抵消的结果，不是判据失效**。判据本身有效：换成非豁免行，
+    // 同一条死路径会被红并点名（实测 `.scratch/t93-mut2.log`）。
+    // 故本票的变异验证载体 = **非豁免行**；详见模块头注的「AC1 与 AC2 的结构性分歧」。
+    const files = [...walk("docs", [".md"]), ...ROOT_DOCS];
+    const missing = files.flatMap((rel) =>
+      absPathRefsIn(blocksOf(rel))
+        .filter((target) => !PATH_ALLOWLIST.has(target))
+        .filter((target) => !existsSync(target))
+        .map((target) => `${rel} -> ${target}`),
+    );
+    expect(
+      missing,
+      "文档引用了本机不存在的绝对路径：修正路径、在同一条注释/该行标 [History: …]，" +
+        "或（确属「别的机器长这样」的举例）登记进 PATH_ALLOWLIST 并写明理由",
+    ).toEqual([]);
   });
 
   it("注释 / 文档里引用的提交哈希必须能在本仓解析（历史重写后的回归）", () => {
