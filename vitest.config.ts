@@ -42,12 +42,29 @@ const machineLane = [
   'tests/e2e-real-llm-machine.spec.ts',
   'tests/e2e-tarball-machine.spec.ts',
 ]
+// #123: the WRITER lane. `tests/clean-lib.spec.ts` really runs `node --run build`
+// twice, and each build first DELETES lib/'s three entry directories plus the
+// top-level chunks before tsc/tsdown rebuilds them. So that spec is a WRITER of
+// `lib/`, while `tests/verify-pack.spec.ts` (copies lib/ into a fixture repo) and
+// `tests/built-artifact.spec.ts` (imports lib/pty/index.js) are READERS of the
+// same tree. Sharing one worker pool made the readers observe a half-rebuilt
+// tree — the intermittent red this ticket is about (measured: 1 red in 5
+// single-lane repeats, both failures inside verify-pack.spec.ts, reporting
+// exactly the three entry directories missing while the old prelude gate
+// reported nothing missing — i.e. a check-then-use race, not a "wait for the
+// window to close" one).
+// Two defences, each covering half: THIS lane split keeps the internal writer
+// out of the readers' pool; `tests/helpers/lib-snapshot.ts` freezes lib/ so an
+// EXTERNAL build (someone running `node --run test:release` by hand) cannot
+// race the readers either.
+const writersLane = ['tests/clean-lib.spec.ts']
 // Explicit exclusion outlet: a spec listed here is exempt from the unit lane,
 // each with its reason. machineLane files are excluded because the serial
-// machine project owns them. Add an entry ONLY to
+// machine project owns them; writersLane files because the serial writer
+// project owns them (see above). Add an entry ONLY to
 // exempt a spec from the unit lane entirely — every other tests/**/*.spec.ts
 // is collected by position, with zero config.
-const unitLaneExclusions = [...machineLane]
+const unitLaneExclusions = [...machineLane, ...writersLane]
 const specInclude = ['tests/**/*.spec.ts', ...unitLaneExclusions.map((f) => `!${f}`)]
 
 const shared = {
@@ -73,6 +90,21 @@ export default defineConfig({
           ...shared,
           name: 'machine',
           include: machineLane,
+          fileParallelism: false,
+        },
+      },
+      {
+        // #123: serial by construction. `clean-lib.spec.ts` writes `lib/` (real
+        // `node --run build` ×2); running it alone — and AFTER the readers'
+        // lane, see `scripts/verify-all.mjs` LANES — is what removes the
+        // writer/reader race for the in-repo case. `fileParallelism: false`
+        // additionally keeps its two build-running cases from overlapping each
+        // other (both touch `lib/`).
+        plugins: lanePlugins,
+        test: {
+          ...shared,
+          name: 'writers',
+          include: writersLane,
           fileParallelism: false,
         },
       },

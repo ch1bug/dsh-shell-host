@@ -42,6 +42,7 @@ import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { chunkFamilyDeclarations, compileFilesMatcher, duplicateChunkFamilies, emittedDeclarationOf, entryTargets, guardSelfCheck, isDirectInvocation, main, manifestTargets, strayTypeDeclarations, unexpectedPackedFiles, untarGz } from "../scripts/verify-pack.mjs";
+import { pointerMissReport, snapshotLib, waitForTreeReadyBriefly } from "./helpers/lib-snapshot.ts";
 
 /** 被测脚本自己的路径与 URL（与 CLI 启动时 `process.argv[1]` / `import.meta.url` 同源）。 */
 const SCRIPT_URL = new URL("../scripts/verify-pack.mjs", import.meta.url).href;
@@ -807,10 +808,15 @@ describe("import 本脚本零副作用", () => {
 });
 
 /**
- * 并发门槛的边界（task-5）：等 `main()` 判据 1/1b 的指针就位，最多等这么久（每 `PRELUDE_POLL_MS`
- * 一探）。取值依据：车道里 `clean-lib.spec.ts` 的「删 `lib/` → `node --run build` 重建」窗口
- * 实测在秒级到十几秒级；给到 60 s 是**宽松上界**（专治慢机器），而等不到就红 ⇒ 真缺件仍会响亮
- * 失败（不会因为上界宽就把缺陷吞成绿）。轮询只做 `existsSync`，无 I/O 压力。
+ * 并发门槛的边界：等 `main()` 判据 1/1b 的指针就位，最多等这么久（每 `PRELUDE_POLL_MS` 一探）。
+ * 取值依据：`clean-lib.spec.ts` 的「删 `lib/` → `node --run build` 重建」窗口实测在秒级到
+ * 十几秒级；给到 60 s 是**宽松上界**（专治慢机器），而等不到就红 ⇒ 真缺件仍会响亮失败
+ * （不会因为上界宽就把缺陷吞成绿）。轮询只做文件存在性判断，无 I/O 压力。
+ *
+ * ⚠️ **#123 起它只是"开始复制"的时机选择，不再是免疫机制**：写者在同一车道里的旧时代，
+ * 轮询等到齐然后**才**读活动树 = check-then-use（看见了 → 写者删了 → 读到缺件）。
+ * 真免疫由 `snapshotRepoLib` 的**冻结快照**提供；本常量只决定"等多久再冻结"。
+ * 车道侧另有第二道（`writers` 车道，见 `vitest.config.ts`）。
  */
 const PRELUDE_WAIT_MS = 60_000;
 
@@ -828,6 +834,81 @@ const PRELUDE_POLL_MS = 250;
  * #118 与 #117 两轮都要用；写进各自的 describe 会变成第二份，两处迟早漂移。
  */
 const CLI_CASE_TIMEOUT_MS = 90_000;
+
+/**
+ * 判据 1/1b 需要的**仓根相对**指针集合 —— 从**被测脚本导出的同一个** `entryTargets` /
+ * `manifestTargets` 复刻，故等待条件就是 `main()` 自己的前置条件，不是近似物（#90 立的写法）。
+ *
+ * ⚠️ 每次调用都重读 `package.json`：本套件里有的用例会改**副本**的 `files`，若缓存成模块级
+ * 常量，两个 describe 之间的读数会互相污染（#123 复核时的顾虑）。
+ */
+function preludeTargets(): string[] {
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  return [
+    ...entryTargets(pkg.exports).filter(([, target]) => !target.includes("*")),
+    ...manifestTargets(pkg),
+  ].map(([, target]) => target.replace(/^\.\//, ""));
+}
+
+/**
+ * 等权威树判据 1/1b 的指针就位，**等不到就响亮失败并点名那条判据**（#123 AC2）。
+ *
+ * 复刻用的是脚本**已导出**的 `entryTargets` / `manifestTargets` ⇒ 等待条件就是 `main()`
+ * 判据 1/1b 自己的前置条件，不是近似物。
+ *
+ * **为什么文案要点名"判据 1/1b"**（本票 AC2）：旧文案只说"指针未就位"，而下游断言（"必须真的
+ * 走到 loud skip 分支"）红时会报成"**注入没接上**"—— 那是**错误归因**。实测证据（#123）：
+ * 单档重复 5 次红 1 次，报缺失的恰是三个入口目录，而门禁**自己没报未就位** ——
+ * 因为它是 check-then-use（看见了 → 写者删了 → `main()` 早退）。故文案必须说清
+ * "`main()` 在判据 1/1b 就 return 1 了，根本没走到后面的分支"。
+ */
+async function waitForRepoLibReady(): Promise<void> {
+  const targets = preludeTargets();
+  // `…Briefly`（#123 的成本回退）：判据 1/1b 的指针集合里含 `lib/types/**` 的声明件与
+  // `lib/` 外的 manifest 件（`cordis.patch.yml`）——若整棵 `lib/` 都没构建过，"一件都没出现"
+  // 就该立刻收手去报缺件，而不是把 60 s 上界耗满。有动静（哪怕只有一件）则照常等满。
+  const { missing, elapsedMs } = await waitForTreeReadyBriefly(
+    targets,
+    (relative) => join(repoRoot, relative),
+    { timeoutMs: PRELUDE_WAIT_MS, pollMs: PRELUDE_POLL_MS },
+  );
+  // #123 自查：报**实际**等待时长（`absentRounds` 早退时它远小于上界）——
+  // 写死上界会打印"等了 60000 ms"而实际只等了 2 s，那正是本票要消灭的读数失真。
+  expect(missing, pointerMissReport(missing, PRELUDE_WAIT_MS, elapsedMs)).toEqual([]);
+}
+
+/**
+ * 一份**副本仓库根**里仍缺失的判据 1/1b 指针（副本相对 → 仓根相对写法，便于读数）。
+ *
+ * **为什么需要它**（#123 复核 C3）：失败文案里的"缺了谁"必须是**被测那棵树**的读数。
+ * 副本用例的 `main()` 读的是**副本**的仓根，故文案若拿权威树的指针集合去算，会给出与实际红因
+ * 无关的清单 —— 把读的人引去查错的那棵树。此函数只读副本。
+ *
+ * @param root 副本仓库根
+ * @returns 仍缺失的指针（仓根相对写法，与 `preludeTargets()` 同形，便于比对）
+ */
+function missingInCopy(root: string): string[] {
+  return preludeTargets().filter((target) => !existsSync(join(root, target)));
+}
+
+/**
+ * 把权威树的 `lib/` **冻结**成快照（#123 AC1/AC3 的载体）。
+ *
+ * **为什么读者必须消费快照而不是活动树**：轮询"等到齐"是 check-then-use —— 门禁看见 `lib/`
+ * 在、写者随后删掉、读者再读就落进窗口（#123 实测复现）。快照在复制完成那一刻**永久**
+ * 关闭了窗口：写者此后怎么动活动树，都与读者无关。
+ *
+ * 完整性由 {@link snapshotLib} 核（复制到半棵树**响亮抛错**，不静默继续）。
+ *
+ * ⚠️ **只核 `lib/` 里面的件**：判据 1/1b 的指针集合里还含 `./package.json` 与
+ * `cordis.patch.yml`（manifest 面），它们**不在** `lib/` 下，快照结构上没有它们 ——
+ * 拿全量指针去核必然假红（实现首版就踩了这条，5 条用例全红）。`lib/` 之外的件由**调用方**
+ * 自己从权威树复制（它们是静态文件，写者不碰）。
+ */
+function snapshotRepoLib(required: readonly string[], tag: string) {
+  const insideLib = required.filter((target) => target.startsWith("lib/"));
+  return snapshotLib(repoRoot, insideLib, tag);
+}
 
 describe("loud skip 路径（#90）：注入驱动，environment-independent", () => {
   /**
@@ -869,26 +950,38 @@ describe("loud skip 路径（#90）：注入驱动，environment-independent", (
    *   - **`probe` 必须抛错才算"不可用"**（与默认 `execFileSync` 的语义一致：不抛 = 命中）。
    *     故用 `() => { throw … }`，**不能**用空函数当"未找到"。
    *
-   * ## 并发下的确定性（task-5：msys 车道红的根因与修法）
+   * ## 并发下的确定性（task-5 的修法 + #123 的更正）
    *
-   * **根因**：`main()` 的判据 1/1b 查的是**仓库真实 `lib/`**（见上）。而车道里
+   * **根因**：`main()` 的判据 1/1b 查的是**仓库真实 `lib/`**（见上）。而
    * `tests/clean-lib.spec.ts` 会**删掉 `lib/` 的三个 entry 目录再真跑 `node --run build` 重建**
    * —— 重建窗口内 `./lib/pty/index.js` 之类**瞬时不存在** ⇒ 判据 1/1b 拿到非空 missing ⇒
-   * **早退 `return 1`** ⇒ 到不了 loud-skip ⇒ 断言 (a) 红。实测：车道内红（连两次）、同一副本
-   * 单独跑 42 passed、Windows 树连跑 5 次 5/5 绿 ⇒ **只在并行环境下红，不是确定性缺陷**。
+   * **早退 `return 1`** ⇒ 到不了 loud-skip ⇒ 断言 (a) 红。
    *
-   * **修法（选 C 的变体：前置门槛，而非盲目重试）**：调用 `main()` **之前**，用**已导出**的
+   * **task-5 的修法（前置门槛）**：调用 `main()` **之前**，用**已导出**的
    * `entryTargets` / `manifestTargets` **精确复刻**判据 1/1b 的输入集合，等这些指针在磁盘上
-   * 全部就位再调用。这样等待的条件就是 `main()` 自己的前置条件，不是近似物。
+   * 全部就位再调用。等待条件就是 `main()` 自己的前置条件，不是近似物。
    *   - **为何不用 B（够不到就 skip）**：那等于把这条判据退回"恒 skip"，正是上一轮开注入缝要
    *     消灭的形态 —— 它会静默失去实证价值。
    *   - **为何不用盲目重试**：重试只有在窗口关闭后才有意义；先等前置条件（而非"重试到不红"）
    *     语义更准，也避免把真正的缺陷（指针真的缺失）误当成并发而吞掉。
    *   - **上界与失败姿态**：最多等 {@link PRELUDE_WAIT_MS} 毫秒（每 {@link PRELUDE_POLL_MS} 一探）；
    *     **等不到就是红**，报出仍缺失的指针与等待时长 —— **绝不**降级为 skip 或静默通过。
-   *     故并发窗口只是"等一会儿"，而真正缺件（例如有人在删 `lib/` 却不重建）仍然响亮失败。
    *   - **不 spawn、不 build**：本用例只读文件存在性，不去修 `lib/`（修 `lib/` 是他人的写域，
    *     也会与 `clean-lib` 抢）。
+   *
+   * **#123 的更正（前置门槛**不够**，别把它当免疫）**：上面那条门槛是 **check-then-use** ——
+   * "探到齐"与"真正读它"之间仍有窗口。本票实测复现：单档重复 5 次红 1 次，报缺失的恰是三个
+   * entry 目录，而**门槛自己一个字都没报**（它探到齐就返回了）—— 正是"看见了又被删"的现场。
+   * ## 所以 #123 加了两道真免疫（两者各挡一半）
+   *
+   *   1. **冻结快照**（本用例用 `snapshotRepoLib`；机制与理由见 `tests/helpers/lib-snapshot.ts`
+   *      头注）：快照完成那刻窗口对读者**永久**关闭，写者之后再动活动树都与读者无关。
+   *   2. **车道分离**（`vitest.config.ts` 的 `writers` 车道 + `verify-all.mjs` 把它排在最后）：
+   *      库内写者不再与读者同池。挡的是**库内**写者；快照挡的是**库外**（有人在另一个会话里
+   *      跑 `node --run test:release`）。
+   *   ⚠️ 本用例读的仍是**活动树**（它调 `main()`，而 `main()` 自己去读仓根 `lib/`）——
+   *   快照在这里**帮不上**（`main()` 不接受注入仓根）。故本用例的免疫**全靠第 2 道**。
+   *   这是本票一处**已知的不对称**，如实记在这里而不是假装它也免疫了。
    *
    * ⚠️ 它**只**锁 #90 的**回收面**（loud-skip 时 packdir 是否遗留）。以下都**不在**覆盖内，
    * 别让它冒充更强的保证：打包器在场时的清理路径；判据 3/4/5 的判定正确性；loud-skip 文案的
@@ -927,27 +1020,9 @@ describe("loud skip 路径（#90）：注入驱动，environment-independent", (
     // ── 前置门槛（task-5）：等 main() 的判据 1/1b 所需指针就位，避免车道内 `clean-lib` 重建
     //    `lib/` 的窗口把本用例打成"早退 return 1"。复刻用的是脚本**已导出**的同一个
     //    entryTargets / manifestTargets ⇒ 输入集合与 main() 完全一致，不是近似复刻。
-    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
-    const preludeTargets = [
-      ...entryTargets(pkg.exports).filter(([, target]) => !target.includes("*")),
-      ...manifestTargets(pkg),
-    ].map(([, target]) => target.replace(/^\.\//, ""));
-
-    const missingPreludeTargets = () =>
-      preludeTargets.filter((target) => !existsSync(join(repoRoot, target)));
-
-    const waitDeadline = Date.now() + PRELUDE_WAIT_MS;
-    let stillMissing = missingPreludeTargets();
-    while (stillMissing.length > 0 && Date.now() < waitDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, PRELUDE_POLL_MS));
-      stillMissing = missingPreludeTargets();
-    }
-    // 等不到就**响亮失败**（绝不降级 skip）：并发窗口只是"等一会儿"，真缺件必须红。
-    expect(
-      stillMissing,
-      `判据 1/1b 的指针在 ${PRELUDE_WAIT_MS} ms 内未就位（并发重建 lib/ 的窗口或真缺件）：` +
-        `${stillMissing.join(", ")} —— 缺件则 main() 会早退 return 1，验不到 loud-skip`,
-    ).toEqual([]);
+    //    #123：文案已改为**点名判据 1/1b**（见 `waitForRepoLibReady` 的说明）——旧的
+    //    "指针未就位"会让下游断言报成"注入没接上"，是错误归因。
+    await waitForRepoLibReady();
 
     const dir = tempDir("loudskip");
     const warnings: string[] = [];
@@ -1064,42 +1139,8 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
       encoding: "utf8",
     });
   }
-
-  /**
-   * **并发前置门槛**（task-5 的同一手法，#90 用例已验证过）：等权威树 `lib/` 里判据 1/1b 需要的
-   * 指针全部就位，再去复制它们。
-   *
-   * **为什么 #118 也需要它**（本票在全量套件里实测到的红）：车道里 `tests/clean-lib.spec.ts` 会
-   * **删掉 `lib/` 三个 entry 目录再真跑 `node --run build` 重建**。本套件的副本 fixture 从权威树
-   * `cpSync` 那棵 `lib/` —— 若正好落在重建窗口内，复制到的是**半棵**，于是副本里的判据 1/1b
-   * 早退 `return 1`，本用例的"自检确实跑了"断言随之红。实测：单档 50/50 绿，而 `node --run test`
-   * 全量里 4 条红（含 #90 那条）—— **只在并发环境下红，不是确定性缺陷**。
-   *
-   * 复刻用的是脚本**已导出**的 `entryTargets` / `manifestTargets` ⇒ 等待条件就是 `main()` 判据 1/1b
-   * 自己的前置条件，不是近似物。**等不到就响亮红**（绝不降级 skip）；上界 {@link PRELUDE_WAIT_MS}
-   * 与轮询间隔 {@link PRELUDE_POLL_MS} 复用上面 #90 用例的常量（同一份并发事实，不另立一套）。
-   *
-   * 本函数**只读**权威树，不改它 —— 修 `lib/` 是 `clean-lib` 的写域，抢它只会制造更坏的窗口。
-   */
-  async function waitForRepoLibReady(): Promise<void> {
-    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
-    const targets = [
-      ...entryTargets(pkg.exports).filter(([, target]) => !target.includes("*")),
-      ...manifestTargets(pkg),
-    ].map(([, target]) => target.replace(/^\.\//, ""));
-    const missing = () => targets.filter((target) => !existsSync(join(repoRoot, target)));
-    const deadline = Date.now() + PRELUDE_WAIT_MS;
-    let still = missing();
-    while (still.length > 0 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, PRELUDE_POLL_MS));
-      still = missing();
-    }
-    expect(
-      still,
-      `权威树 lib/ 的判据 1/1b 指针在 ${PRELUDE_WAIT_MS} ms 内未就位（并发重建窗口或真缺件）：` +
-        `${still.join(", ")} —— 缺件会让副本 fixture 复制到半棵树`,
-    ).toEqual([]);
-  }
+  // 备注（#123）：本 describe 此前自带一份**逐字重复**的并发前置门槛实现，与模块级那份口径会各自
+  // 漂移；现已统一走模块级的 `waitForRepoLibReady`（它只等一次"稳定读数"，真免疫由下面的快照提供）。
 
   /**
    * 让副本能走完判据 1/1b，从而**到达**判据 4/5：判据 1/1b 是**早失败**
@@ -1109,10 +1150,18 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
    * 备的是**权威树已有的真件**（只读复制，不改）：`lib/` 整棵 + `cordis.patch.yml`。
    * 判据 2 的 import smoke 会因副本够不到权威树 `node_modules` 而红 —— 那是**副本的环境性**
    * 结果，与本用例无关（故下方只断言自检面与判据 4/5 的 stdout，不碰总退出码）。
+   *
+   * **#123：不再 `cpSync` 活动树，改为从冻结快照复制**。旧写法直接把权威树的 `lib/` 复制过去，
+   * 若正好落进写者（`clean-lib`）的重建窗口，复制到的是**半棵**，副本里的判据 1/1b 随之早退，
+   * 本用例的断言红成"自检没跑" —— 与真实原因完全对不上。快照在复制完成那刻关闭窗口。
+   *
+   * @returns 快照（调用方**必须**在 `finally` 里 `dispose()`）
    */
-  function furnishForPackedCriteria(root: string): void {
-    cpSync(join(repoRoot, "lib"), join(root, "lib"), { recursive: true });
+  function furnishForPackedCriteria(root: string) {
+    const snapshot = snapshotRepoLib(preludeTargets(), "furnish");
+    cpSync(snapshot.libDir, join(root, "lib"), { recursive: true });
     cpSync(join(repoRoot, "cordis.patch.yml"), join(root, "cordis.patch.yml"));
+    return snapshot;
   }
 
   it("THE POINT (#118): `files` 宽写成 `lib/**` ⇒ 真实 CLI exit 1 并打出自检文案（AC1 可达）", async () => {
@@ -1121,10 +1170,8 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
     // （本票实测到过，见上面 `CLI_CASE_TIMEOUT_MS` 的说明）。
     await waitForRepoLibReady();
     const root = makeRepoCopy("selfcheck-wide");
+    const snapshot = furnishForPackedCriteria(root);
     try {
-      // 备齐 lib/ 与 cordis.patch.yml，让判据 1/1b **不是**早退的那条路 —— 否则退出码会被
-      // 判据 1 的 `return 1` 污染，"exit 1" 就失去判别力（复核 C2 指出的一点，实测确认）。
-      furnishForPackedCriteria(root);
       // 只改**副本**的 files：族声明全部消失，等价于票面"宽写成 lib/**（或删掉族声明）"。
       const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
       pkg.files = ["lib/**"];
@@ -1136,11 +1183,19 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
       expect(run.stderr, "必须真的走到自检分支（否则本用例什么都没验）").toContain("守卫自检失败");
       expect(run.stderr).toContain("[no-chunk-family]");
       expect(run.stderr).toContain("lib/**");
-      // 响亮：非零退出码。前提（判据 1/1b 已过）由上面的 furnish 保证。
-      expect(run.stderr, "判据 1/1b 不该早退（备齐后它们必须过）").not.toContain("pointers to missing files");
+      // 响亮：非零退出码。前提（判据 1/1b 已过）由上面的 furnish（快照）保证。
+      // #123 AC2：红时**点名判据 1/1b**，不要让读的人以为"自检没接线"。
+      // ⚠️ 缺件清单必须取自**副本**（`root`），不是权威树 —— 被测的是副本的 `main()`，
+      // 它读的是副本的仓根。复核指出早先这里传 `preludeTargets()`（对**权威树**求值），
+      // 失败文案里的清单可能与实际红因对不上，把读的人引去查错的那棵树。
+      expect(
+        run.stderr,
+        `判据 1/1b 不该早退（快照备齐后它们必须过）：${pointerMissReport(missingInCopy(root), PRELUDE_WAIT_MS)}`,
+      ).not.toContain("pointers to missing files");
       expect(run.status, "自检失败必须响亮（exit 1）").toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
+      snapshot.dispose();
     }
   }, CLI_CASE_TIMEOUT_MS);
 
@@ -1150,20 +1205,22 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
     // **顺序**同上面的响亮用例：**先**等门槛，**再**建副本（门槛超时不得泄漏副本）。
     await waitForRepoLibReady();
     const root = makeRepoCopy("selfcheck-real");
+    const snapshot = furnishForPackedCriteria(root);
     try {
-      furnishForPackedCriteria(root);
       // 判据 0 在**最前**且早于打包：先按下自检静默取证，再看判据 4/5 是否照常报告。
       const run = runCopy(root);
       expect(run.stderr, "真实 files 下自检不得触发（不假报）").not.toContain("守卫自检失败");
       // 判据 1/1b 必须真的过了（否则下面的判据 4/5 根本没跑 —— 断言会假绿成"没输出"）。
-      expect(run.stderr, "副本缺 lib/ 或缺 cordis.patch.yml 会让判据 1/1b 早退").not.toContain(
-        "pointers to missing files",
-      );
+      expect(
+        run.stderr,
+        "副本缺 lib/ 或缺 cordis.patch.yml 会让判据 1/1b 早退",
+      ).not.toContain("pointers to missing files");
       // 判据 4/5 仍**有触发面**：它俩照常执行并打出各自的正常读数（证明守卫确实"武装着"）。
       expect(run.stdout).toContain("no chunk family has two generations in tarball");
       expect(run.stdout).toContain("no unexpected lib/ files in tarball");
     } finally {
       rmSync(root, { recursive: true, force: true });
+      snapshot.dispose();
     }
   }, CLI_CASE_TIMEOUT_MS);
 
@@ -1179,8 +1236,8 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
     // 否则门槛超时被掐断时 `finally` 跑不完，副本会泄漏。
     await waitForRepoLibReady();
     const root = makeRepoCopy("selfcheck-skip");
+    const snapshot = furnishForPackedCriteria(root);
     try {
-      furnishForPackedCriteria(root);
       const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
       pkg.files = ["lib/**"];
       writeFileSync(join(root, "package.json"), JSON.stringify(pkg, null, 2));
@@ -1216,6 +1273,7 @@ describe("守卫自检的 CLI 通路（#118）：临时副本里真跑，不写�
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
+      snapshot.dispose();
     }
   }, CLI_CASE_TIMEOUT_MS);
 });
@@ -1261,33 +1319,27 @@ describe("判据 6 的 CLI 通路（#117）：临时副本里真跑，不写产�
     });
   }
 
-  /** 备齐判据 1/1b（`lib/` + patch）与判据 6（`src/`）的输入面 —— 只读复制权威树。 */
-  async function furnish(root: string): Promise<void> {
-    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
-    const targets = [
-      ...entryTargets(pkg.exports).filter(([, target]) => !target.includes("*")),
-      ...manifestTargets(pkg),
-    ].map(([, target]) => target.replace(/^\.\//, ""));
-    const missing = () => targets.filter((target) => !existsSync(join(repoRoot, target)));
-    const deadline = Date.now() + PRELUDE_WAIT_MS;
-    let still = missing();
-    while (still.length > 0 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, PRELUDE_POLL_MS));
-      still = missing();
-    }
-    expect(
-      still,
-      `权威树判据 1/1b 的指针在 ${PRELUDE_WAIT_MS} ms 内未就位（并发重建窗口或真缺件）：${still.join(", ")}`,
-    ).toEqual([]);
-    cpSync(join(repoRoot, "lib"), join(root, "lib"), { recursive: true });
+  /** 备齐判据 1/1b（`lib/` + patch）与判据 6（`src/`）的输入面 —— **从冻结快照**复制。
+   *
+   * #123：`lib/` 走 {@link snapshotRepoLib}（不再 `cpSync` 活动树）。理由与 `#118` 的
+   * `furnishForPackedCriteria` 同源：直接复制活动树会落在写者的重建窗口里复制到**半棵**，
+   * 副本的判据 1/1b 随之早退，读数却表现为"判据 6 没跑到"。
+   *
+   * @returns 快照（调用方**必须**在 `finally` 里 `dispose()`）
+   */
+  function furnish(root: string) {
+    const snapshot = snapshotRepoLib(preludeTargets(), "stray");
+    cpSync(snapshot.libDir, join(root, "lib"), { recursive: true });
     cpSync(join(repoRoot, "src"), join(root, "src"), { recursive: true });
     cpSync(join(repoRoot, "cordis.patch.yml"), join(root, "cordis.patch.yml"));
+    return snapshot;
   }
 
   it("THE POINT (#117): 手写杂散 `.d.ts` ⇒ 真实 CLI exit 1 并点出它（AC1 可达）", async () => {
+    await waitForRepoLibReady();
     const root = makeRepoCopyWithFaces("stray-types");
+    const snapshot = furnish(root);
     try {
-      await furnish(root);
       // 只改**副本**：在 `lib/types/` 放一个 tsc 永远不会产出的手写 `.d.ts`（票面原症状）。
       writeFileSync(join(root, "lib", "types", "zz-not-real.d.ts"), "declare const zz: never\n");
 
@@ -1306,14 +1358,16 @@ describe("判据 6 的 CLI 通路（#117）：临时副本里真跑，不写产�
       expect(run.status, "杂散 .d.ts 必须响亮（exit 1）").toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
+      snapshot.dispose();
     }
   }, CLI_CASE_TIMEOUT_MS);
 
   it("NO FALSE ALARM (AC2)：真实构建面下判据 6 **不**报 —— 7 个 `.d.ts` 全有源码对应", async () => {
     // 变异验证的另一半：若判据 6 写成了"永远报"，上面的响亮用例照样绿，只有这条能拦。
+    await waitForRepoLibReady();
     const root = makeRepoCopyWithFaces("stray-types-clean");
+    const snapshot = furnish(root);
     try {
-      await furnish(root);
       const run = runCopy(root);
       expect(run.stderr, "真实构建面下判据 6 不得触发（不假报）").not.toContain("no matching src/ file");
       expect(run.stderr, "判据 1/1b 不该早退").not.toContain("pointers to missing files");
@@ -1323,6 +1377,7 @@ describe("判据 6 的 CLI 通路（#117）：临时副本里真跑，不写产�
       expect(run.stdout).toContain("all 9 export entries packed and importable");
     } finally {
       rmSync(root, { recursive: true, force: true });
+      snapshot.dispose();
     }
   }, CLI_CASE_TIMEOUT_MS);
 });
