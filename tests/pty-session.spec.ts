@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { apply } from "../src/pty/index.ts";
 import { AUTO_CLOSE_SEMANTICS } from "../src/pty/session-core.ts";
 import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
+import { waitUntil } from "./helpers/wait-until.ts";
 
 // ---------------------------------------------------------------------------
 // Echo spawner: every write is echoed back as a complete line — the fake
@@ -197,14 +198,46 @@ describe("pty_open options", () => {
       .rejects.toThrow(/non-empty/);
   });
 
+  /**
+   * #64 —— autoClose 一次性回收。
+   *
+   * ## 本用例的竞态形状（为什么这里不能用固定 sleep）
+   *
+   * `emitExit()` 只是投递退出事件；**回收是异步的**：核心在 `pty.onExit` 里
+   * `settleFor(..., { ignoreExit: true }).then(() => killSession(s, 'autoClose'))`，
+   * 而 `settleFor` 走**静默窗口** —— 默认 `settleQuietMs = 150` + `settleTickMs = 25`
+   * 起步，再加 `killSession` 自己的开销 ⇒ 正常回收耗时是**百毫秒级**。
+   *
+   * 本用例原先 `await setTimeout(250)` 再断言。**实测的真实余量**（n=20，1ms 步进探针，
+   * `.scratch/124-bound2.log`）：从 `emitExit` 到回收完成 **min 186 / p50 202 / max 204 ms**
+   * ⇒ 按**典型**耗时算余量 ≈ **64ms**，按**最坏**算 ≈ **46ms**（票面按「150+25=175ms 起步」
+   * 推算的是 ~75ms，量级相符）。**判据本身没错**（它确实该被回收），错的是"用固定 sleep 等一个
+   * **可观测的异步事件**"：全量车道里 20+ 个 spec 共用 worker 池、事件循环被挤压时，这几十毫秒
+   * 会蒸发 ⇒ 间歇红
+   * （票面实测：单档重复 12 次全绿，全量车道同一冻结树 6 次里红 1 次 ——
+   * **单档绿证明不了它修好了**）。
+   *
+   * ## 修法：轮询到条件成立
+   *
+   * 等的是用例自己的**前置条件** ——"回收已发生"（`pty().active()` 不再含该 sessionId）
+   * ——而不是一个猜出来的时长。上界取 **5 s**：远大于百毫秒级的正常回收（高负载下不假红），
+   * 又足以在真缺陷（回收根本没发生）上**响亮失败**并报出实际观测到的状态。
+   *
+   * ⚠️ 不要退回"加长 sleep"（那只是把窗口挪到更慢的机器上），也不要为此调小
+   * `settleQuietMs` / `settleTickMs` —— 那是**产品默认值**，属别的面（本票 Out of scope）。
+   */
   it("autoClose: true rides the tool surface — the session self-reclaims on exit (#64)", async () => {
     const a = makeAgent("a");
     const opened = await tool("pty_open").execute({ command: "one-shot", autoClose: true }, exec(a));
     expect(pty().active(a)).toContain(opened.sessionId);
     const handle = handles.find((h) => h.pty.pid === opened.pid)!;
     handle.emitExit({ exitCode: 0 });
-    await new Promise((r) => setTimeout(r, 250));
-    expect(pty().active(a)).not.toContain(opened.sessionId);
+    // 等"回收已发生"这个条件成立，不是等一个时长。超时会响亮失败并给出实测状态。
+    await waitUntil(() => !pty().active(a).includes(opened.sessionId), {
+      timeoutMs: 5_000,
+      describeObserved: () => `active(${a.agentName}) = ${JSON.stringify(pty().active(a))}（期望不含 ${opened.sessionId}）；`
+        + `killed=${handle.killed}`,
+    });
   });
   it("autoClose semantics wording has one source: the tool surface quotes the exported constant (#66)", () => {
     const open = tool("pty_open");
