@@ -71,7 +71,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { access, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative as relativePath, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync } from 'node:zlib'
 import { isDirectInvocation } from './script-entry.mjs'
@@ -85,9 +85,27 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  * Windows drive-letter path as a remote host spec (`C:` → "cannot connect to
  * C:"), and msys path conversion rewrites arguments on the way in. A minimal
  * ustar/pax reader over the packed bytes sidesteps both.
+ *
+ * 边界（#91）：只吃本仓 `npm pack` 的**自产 tarball**。守卫只认一条不变量 —— **落点必须在
+ * `destination` 之内**（判据是 `path.relative` 的真实解析结果，不是名字里有没有 `..` 字符串）：
+ *   - 越界（`..` 段爬出、跨盘符绝对名如 `C:/evil.txt`）⇒ **响亮抛错**，既不写出 dest 之外，
+ *     也不静默跳过：名字出自归档本身，越界说明归档坏了，静默忽略会把坏归档当成功；
+ *   - 同盘风格的绝对名（`/etc/passwd`）⇒ 被**归一进** `destination`（落点仍在之内，安全）；
+ *   - 名字恰为 `.`（落点 = `destination` 本身）⇒ 交给文件系统报 `EISDIR`，不归本守卫管。
+ * 将来若要用它解**外部**归档，这条不变量就是唯一的前提，不许先删后想。
  */
 export function untarGz(tarball, destination) {
   const buf = gunzipSync(tarball)
+  const root = resolve(destination)
+  /** 条目名 → 目标路径；越界即抛（判定见上方头注的三种口径）。 */
+  const targetOf = (fullName) => {
+    const target = resolve(root, ...fullName.split('/').filter((part) => part !== '' && part !== '.'))
+    const rel = relativePath(root, target)
+    if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new Error(`untarGz: entry ${JSON.stringify(fullName)} resolves outside the destination — refusing to unpack it`)
+    }
+    return target
+  }
   let offset = 0
   const readString = (start, length) => {
     const raw = buf.subarray(start, start + length)
@@ -106,11 +124,11 @@ export function untarGz(tarball, destination) {
     const fullName = prefix === '' ? name : `${prefix}/${name}`
     const dataStart = offset + 512
     if (typeFlag === '0' || typeFlag === '\0' || typeFlag === '') {
-      const target = join(destination, ...fullName.split('/').filter((p) => p !== '' && p !== '.'))
+      const target = targetOf(fullName)
       mkdirSync(dirname(target), { recursive: true })
       writeFileSync(target, buf.subarray(dataStart, dataStart + size))
     } else if (typeFlag === '5') {
-      mkdirSync(join(destination, ...fullName.split('/').filter(Boolean)), { recursive: true })
+      mkdirSync(targetOf(fullName), { recursive: true })
     }
     offset = dataStart + Math.ceil(size / 512) * 512
   }

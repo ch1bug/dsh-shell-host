@@ -649,6 +649,22 @@ describe("untarGz", () => {
     }
   });
 
+  it("refuses an entry whose name climbs out of the destination instead of writing beside it (#91)", () => {
+    // 父目录只有 dest 一个条目 —— 越界写入会在 readdir 里现形。旧实现只过滤 `''` 与 `.`：
+    // `..` 段会让目标落到 dest 的**兄弟**位置。越界的判定与拒绝口径只在 `untarGz` 头注里
+    // 写一份（本用例不复述）。
+    const root = tempDir("untar-traversal");
+    const dest = join(root, "dest");
+    mkdirSync(dest);
+    try {
+      expect(() => untarGz(tarGz(tarEntry("../evil.txt", "X")), dest)).toThrow(/outside the destination/u);
+      expect(() => untarGz(tarGz(tarEntry("../evil-dir/", "", "5")), dest)).toThrow(/outside the destination/u);
+      expect(readdirSync(root)).toEqual(["dest"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("honours the ustar `prefix` field (long paths split across header fields)", () => {
     const dest = tempDir("untar-prefix");
     try {
