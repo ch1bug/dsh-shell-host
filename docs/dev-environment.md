@@ -471,6 +471,17 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
   返回 Access denied。
 - **PTY 会话不跨轮存活**（下一个 tool call 里即报 `no pty session … for this agent`）：
   多条命令用 `&&` 串成一次做完，读数重定向进 `.scratch/*.log` 再读文件。
+- **临时产物（驱动脚本 / 生成的 config / 探针）一律放 `.scratch/` 下，别落仓库根**
+  （#123 retro C6）：
+  - **为什么**：本机**多个会话共用一个检出**，而**复核者看到的永远是一个瞬间快照**
+    —— "长时间跑的 driver + 中途产出的临时文件"必然让复核者把它读成**残留**
+    （#123 实测：Spec 轴复审时看到仓库根的 `vitest.ac0.config.ts`，那是**当时仍在跑**的
+    driver 的中间态；其 `finally` 随后已删，事后 `Test-Path` = False）。
+  - 另一层理由：仓库根的文件与**产品文件**混在一起，而 `git status` 里 `?? ` 一行
+    区分不了"半途"与"忘了删"。
+  - 例外：**变异探针 spec** 必须落在 `tests/` 内才会被收集（见
+    [TESTING.md](agents/TESTING.md) §证据纪律的那条）—— 那种情况用唯一前缀
+    且**跑完即删**，别留到下一轮。
 
 ## 5. 实例相关文档
 

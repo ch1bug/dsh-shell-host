@@ -28,6 +28,13 @@ read one directly before running that workflow.
 Issues live in GitHub Issues (`ch1bug/dsh-shell-host`), operated via the `gh`
 CLI. See `docs/agents/issue-tracker.md`.
 
+**引用票号要限定仓**（#123 retro C7）：本仓的票写裸 `#NN`；引用**其他仓库**
+（如相邻工作区 `dsh-matt-preset`）的票**必须**写全 `owner/repo#NN`。
+机械守卫抓不到这条 —— `tests/doc-references.spec.ts` 只管**路径**，而本仓恰好也有
+主题相近的同号票（实测：`tests/verify-pack.spec.ts` 的 `#90`/`#117`/`#118` 与
+`tests/built-artifact.spec.ts` 头注的 `#10` 都是**相邻工作区**的票，裸写会把人引去
+本仓 tracker 找一个不存在的条目）。
+
 ### Triage labels
 
 Default five-role vocabulary (`needs-triage`, `needs-info`,
