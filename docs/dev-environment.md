@@ -183,6 +183,21 @@ bash <repo>/scripts/msys-lane.sh --no-sync        # 只验当前副本提交，�
   不重建就是「新 spec + 旧构件」的**空心绿**（三档 e2e 安装/打包的正是它）；
 - 读数汇总**绿红都收**：逐文件行、`!! SKIP (loud)` 行数、隐私扫描读数、退出码；红时把末 40 行原文打出来。
 
+⚠️ **`amend` 过提交之后，副本必须先 `reset --hard` 才能同步**（批 D 聚合 A8，`#126` D0b 实测）：
+车道同步用的是 `merge --ff-only`，而 `--amend` **重写了历史** ⇒ 副本里那个旧提交不再是新提交的祖先
+⇒ 同步**响亮失败**：`msys-lane: FAIL — merge --ff-only 失败：… ← …`，**推送被阻断**。
+- **这不是产品红**，是前置未满足。恢复路径与 §0「部署副本这一次不能用 `merge --ff-only`」**是同一条**
+  （那条是为脱敏 / 历史重写写的，但 `amend` 是**日常动作**：复核后修提交几乎必然 amend）：
+  ```bash
+  git -C ~/dsh-shellhost-src fetch --force <repo>     # 或 origin
+  git -C ~/dsh-shellhost-src reset --hard FETCH_HEAD
+  ```
+- **重置前先核零损失**（副本是**只读部署副本**，但它可能有意外提交）：
+  ① `git -C <copy> status --porcelain` 为空；② `git -C <copy> log --oneline FETCH_HEAD..HEAD`
+  **只有那个被 amend 掉的旧提交**（它已被新提交取代，重置即丢弃，无实质损失）。
+- ⇒ 推论：**批次内尽量把 amend 集中在该票推送之前**；一旦推送过、副本已同步，
+  再 amend 就得走上面这条重置（并意味着远端要 force-push —— 本仓**不允许**，见 `AGENTS.md`）。
+
 手工等价跑法（脚本不存在或要单独调时用）：
 
 ```bash
