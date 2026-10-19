@@ -36,5 +36,5 @@ dsh-shell-remote becomes a thin shell or is archived.
   serves msys2 / plain / pwsh / wsl / ssh.
 - `executable: ['ssh']` resolves the launcher through bare PATH (the
   `plain` backend's contract) — no candidate probing, deliberately: ssh
-  location is platform-managed and `~/.ssh/config` carries the real
+  location is platform-managed and `%USERPROFILE%\.ssh\config` carries the real
   configuration surface.

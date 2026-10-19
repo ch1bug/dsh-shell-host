@@ -1,7 +1,8 @@
 /**
  * 文档引用腐烂检查（`#78`；第 2 条断言是 `/retro` 2026-10-16 的扩展，
  * 第 3 条是**历史重写**同日会话的扩展，第 4 条是 `#112` 的扩展，
- * 第 5 条是 `#93` 的扩展，第 6 条是 `#94` 的扩展，**第 7 条是 `#126` 的扩展**）。
+ * 第 5 条是 `#93` 的扩展（**其中的波浪号族活体判定是 `#128` 的扩展**），
+ * 第 6 条是 `#94` 的扩展，**第 7 条是 `#126` 的扩展**）。
  *
  * 为什么：两轮 code-review 才扫完 6 处引用"已被 ADR-0013 删掉的文件的注释"
  * （`backends.ts` / `wsl-bridge.ts` / `src/client` / `src/remote` …）。机械模式 → 确定检查。
@@ -34,7 +35,9 @@
  * `[History: `token` …]`（也接受 `[historical]`）——沿用 `src/wsl-plugin/index.ts` 的既有写法。
  * **只有括号内被反引号包住的 token 才出判定面**，且**按块**生效（`.md` = 标记所在行，
  * `.ts` = 标记所在注释块）；豁免 = 该 token 从块内移除，**块内其余内容照扫**（不是整块丢弃）。
- * `docs/adr/**` 是决定记录，整体排除在扫描面外（按惯例不回头改）。
+ * **`docs/adr/**` 的扫描面按判据分**（`#128` 逐条核对过代码，旧的"整体排除"表述**不成立**）：
+ * 判据 **2/3/6**（命令写法 / 提交哈希 / 裸 spec 名）**排除** `adr/`（决定记录，按惯例不回头改）；
+ * 判据 **4/5/7**（markdown 链接 / 外部绝对路径 / 围栏配对）**含** `adr/`；判据 1 不扫 `docs/`。
  *
  * **复用面**（`#112` AC5：同族守卫别各写一套）：`linkRefsIn` 只做"取目标"、
  * `resolveLinkTarget` 只做"按基准解析"，后续守卫在**同一份文本块**上加自己的判定，
@@ -47,26 +50,30 @@
  * 而 #93 的 AC 明写"不处理相对路径指向仓外的形态"—— 两票在该语义上**取向相反**，
  * 故不要把它当 #93 的公共前置。
  *
- * 5. **外部绝对路径引用必须在本机存在**（`#93` 的扩展，见 `absPathRefsIn` 头注）：
- *    `docs/**` + 根文档全文里的 `<盘符>:\…` / `<盘符>:/…`，目标是**本机文件系统**上的
- *    条目（`existsSync` 直吃原串）。票面记的两条死指针（`<old-work>\deepseek-harness` 等）
- *    结构上都不在旧四条判据的扫描面内，只能靠这条守。
- *    **本票实际覆盖的形态 = 盘符族**；**波浪号族（`~/…`）只出提取器与合成用例、
- *    不做活体存在性** —— 理由见 `tildeRefsIn` 头注的「显式未覆盖声明」。
+ * 5. **外部绝对路径引用必须在本机存在**（`#93` 的扩展，见 `absPathRefsIn` 头注；
+ *    **其中的波浪号族活体判定是 `#128` 的扩展**，见 `tildeBaseOf` / `tildeRefsIn` 头注）：
+ *    `docs/**` + 根文档全文里的 `<盘符>:\…` / `<盘符>:/…` 与 `~/…`，目标是**本机文件系统**
+ *    上的条目。票面记的两条死指针（`<old-work>\deepseek-harness` 等）结构上都不在
+ *    旧四条判据的扫描面内，只能靠这条守。
+ *    **两族的判定基准不同**：盘符族 `existsSync` 直吃原串；波浪号族先按 **msys home**
+ *    展开再判，**运行期推导、不硬编码用户名**，推导不出 ⇒ `!! SKIP (loud)`（`PASS*`）。
+ *    为什么是单基准、另一套为什么被弃、实测读数：**单一来源见 `tildeBaseOf` 头注**。
+ *    **两族扫描面同面（`docs` 全部 + 根文档，含 `docs/adr/`）**。
  *
  * 6. **裸写（无 `tests/` 前缀）的 spec 文件名必须能在 `tests/` 下找到同名**（`#94` 的扩展，
  *    见 `bareSpecRefsIn` 头注）：第 1 条断言只认 `src/…` / `tests/…` **前缀**，故注释里
  *    裸写的文件名结构上落在它的面外 —— 票面标本（`tests/detect.spec.ts` 头注曾指一个
  *    随 ADR-0013 被删的 detector spec）正是这样全程无人管的。
- *    **扫描面**与第 4/5 条一致（`src` + `tests` + `scripts` + `docs`（除 `adr/`）+
- *    根文档 + `vitest.config.ts`）；**模式/占位符形态**（`<base>.spec.ts` / `*.spec.ts` /
+ *    **扫描面** = `src` + `tests` + `scripts` + `docs`（**除 `adr/`**）+ 根文档 +
+ *    `vitest.config.ts`（⚠️ **与第 4/5 条不同面**：那两条扫的是 `docs` 全部 + 根文档）；
+ *    **模式/占位符形态**（`<base>.spec.ts` / `*.spec.ts` /
  *    `xxx.spec.ts`）出豁免面，否则文档里写"新脚本请配对 `xxx.spec.ts`"会**假红**。
  *
  * 7. **`docs/**\/*.md` 的代码围栏必须配对**（`#126` 的扩展，见 `unclosedFencesOf` 头注）：奇数个围栏
  *    会把其后的正文**整段吞进代码块**（渲染错乱），而 `node --run test` 全绿 —— 这类缺陷
  *    在 #108 文档审计里被观测到过。判据是**CommonMark 围栏状态机**，不是数 ` ``` ` 出现次数
  *    （嵌套反例见 `unclosedFencesOf` 头注）。**扫描面 = `docs` 下全部 `.md`（含 `adr/`）**，
- *    与第 4/5/6 条的 `docs`（除 `adr/`）**不同** —— 取票面 `#126` 的 `docs/**` 字面
+ *    与第 6 条（`#94`）的 `docs`（除 `adr/`）**不同** —— 取票面 `#126` 的 `docs/**` 字面
  *    （human 2026-10-18 拍板），理由与代价见 `unclosedFencesOf` 头注「扫描面的取舍」。
  *    本判据与第 4 条**共用 `blocksOf` 文本块面**（`#126` AC4）。⚠️ `#127` 改了豁免粒度后
  *    **行级豁免不再存在**：标记只点名 token、不移除整行 ⇒ 标记行照常参与围栏配对
@@ -108,10 +115,12 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { detectMsysRoot } from "../src/detect.ts";
 import { ALLOWED_USERS } from "../scripts/privacy-scan.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -517,36 +526,149 @@ export function absPathRefsIn(blocks: readonly (string | ScanBlock)[]): string[]
 /**
  * 文本块里的**波浪号**路径引用（`~/…`）—— `#93` 的第二族。
  *
- * 为什么并列成第二族：实测 `~/dsh-host-src` 这类路径才是本仓**真正的舵机面**
- * （34 条命中，且票面点名的那条死指针改完后落到的正是这个形态）。
- * 盘符族与波浪号族的**提取**同属"外部绝对路径"，但**存在性基准不同**（见下），
+ * 为什么并列成第二族：实测 `~/dsh-…`（宿主 / 部署副本的检出目录）这类路径才是本仓
+ * **真正的舵机面**（`#93` 时 34 条命中；`#128` 交付态 **32 条 / 去重 11 个 token**，
+ * 2026-10-19 —— 票面数字会漂移，凡读数自己重测），且票面点名的那条死指针改完后落到的
+ * 正是这个形态。盘符族与波浪号族的**提取**同属"外部绝对路径"，但**存在性基准不同**
+ * （波浪号族 = msys home；基准的**单一来源**是 `tildeBaseOf` 头注，本段不复述），
  * 故拆成两个纯函数、各自配判定，不硬塞进一个返回 `string[]` 的函数。
  *
- * **⚠️ 活体存在性未覆盖（human 2026-10-18 拍 D）**：`~` 的基准在本机有两套且不一致 ——
- * `os.homedir()` = `C:\Users\<user>`，而文档里的 `~` 全是 **msys 语义**
- * （`C:\msys64\home\<user>`）。实测 `~/dsh-host-src` / `~/dsh-shellhost-src` /
- * `~/dsh-matt-home` / `~/dsh-shellhost-home` 在 `homedir()` 下**全部 MISSING**、
- * 在 msys home 下才存在 ⇒ 按 `homedir()` 判会把 **22 行正确文档**判红；
- * 而按 msys home 判需要探测用户名，**硬编码用户名违反 PUBLIC 仓纪律**。
- * 故本族**只出提取器 + 合成用例**（形态与占位符判据已锁住），
- * 活体存在性留给后续票 —— 这是**显式未覆盖声明**，不是静默漏面。
  * **`~` 后只收"段"**：段的字符集收紧为 `[\w.$-]`，**不允许空格**。
- * ⚠️ 这是实测修正：用 `[^\s…]*` 时 `` ~/dsh-host-src grep -c foo `` 会把**命令与参数
- * 一起吞进来**（实测），而波浪号族一旦接上存在性判定，这些串会直接变成假红。
+ * ⚠️ 这是 `#93` 的实测修正：用 `[^\s…]*` 时 `` ~/dsh-host-src grep -c foo `` 会把**命令与
+ * 参数一起吞进来**（实测），而波浪号族一旦接上存在性判定，这些串会直接变成假红。
  * 路径段里本来就没有空格（要空格得引号包裹），故收紧是安全的。
- */
-const TILDE_REF = /(?<![\w/.\\:-])~\/(?:[\w.$-]+\/?)*/gu;
-
-/** 文本块里的波浪号路径引用（`~/…`；`~user` 与孤立 `~` 不匹配）。
  *
- * 与盘符族同属"外部绝对路径"，故**同构**滤点名池（`#127` 的六族枚举里它并入绝对路径族；
- * 本族目前只出提取器与合成用例，活体存在性基准留给 `#128`）。 */
+ * **裸 `~/` 已出提取面（`#128` 本票口径，二选一取"收紧正则"；留档见 `.scratch/128-landing.md`）**：
+ * 旧正则的段数下限是 **0** ⇒ `~/` 本身也是 token，而 `~/…` / `~/<name>` 这类省略与占位写法
+ * 同样只提取到 `~/`。接上存在性判定后它展开成家目录、**必然存在** ⇒ 恒绿但**虚高命中数**，
+ * 且把占位语义悄悄当成"家目录引用"。故段数下限收到 **1**：`~/`、`~/…`、`~/<name>`
+ * **根本不进面**（不是"判了再豁免"）。代价：`~/` 后接非 ASCII 段（中文目录名）也不会被提取
+ * —— `\w` 本就不收它们，旧写法也只得到 `~/`，故无实际回退；边界由合成用例逐条锁住。
+ *
+ * **行尾（`TESTING.md` 的 CRLF 口径）**：本判据**不锚行尾** —— `TILDE_REF` 不用 `$`，
+ * 尾缀剥除的 `$` 锚的是**命中串自身**；且 `\r` 不在 `[\w.$-]` 里，故 CRLF 行提取结果
+ * 与 LF 行一致。invariance 由合成用例锁住（`#126` 的 A1 翻车形态作对照）。
+ */
+const TILDE_REF = /(?<![\w/.\\:-])~\/(?:[\w.$-]+\/?)+/gu;
+
+/**
+ * 波浪号判定基准的**可注入依赖**（照 `src/detect.ts` 的 `PosixShellDeps` 形态）：
+ * msys 根、用户名、存在性判定都可替换 —— 纯 Windows 车道借此才能测 loud skip 的两种触发
+ * （无 msys 根 / 推导目录不存在），不必真的动 `C:\msys64`。
+ */
+export interface TildeBaseDeps {
+  /** msys 根（`detectMsysRoot()` 的产物）；默认走既有探测器（受 `exists` 影响）。 */
+  msysRoot?: () => string | undefined;
+  /** 当前用户名（`os.userInfo().username` 的替身）；默认读活环境。 */
+  username?: () => string | undefined;
+  /** 存在性判定；默认 `existsSync`。 */
+  exists?: (path: string) => boolean;
+}
+
+/** 活环境的用户名（`os.userInfo().username`）；读不到 ⇒ undefined（调用方 loud skip）。 */
+function liveUsername(): string | undefined {
+  try {
+    const name = userInfo({ encoding: "utf8" }).username;
+    return name === "" ? undefined : name;
+  } catch {
+    // 无 passwd 记录的环境里 os.userInfo 会抛错 —— 与 src/detect.ts 的 userInfoShell 同口径。
+    return undefined;
+  }
+}
+
+/** 基准推导的结果：要么给出 home，要么给出**缺哪一项**（loud skip 必须说明缺什么，`TESTING.md` 口径）。 */
+type TildeBaseProbe = { readonly home: string } | { readonly reason: string };
+
+/** `tildeBaseOf` / `tildeHomeOrLoudSkip` 的共用推导（一次推导、两条出口，不复制逻辑）。 */
+function probeTildeBase(deps: TildeBaseDeps = {}): TildeBaseProbe {
+  const exists = deps.exists ?? existsSync;
+  const root = (deps.msysRoot ?? (() => detectMsysRoot(exists)))();
+  if (root === undefined || root === "") {
+    return { reason: "没有 msys 根（detectMsysRoot 在候选位置没找到 usr/bin/bash.exe）" };
+  }
+  const username = (deps.username ?? liveUsername)();
+  if (username === undefined || username === "") {
+    return { reason: "读不到用户名（os.userInfo 失败或返回空串）" };
+  }
+  const home = join(root, "home", username);
+  if (!exists(home)) return { reason: `推导出的 msys 家目录不存在（${home}）` };
+  return { home };
+}
+
+/**
+ * 波浪号路径的**判定基准** = msys home（`<msys 根>/home/<user>`）；推导不出 ⇒ `undefined`
+ * （调用方 `tildeHomeOrLoudSkip` 负责**响亮跳过**）。
+ *
+ * ## 为什么是单基准（`#128` Q1=B，human 2026-10-19 拍板）
+ *
+ * `~` 在本机有两套所指且**不是同一路径**：`os.homedir()` = `C:\Users\<user>`、
+ * msys home = `C:\msys64\home\<user>`。实测（`#128`，`docs` 全部 + 根文档）：
+ *
+ * | 状态 | 命中 / token | `os.homedir()` 缺失 | msys home 缺失 | 双基准「任一」缺失 |
+ * |---|---|---|---|---|
+ * | **改前**（HEAD 的树 + `#93` 的旧提取器，含 3 条裸 `~/`） | 41 / 16 | **36** | 6 | 4 |
+ * | **交付态**（本票工作树：收紧裸 `~/` + 6 处写法归一） | 32 / 11 | 32 | **0** | — |
+ *
+ * 改前的「双基准任一存在」只差 4 条，却把**二义静默保留**（同一份文档里 `~` 曾指两个家：
+ * 以 `dsh-` 开头的检出目录与 `.bashrc` 只在 msys home，`.dsh` 只在 Windows home）⇒ 取**单一基准**。
+ * 而 msys 单基准下的 6 条缺失**全部能靠写法归一消掉**（`$DSH_HOME/…` 表 DSH 家目录、
+ * `%USERPROFILE%\…` 表 Windows 家目录、`~/<name>` 表占位）—— 这就是 Q2=A：**判据侧零豁免**。
+ * 交付态的 32 条**全部 msys-only**（按 homedir 判 32/32 红）—— 这就是"单基准 = msys"的直接证据。
+ *
+ * ## 三条边界（各有合成用例）
+ *
+ * 1. `detectMsysRoot()` 拿不到根 ⇒ undefined（运行期推导，不写死安装路径）；
+ * 2. `os.userInfo()` 拿不到用户名 ⇒ undefined（**不硬编码用户名**，PUBLIC 仓纪律）；
+ * 3. 推导出的目录 `exists === false` ⇒ undefined（别把"根对了但家目录不在"当基准）。
+ *
+ * ⚠️ `#128` 对 `#132` 守卫的约束原样成立：这个基准**只活在 `tildeRefsIn` 一族里**，
+ * 不进通用路径解析层（守卫的基准是 `.scratch/`，与家目录无关）。
+ */
+export function tildeBaseOf(deps: TildeBaseDeps = {}): string | undefined {
+  const probe = probeTildeBase(deps);
+  return "home" in probe ? probe.home : undefined;
+}
+
+/**
+ * 活体测试的入口：推导得出 ⇒ 返回基准；推导不出 ⇒ `!! SKIP (loud)` + `undefined`。
+ *
+ * 为什么**必须响亮**（`#128` Q1 的硬口径）：判据的返回值里「没有缺失」与「没有基准」
+ * 长得一样 —— 静默返回空数组就是**假绿**。`TESTING.md` 的口径还要求**说明缺什么**，
+ * 故文案带上 `probeTildeBase` 给出的具体原因。汇总里表现为 `PASS*`，与 `#93` 的
+ * 「没有 git 就响亮跳过」分支同形。
+ */
+export function tildeHomeOrLoudSkip(deps: TildeBaseDeps = {}): string | undefined {
+  const probe = probeTildeBase(deps);
+  if ("home" in probe) return probe.home;
+  console.warn(`  !! SKIP (loud) — 推导不出 msys home：${probe.reason} —— 波浪号引用未验证`);
+  return undefined;
+}
+
+/** 文本块里的波浪号路径引用（`~/…`；`~user` 与孤立 `~` 不匹配；裸 `~/` 已出提取面）。
+ *
+ * 与盘符族同属"外部绝对路径"，故**同构**滤点名池（`#127` 的六族枚举里它并入绝对路径族）。 */
 export function tildeRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
   return collectRefs(blocks, (text) =>
     [...text.matchAll(TILDE_REF)]
       .map((m) => m[0].replace(/[.,;:!?、。）+]*$/u, ""))
       .filter((target) => !isPlaceholder(target)),
   );
+}
+
+/**
+ * 波浪号引用里**在给定基准下解析不到**的那些（= 该红的）。
+ *
+ * 判定 = `join(base, token 去掉前导 ~/ 后的余下)` → `exists`。`base` 是**参数**而不是
+ * 模块内常量 —— 合成用例才能把「唯一变量 = 基准」做成真正的 A/B（同一 token、同一
+ * `exists`，只换 base，一边绿一边红），从而锁住「按 `os.homedir()` 判会红」这条**理由**，
+ * 而不是同义反复地断言"msys 基准能过"。
+ */
+export function danglingTildeRefsIn(
+  blocks: readonly (string | ScanBlock)[],
+  base: string,
+  exists: (path: string) => boolean = existsSync,
+): string[] {
+  return tildeRefsIn(blocks).filter((token) => !exists(join(base, token.replace(/^~\//u, ""))));
 }
 
 /**
@@ -1397,6 +1519,203 @@ describe("代码围栏配对检查器自身的边界（合成文本，#126）", 
   });
 });
 
+describe("波浪号活体基准检查器自身的边界（合成文本，#128）", () => {
+  it("基准 = msys home：同一 token 按两套基准判，唯一变量 = 基准（#128 Q1=B）", () => {
+    // `#128` 的立身之本：文档里的 `~` 是 **msys 语义**，而 `os.homedir()` 指向另一处。
+    // 若按 `os.homedir()` 判，以 `dsh-` 开头的检出目录会**全部**判红（实测按 homedir 判
+    // 36 条缺失、按 msys home 判 6 条）—— 故必须**锁住这条理由**，否则"基准取 msys"
+    // 退化成同义反复（那正是 `TESTING.md`「修复改变了被测面时给同面 A/B」要求的形态）。
+    //
+    // 构造：假 `exists` 只认 **msys home 下**的那个 token；两套基准**只差 base 一个变量**，
+    // 同一个 token、同一个 exists、同一个函数 —— 一边绿一边红只能是基准造成的。
+    const msysHome = join("C:\\msys64", "home", "probe-user");
+    const osHome = join("C:\\Users", "probe-user");
+    const onlyInMsys = join(msysHome, "dsh-probe-src");
+    const exists = (path: string): boolean => path.toLowerCase() === onlyInMsys.toLowerCase();
+    const blocks = ["- 宿主树在 `~/dsh-probe-src` 下"];
+    // 基准 = msys home ⇒ 绿（本票的默认口径）。
+    expect(danglingTildeRefsIn(blocks, msysHome, exists)).toEqual([]);
+    // 基准 = os.homedir() ⇒ **红并点名**（同 token 同 exists，只有 base 变）。
+    expect(danglingTildeRefsIn(blocks, osHome, exists)).toEqual(["~/dsh-probe-src"]);
+    // **反向 A/B**：只在 **Windows home** 存在的形态（旧文档里的 `~/.dsh`，DSH 家目录）。
+    // 同一 token、同一 exists（只认 Windows home 那一条），只换 base ⇒ 一边红一边绿。
+    // 这条锁住的是「单基准 ≠ 双基准『任一存在』」：双基准会把它**静默放过**，而它恰恰
+    // 不是 msys 语义 —— Q2=A 的写法归一就是为它而做。
+    const onlyInOs = join(osHome, "dsh-probe-home", "config");
+    const existsOs = (path: string): boolean => path.toLowerCase() === onlyInOs.toLowerCase();
+    const osOnly = ["- DSH 家目录在 `~/dsh-probe-home/config` 下"];
+    expect(danglingTildeRefsIn(osOnly, osHome, existsOs)).toEqual([]); // 按 homedir 判：绿
+    expect(danglingTildeRefsIn(osOnly, msysHome, existsOs)).toEqual([
+      "~/dsh-probe-home/config",
+    ]); // 按 msys 基准判：红（正是 Q2=A 要消掉的那类）
+  });
+
+  it("基准推导：msys 根 / 用户名 / 目录存在性任一失败 ⇒ undefined（loud skip 的触发条件）", () => {
+    // 纯 Windows 车道靠依赖注入测这三条边界，不必真的动 `C:\msys64`（照 src/detect.ts
+    // 的 `PosixShellDeps` 形态：所有环境读入都是可替换的函数）。
+    const root = join("C:\\", "msys64");
+    const user = "probe-user";
+    const home = join(root, "home", user);
+    const existsFor = (present: readonly string[]) => {
+      const set = new Set(present.map((p) => p.toLowerCase()));
+      return (path: string): boolean => set.has(path.toLowerCase());
+    };
+    // 三者齐全 ⇒ 推导出 msys home。
+    expect(tildeBaseOf({ msysRoot: () => root, username: () => user, exists: existsFor([home]) })).toBe(
+      home,
+    );
+    // 触发 1：`detectMsysRoot()` 返回 undefined（没有 msys 根）。
+    expect(
+      tildeBaseOf({ msysRoot: () => undefined, username: () => user, exists: existsFor([home]) }),
+    ).toBeUndefined();
+    // 触发 1b：用户名读不到（os.userInfo 抛错 / 空串）—— 不许硬编码用户名兜底。
+    expect(
+      tildeBaseOf({ msysRoot: () => root, username: () => undefined, exists: existsFor([home]) }),
+    ).toBeUndefined();
+    expect(tildeBaseOf({ msysRoot: () => root, username: () => "", exists: existsFor([home]) })).toBeUndefined();
+    // 触发 2：推导目录 **不存在**（existsSync === false）—— 根对了也不算基准。
+    expect(tildeBaseOf({ msysRoot: () => root, username: () => user, exists: () => false })).toBeUndefined();
+    // 对照（**有判别力**）：默认 `msysRoot` 走注入的 `exists` —— 它认得出 msys 根、却**不认**
+    // 推导出的家目录 ⇒ 失败点是"触发 2"而非"没有根"。（`C:\msys64` 是候选表的第一项，
+    // 由 `tests/detect.spec.ts` 锁住。）
+    const bashProbed = join("C:\\msys64", "usr", "bin", "bash.exe");
+    expect(tildeBaseOf({ username: () => user, exists: existsFor([bashProbed]) })).toBeUndefined();
+  });
+
+  it("loud skip 真的响亮：`!! SKIP (loud)` + **说明缺什么**，绝不静默当绿", () => {
+    // `#128` Q1 的硬口径：推导不出 ⇒ `!! SKIP (loud)` + return（汇总里表现为 `PASS*`）。
+    // 若静默返回"无缺失"，就是**假绿**（"没基准"与"没缺失"在返回值上不可区分）。
+    // `TESTING.md` 另要求**说明缺什么**，故两种触发各锁一次文案。
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // 触发 1：没有 msys 根。
+      expect(tildeHomeOrLoudSkip({ msysRoot: () => undefined })).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("SKIP (loud)");
+      expect(String(warn.mock.calls[0]?.[0])).toContain("没有 msys 根");
+      // 触发 2：推导目录不存在。
+      warn.mockClear();
+      expect(
+        tildeHomeOrLoudSkip({
+          msysRoot: () => "C:\\msys64",
+          username: () => "probe-user",
+          exists: () => false,
+        }),
+      ).toBeUndefined();
+      expect(String(warn.mock.calls[0]?.[0])).toContain("msys 家目录不存在");
+      // 对照：推导得出 ⇒ 不 warn（判据不是"见谁都喊"）。
+      warn.mockClear();
+      const home = join("C:\\msys64", "home", "probe-user");
+      expect(
+        tildeHomeOrLoudSkip({
+          msysRoot: () => "C:\\msys64",
+          username: () => "probe-user",
+          exists: (path) => path === home,
+        }),
+      ).toBe(home);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("非 msys 形态与占位形态不假红（#128 Q2=A：判据侧零豁免，靠写法归一）", () => {
+    // Q2=A 的取舍：不加白名单、不扩占位符规则，缺失条目**改写法**。
+    // 下列形态在写法归一后**根本不是波浪号 token** —— 故不存在"要不要判"的问题。
+    for (const line of [
+      "- DSH 家目录写 `$DSH_HOME/.dsh`",
+      "- Windows 家目录写 `%USERPROFILE%\\.ssh\\config`",
+      "- 占位写 `~/<name>`",
+      "- 省略写 `~/…`",
+      "- 裸 `~/` 只是家目录本身",
+      "- 波浪号后无斜杠 `~dsh` 不算路径",
+      "- 句中 `~` 只是约等于",
+    ]) {
+      expect(tildeRefsIn([line]), `${JSON.stringify(line)} 不该产出波浪号 token`).toEqual([]);
+    }
+    // 对照：真路径形态照旧进面（判据没把整族弄哑）。
+    expect(tildeRefsIn(["- `~/dsh-host-src` 与 `~/.bashrc`"])).toEqual([
+      "~/dsh-host-src",
+      "~/.bashrc",
+    ]);
+  });
+
+  it("裸 `~/` 已收紧出提取面；边界用例锁住「`~/` 后必须至少一个段」（#128 本票口径）", () => {
+    // 本票口径（自己定 + 留档）：**收紧正则**而不是"保留并声明裸 `~/` 不判"。
+    // 理由见 `TILDE_REF` 头注：`~/` 展开成家目录必然存在 ⇒ 判定恒绿、只虚高命中数，
+    // 且会把 `~/<name>` 的占位语义悄悄当成"家目录引用"。
+    const cases: readonly (readonly [string, readonly string[]])[] = [
+      ["家目录 `~/` 本身", []],
+      ["行尾就是 `~/", []],
+      ["`~/ 后面是空白", []],
+      ["中间 `~/ 夹在散文里", []],
+      ["占位 `~/<name>`", []],
+      ["省略 `~/…`", []],
+      ["真路径 `~/a`", ["~/a"]],
+      ["真路径带尾斜杠 `~/a/`", ["~/a/"]],
+      ["深路径 `~/.dsh/profiles/`", ["~/.dsh/profiles/"]],
+    ];
+    for (const [text, expected] of cases) {
+      expect(tildeRefsIn([text]), `边界：${JSON.stringify(text)}`).toEqual([...expected]);
+    }
+  });
+
+  it("`~user` 与孤立 `~` 仍然不进面（#93 的既有边界不被本票改窄）", () => {
+    // 本票只收紧 `~/` 的**段数下限**，不动「必须是 `~/` 形态」这条既有边界 ——
+    // 否则 `~root/x`（另一个用户的家目录）会被误当本机基准判红。
+    expect(tildeRefsIn(["`~root/x` 是另一个用户的家目录"])).toEqual([]);
+    expect(tildeRefsIn(["`~dsh` 波浪号后无斜杠"])).toEqual([]);
+    expect(tildeRefsIn(["约等于 `~` 与 `~~`"])).toEqual([]);
+  });
+
+  it("波浪号族同样吃点名制豁免（#127 的三态语义原样成立，本票不改窄）", () => {
+    // `#128` 只动基准与提取器，**不动豁免语义**：`tildeRefsIn` 与盘符族同构地按点名池过滤，
+    // 点名 ⇒ 出判定面、未点名 ⇒ 照扫、同块外 ⇒ 不豁免（三态由 `#127` 的用例锁住）。
+    expect(
+      danglingTildeRefsIn(commentBlocks("// 见 ~/gone-128（[History: `~/gone-128` 已删]）"), "C:\\x"),
+    ).toEqual([]);
+    // 未点名 ⇒ 照扫（空池 / 叙述型标记都是 no-op）。
+    for (const marker of ["[historical]", "[History: 旧布局已废止]"]) {
+      expect(
+        danglingTildeRefsIn(commentBlocks(`// 见 ~/gone-128（${marker}）`), "C:\\x"),
+        `${marker} 是空池，不该豁免波浪号 token`,
+      ).toEqual(["~/gone-128"]);
+    }
+    // 对照：没有标记 ⇒ 照常进面（判据本身有效）。
+    expect(danglingTildeRefsIn(commentBlocks("// 见 ~/gone-128"), "C:\\x")).toEqual(["~/gone-128"]);
+  });
+
+  it("合成断链真的判红：波浪号路径在基准下找不到即点名（#128）", () => {
+    // AC「变红并点名」在合成层的证据（不只活体扫描那一处）。
+    const base = join("C:\\msys64", "home", "probe-user");
+    const exists = (path: string): boolean => path === join(base, "present-dir", "x");
+    expect(danglingTildeRefsIn(["- `~/missing-128`"], base, exists)).toEqual(["~/missing-128"]);
+    expect(danglingTildeRefsIn(["- `~/present-dir/x`"], base, exists)).toEqual([]);
+    // 深路径同样按段拼接（不是字符串前缀比较）。
+    expect(danglingTildeRefsIn(["- `~/present-dir/x/y`"], base, exists)).toEqual([
+      "~/present-dir/x/y",
+    ]);
+  });
+
+  it("行尾形态不影响提取：LF / CRLF 两树结果一致（`TESTING.md` 的 A1 口径）", () => {
+    // 本仓结构性存在两个行尾不同的树（权威树 LF、msys 副本 CRLF，`dev-environment.md` §0.1）。
+    // 本判据**不锚行尾**：`TILDE_REF` 不用 `$`，尾缀剥除的 `$` 锚的是**命中串自身**，
+    // 且 `\r` 不在 `[\w.$-]` 里 ⇒ 分类上属 `TESTING.md` E11 的 **(b) 不锚行尾**，
+    // 故只需 invariance + 一条**锚行尾对照**（展示 A1 的翻车形态），不硬造假报。
+    const lf = "- 宿主树在 `~/dsh-probe-src` 下";
+    const crlf = lf + "\r";
+    expect(tildeRefsIn([crlf]), "CRLF 行与 LF 行必须提取出同一 token").toEqual(tildeRefsIn([lf]));
+    expect(tildeRefsIn([crlf])).toEqual(["~/dsh-probe-src"]);
+    // 锚行尾对照（A1 的翻车形态）：**以 token 收尾**的同一行上，`$` 锚定的正则在 CRLF 下
+    // 匹配不上 —— 这正是 `#126` 在 msys 车道假红的机理；本判据不落在这一类里。
+    const endsWithToken = "见 ~/dsh-probe-src";
+    expect(/dsh-probe-src$/u.test(endsWithToken + "\r"), "以 $ 收尾的正则在 CRLF 行上失效（A1 形态）").toBe(
+      false,
+    );
+    expect(/dsh-probe-src$/u.test(endsWithToken)).toBe(true);
+  });
+});
+
 describe("文档引用腐烂（活体仓库扫描）", () => {
   it("docs/**/*.md 与根文档的相对链接目标都存在（#112）", () => {
     // 根文档的链接相对**仓库根**解析（它们就在根上），与 docs/ 下的文件同一个函数即可。
@@ -1463,6 +1782,23 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
       missing,
       "文档引用了本机不存在的绝对路径：修正路径、在同一条注释/该行用 [History: `路径` …] 点名，" +
         "或（确属「别的机器长这样」的举例）登记进 PATH_ALLOWLIST 并写明理由",
+    ).toEqual([]);
+  });
+
+  it("docs/** 与根文档里的波浪号路径在 msys home 下存在（#128）", () => {
+    // 扫描面与 #93 盘符族**同面**（`docs` 全部 + 根文档，**含 `adr/`**；`#128` Q4=B）。
+    // 基准 = msys home、推导不出 ⇒ loud skip：**单一来源见 `tildeBaseOf` 头注**
+    // （为什么是单基准、被弃的那套、实测读数、6 条缺失的写法归一，都在那一段）。
+    const base = tildeHomeOrLoudSkip();
+    if (base === undefined) return;
+    const files = [...walk("docs", [".md"]), ...ROOT_DOCS];
+    const missing = files.flatMap((rel) =>
+      danglingTildeRefsIn(blocksOf(rel), base).map((token) => `${rel} -> ${token}`),
+    );
+    expect(
+      missing,
+      "文档里的波浪号路径在本机 msys home 下不存在：改写成 `%USERPROFILE%\\…`（Windows 家目录）、" +
+        "`$DSH_HOME/…`（DSH 家目录）或占位形态 `~/<name>`；历史提及请用 [History: `路径` …] 点名",
     ).toEqual([]);
   });
 

@@ -83,7 +83,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 ## D10 (#16 grill 共识, 2026-10-03, 见 ADR-0004)
 
 - **远程 one-shot 执行独立成仓 `dsh-shell-remote`**(Q3 修订/Q7=A):三仓三界——shell-host=本地 one-shot;shell-remote=远程 one-shot;pty-session=持久会话(本地或 ssh,见其 #3)。互不注册,shell-remote 永不进 shell-host registry(ADR-0003 决策 2 不变)
-- **传输 = shell 出系统 OpenSSH**(Q5=C):`ssh <host> -- bash -c <cmd>`,继承 `~/.ssh/config`/密钥/跳板机;ssh 库(持久连接/多路复用)属持久会话世界,留 revisit
+- **传输 = shell 出系统 OpenSSH**(Q5=C):`ssh <host> -- bash -c <cmd>`,继承 `%USERPROFILE%\.ssh\config`/密钥/跳板机;ssh 库(持久连接/多路复用)属持久会话世界,留 revisit
 - **D8 契约照守**(Q6=A):ShellResult 字段与 bash-local 逐字段一致;全部路径语义声明为远端路径,不做映射;无远程对应物的宿主能力(spill)响亮拒绝
 - **形态分阶段**(Q2=C):薄传输先行;Remote-SSH 式远端组件挂 revisit(交互/长会话需求出现时,且大概率落 pty-session 世界)
 - **拆票**(Q9=A):R1 脚手架+descriptor 骨架 → R2 one-shot 执行+D8 一致性测试+spill 拒绝

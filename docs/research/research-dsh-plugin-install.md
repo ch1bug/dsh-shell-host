@@ -10,7 +10,7 @@ All paths below are relative to that checkout unless absolute. Line numbers are 
 ## TL;DR
 
 1. dsh has **no marketplace/registry of its own** — the "official" install path is **pnpm into a profile**: `dsh plugin --profile <name> add <package-or-git-spec>` runs `pnpm add` inside `$DSH_HOME/profiles/<name>` (`apps/cli/reference/README.md:81`).
-2. A profile is a directory `$DSH_HOME/profiles/<name>` (`~/.dsh/profiles/<name>`) holding a `package.json` with the manifest key `dsh.profile.bundles` (ordered bundle list) and a user `cordis.patch.yml` (`packages/boot/app-boot/src/profile.ts:5-14`).
+2. A profile is a directory `$DSH_HOME/profiles/<name>` (`%USERPROFILE%\.dsh\profiles\<name>` by default) holding a `package.json` with the manifest key `dsh.profile.bundles` (ordered bundle list) and a user `cordis.patch.yml` (`packages/boot/app-boot/src/profile.ts:5-14`).
 3. An installable plugin is just an npm (or git/tarball/local-path) package whose `package.json` declares `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }`; after install, dsh reconciles `dsh.profile.bundles` so the bundle's patch layer joins the composition (`apps/cli/reference/README.md:81`, `packages/boot/plugin-manager/src/operations.ts:77`).
 4. In the Web/Desktop app, the sidebar **Plugins** page (`packages/client/ui-plugin-manager`) drives the same operations through `@deepseek-ai/dsh-plugin-manager` (`packages/boot/plugin-manager/README.md:31`); discovery = `pnpm view` against npm + npmmirror fallback, no curated index.
 5. dsh-shell-host **already has the right manifest shape** (`dsh.bundle.patch`, `dsh.client`, peers). To ship it the official way: drop `"private": true`, publish to npm (any scope — `@deepseek-ai` is NOT required), and users install with `dsh plugin --profile <name> add dsh-shell-host`. Discovery aid: tag the GitHub repo with the `dsh-plugin` topic (`CONTRIBUTING.md:15`).
@@ -19,7 +19,7 @@ All paths below are relative to that checkout unless absolute. Line numbers are 
 
 ## 1. Plugin loading mechanics
 
-- **Profiles.** Every surface boots a *profile*: a directory under `$DSH_HOME/profiles/<name>`; `$DSH_HOME` defaults to `~/.dsh`, overridable via the `DSH_HOME` env var (`packages/util/home-paths/src/index.ts:14-20`). A profile contains:
+- **Profiles.** Every surface boots a *profile*: a directory under `$DSH_HOME/profiles/<name>`; `$DSH_HOME` defaults to `%USERPROFILE%\.dsh` on Windows (the user's `.dsh` on POSIX), overridable via the `DSH_HOME` env var (`packages/util/home-paths/src/index.ts:14-20`). A profile contains:
   - `package.json` — pnpm-managed plugin dependencies plus the profile manifest `dsh.profile.bundles` (ordered list of bundle package names);
   - `cordis.patch.yml` — the user's own patch layer, applied after every bundle layer;
   - `pnpm-lock.yaml`, `node_modules/`, optional `compatibility.json` (version exemptions), `.plugin-manager/` (op logs).

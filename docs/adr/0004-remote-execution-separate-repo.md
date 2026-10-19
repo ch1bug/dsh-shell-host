@@ -23,7 +23,7 @@
    never enters the shell-host registry (ADR-0003 decision 2 unchanged).
 
 3. **Transport = shell out to system OpenSSH first; library behind revisit
-   (Q5=C).** `ssh.exe` inherits the user's `~/.ssh/config`, keys, agent, and
+   (Q5=C).** `ssh.exe` inherits the user's `%USERPROFILE%\.ssh\config`, keys, agent, and
    jump hosts for free — the same posture as the wsl backend shelling out to
    `wsl.exe` (ADR-0003 decision 3). An in-process ssh library (ssh2/russh)
    is explicitly NOT built now: its advantages (persistent connections,
