@@ -133,6 +133,15 @@
     哪些还要跑），否则审阅者只能把"路径指向不存在的文件"判成**假事实**。
   - 推论：**"见下"这类前向引用**要么指向已经存在的段落，要么就别写 —— `#100` 落地文档
     §四 当时还是"（待填）"占位，指向它的那句被 Standards 轴按悬空引用报出。
+- **「已推送 / 已关闭 / 已在 list 里 / 已同步」这类**当刻状态**声称，写之前先跑那条能证伪它的
+  命令，把读数写进证据行**（`#132` 次-2；形态来自 `#130` 表第 4 次：汇报写了"批次外即时改动
+  随批次末一并推送"，实测**没被推** —— 推送时被 `stash` 走了，推的是已提交的 commit）。
+  **它与上一条是两条**：上一条管"被引的**文件**支不支持这个声称"，这一条管"**没有**被引文件、
+  只有一个当刻状态"。
+  - 落法：`git log origin/main..HEAD`（已推送 ⇒ 输出为空）/ `git status -sb` /
+    `gh issue view <n> --json state`；跑不了（例如本机没有 `gh`）就写 `not run — <理由>`。
+  - 为什么必须实测：状态声称**没有载体可核对**，"看着对"与"确实对"在文本上不可区分 ——
+    这正是机械守卫（`tests/evidence-citations.spec.ts`）结构上覆盖不到的那一半。
 - **判据本身会被行尾形态静默翻转 —— 锚行尾的正则必须考虑 CRLF**（批 D 聚合 A1，`#126`）。
   本仓**结构性存在两个行尾不同的树**：权威树是 **LF**，msys 部署副本被 `core.autocrlf`
   转成 **CRLF**（见 `docs/dev-environment.md` §0.1 第 1 条）。`text.split("\n")` 之后每行带尾随
@@ -375,6 +384,7 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 |---|---|---|---|
 | `node --run test` | ①②③ | typecheck + unit + machine（本仓常规套件） | 无 |
 | `tests/doc-references.spec.ts` | ①② | 引用腐烂：注释里的仓内路径必须存在；本仓脚本一律写 `node --run`（历史提及在该注释/该行标 `[History: …]`） | 无 |
+| `tests/evidence-citations.spec.ts` | ①（本机） | 证据引用守卫（`#132`）：`.scratch/` 落地文档 / 批次状态 / retro 里的「证据单元格 × 退出码声称」—— 被引载体必须存在，读数不得与声称**矛盾**（「无读数」不算矛盾，一律 `!! SKIP (loud)` 声明不判） | 有 `.scratch/` 才判（干净 clone / 部署副本 / pre-push 车道恒响亮跳过 ⇒ `PASS*`） |
 | `tests/e2e-tool-call-machine.spec.ts` | **mock 层** | 官方安装（`--from-default-profile` + `dsh plugin add` 源目录）→ 配置（组合树含两行、无 pending）→ 启动（真实 `dsh web`，OS 临时端口，stderr 干净）→ `session/create` → `prompt` → mock provider 要求 `pty_open` → 实例执行 → `tool_result` 回灌 | 插件树 + 宿主树 + pnpm shim（缺失则响亮跳过） |
 | `tests/e2e-tarball-machine.spec.ts` | **mock 层（装箱交付，#89）** | **同一条链，起点换成现场 `npm pack` 的 tarball**：环 1 打包并断言**产物**里有 `cordis.patch.yml`（#88 的运行期版本）→ 环 2 官方安装且注册记录指向 `.tgz`（不是源目录）→ 环 3–5 同上；目录安装不经过 `files`，所以这条链是唯一能看到打包漏项的那条 | 上述 + 插件树有 `cordis.patch.yml` + 本机有可用打包器（缺失则响亮跳过） |
 | `tests/e2e-real-llm-machine.spec.ts` | **真实层**（opt-in） | 同一链路打**真实端点**：供应商接受（计费 usage）、真实模型行为、真实凭据路径；环级报告含 `Z cleanup` 两条读数（实例停 + 临时树删，**失败路径同样出读数**，#97） | 上述 + `DEEPSEEK_API_KEY` 或含 `deepseek-account-platform/*` 的凭据源（缺失则响亮跳过） |
