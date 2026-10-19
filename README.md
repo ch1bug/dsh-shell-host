@@ -167,11 +167,30 @@ layer (`src/wsl-bridge.ts`) are gone — this entry is self-contained now.]
 import * as wsl from 'dsh-shell-host/wsl'   // { name, inject, apply }
 ```
 
-Mount it via the bundle layer with `name: 'dsh-shell-host/wsl'` (the row name
-is the module path of this entry — the source repo's old plugin name
-`dsh-wsl-bridge` no longer resolves post-absorption). Plugin-LAYER entry
-(ADR-0007 "Entry form differences"): built on `defineTool` + `ctx.tools`,
-registers model tools — never an execution backend.
+`./wsl` is **exported but deliberately NOT bundle-mounted** (ADR-0013): the
+bundle patch mounts only two rows (`pty`, `terminal` — see *The bundle patch*
+above), so installing the bundle does NOT give you the `win_*` tools. That is
+by design — the row was never in the patch, so its absence is not a regression.
+The tools exist for an agent hosted **inside WSL** reaching the Windows side;
+with DSH running natively on Windows the semantics do not hold (path
+normalization is redundant, and `win_run`'s temp `.bat`/`.ps1` staging under
+`C:\Windows\Temp` has no point).
+
+To use it, add the row to your own profile patch —
+`$DSH_HOME/profiles/<name>/cordis.patch.yml` — then restart the profile (the
+host composes the tree once at startup; see `docs/agents/profile-install.md`):
+
+```yaml
+- insert:
+    - id: wsl
+      name: dsh-shell-host/wsl
+```
+
+The row's `name` is the module specifier that decides which entry loads (`id`
+is just the row identity); the source repo's old plugin name `dsh-wsl-bridge`
+no longer resolves post-absorption. Plugin-LAYER entry (ADR-0007 "Entry form
+differences"): built on `defineTool` + `ctx.tools`, registers model tools —
+never an execution backend.
 
 ## Build & verify
 

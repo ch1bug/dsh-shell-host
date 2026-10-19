@@ -1168,7 +1168,7 @@ describe("引用腐烂检查器自身的边界（合成文本）", () => {
   });
 
   it("光杆盘符根（`C:\\`）进不了面：它没有可判存在性的目标（#93 实测）", () => {
-    // 实测：`docs/adr/0013-tools-only-plugin.md:62` 的光杆 `` `C:\` `` 会匹配成功，
+    // 实测：`docs/adr/0013-tools-only-plugin.md:66` 的光杆 `` `C:\` `` 会匹配成功，
     // 而 `existsSync("C:\\") === true` ⇒ **纯靠侥幸不红**。根目录不是"引用目标"。
     for (const s of ["(hardcoded `C:\\` somewhere)", "prefix `C:\\` here", "- `C:/` 根"]) {
       expect(absPathRefsIn([s]), `${JSON.stringify(s)} 的光杆根不该进面`).toEqual([]);

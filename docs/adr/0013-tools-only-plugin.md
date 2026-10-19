@@ -29,13 +29,17 @@ Removed:
 
 What remains (plugin-layer entries only): `./pty` (persistent PTY session
 core), `./terminal` (`shell_open` launcher presets), `./wsl` (WSL bridge
-tools). `cordis.patch.yml` mounts exactly two own-id rows: `pty`, `terminal`.
+tools). `cordis.patch.yml` mounts exactly two own-id rows: `pty`, `terminal`;
+`./wsl` is deliberately NOT among them — Windows-interop tools only make
+sense for an agent hosted inside WSL (issue #134).
 
 ## Remote one-shot goes route C
 
-Remote one-shot execution is NOT re-absorbed here nor dropped: it is owned by
-the standalone `dsh-shell-remote` plugin (ADR-0004's original boundary, the
-"C 路线"), which is installed in the profile independently.
+Remote one-shot execution is owned by the standalone `dsh-shell-remote` plugin
+(ADR-0004's original boundary, the "C 路线"), installed in the profile
+independently at the time. **Superseded by ADR-0016**: the remote workspace
+moves back into this package and the plugin is no longer required (its
+"installed" claim was true only as of 2026-10-16 — issue #134).
 
 ## Superseded scope
 
