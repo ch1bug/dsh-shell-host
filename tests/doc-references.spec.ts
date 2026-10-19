@@ -1,12 +1,12 @@
 /**
  * 文档引用腐烂检查（`#78`；第 2 条断言是 `/retro` 2026-10-16 的扩展，
  * 第 3 条是**历史重写**同日会话的扩展，第 4 条是 `#112` 的扩展，
- * 第 5 条是 `#93` 的扩展，**第 6 条是 `#94` 的扩展**）。
+ * 第 5 条是 `#93` 的扩展，第 6 条是 `#94` 的扩展，**第 7 条是 `#126` 的扩展**）。
  *
  * 为什么：两轮 code-review 才扫完 6 处引用"已被 ADR-0013 删掉的文件的注释"
  * （`backends.ts` / `wsl-bridge.ts` / `src/client` / `src/remote` …）。机械模式 → 确定检查。
  *
- * **六条断言**：
+ * **七条断言**：
  *
  * 1. **仓内路径引用必须存在**（`#78` 的验收面）：扫 `src/**`、`tests/**` 的**注释**，
  *    凡是形如 `src/<path>.ts` / `tests/<path>.ts` 的引用，目标文件必须在仓内。
@@ -30,13 +30,15 @@
  *    本仓当前无图片，故活体 0 命中）；目标解析到检出之外（`..` 越过仓库根）
  *    或没指向任何文件（空目标）**算断链**，不是"逃逸豁免"。
  *
- * **豁免**：历史性提及（被删除的实现、旧命令叙述）在该注释/该行写 `[History: …]`
- * （也接受 `[historical]`）——沿用 `src/wsl-plugin/index.ts` 的既有写法。
+ * **豁免（`#127` 起 = 括号内点名制）**：历史性提及（被删除的实现、旧命令叙述）在注释里写
+ * `[History: `token` …]`（也接受 `[historical]`）——沿用 `src/wsl-plugin/index.ts` 的既有写法。
+ * **只有括号内被反引号包住的 token 才出判定面**，且**按块**生效（`.md` = 标记所在行，
+ * `.ts` = 标记所在注释块）；豁免 = 该 token 从块内移除，**块内其余内容照扫**（不是整块丢弃）。
  * `docs/adr/**` 是决定记录，整体排除在扫描面外（按惯例不回头改）。
  *
  * **复用面**（`#112` AC5：同族守卫别各写一套）：`linkRefsIn` 只做"取目标"、
  * `resolveLinkTarget` 只做"按基准解析"，后续守卫在**同一份文本块**上加自己的判定，
- * 不另起一套扫描/豁免基础设施（`blocksOf` / `walk` / `HISTORICAL` 都共用）。
+ * 不另起一套扫描/豁免基础设施（`blocksOf` / `walk` / `HISTORICAL_BODY` 都共用）。
  *
  * ⚠️ **给 #93 的边界说明**（复核发现，别照抄）：`linkRefsIn` 锚的是 markdown `](…)` 语法，
  * 而 #93 要扫的是**文档全文的绝对路径**（`<盘符>:\…`），它不出现在 `](…)` 里 ——
@@ -66,17 +68,36 @@
  *    （嵌套反例见 `unclosedFencesOf` 头注）。**扫描面 = `docs` 下全部 `.md`（含 `adr/`）**，
  *    与第 4/5/6 条的 `docs`（除 `adr/`）**不同** —— 取票面 `#126` 的 `docs/**` 字面
  *    （human 2026-10-18 拍板），理由与代价见 `unclosedFencesOf` 头注「扫描面的取舍」。
- *    本判据与第 4 条**共用 `blocksOf` 文本块面**（`#126` AC4），故照样受 `[History: …]`
- *    的**整行豁免**约束 —— 那意味着行级豁免在这里的语义是"该行免受围栏配对判定"。
+ *    本判据与第 4 条**共用 `blocksOf` 文本块面**（`#126` AC4）。⚠️ `#127` 改了豁免粒度后
+ *    **行级豁免不再存在**：标记只点名 token、不移除整行 ⇒ 标记行照常参与围栏配对
+ *    （旧口径"该行免受围栏判定"的语义已废止，见下方「豁免粒度的沿革」）。
  *
- * ⚠️ **AC1 与 AC2 的结构性分歧**（`#93` 实测 + 两轴复核，human 2026-10-18 拍"写清楚"）：
- * 票面 AC2 要求给 `GLOSSARY.md:12` 加 `[History: …]`，而票面 AC1 点名的标本
- * （`<old-work>\deepseek-harness`）**正落在那一行上**。豁免粒度是**整行**
- * （`.md` 逐行过滤）⇒ **两条 AC 在同一行上互相抵消**：加豁免后，写在那行的死路径
- * 再也抓不到。实测 A/B 见 `.scratch/t93-mut2.log`（同一死路径：带标记行→绿/漏报，
- * 非标记行→红并点名）。故本票的**变异验证改用非豁免行做载体**，并用合成用例
- * （`blocksOfLine`）把"整行豁免"这条语义本身锁住 —— 它是**有意的语义**，
- * 不是 bug；要改窄属跨票判据变更（会影响 `#78` / `#112`），须单独立票。
+ * ⚠️ **豁免粒度的沿革（`#127`；2026-10-19 grill 拍 Q1=B / Q2=A / Q3=A）**：
+ * 旧口径是**整块/整行丢弃** —— 标记所在注释块或 `.md` 行整体移出扫描面。实测它把判据
+ * 说明自身也吞掉：本档头注那句自指的 `[History: …]` 就让其后整段说明出局，一个引用不存在的
+ * `tests/<name>.ts` 因此长期藏在面外（`#127` 的真实读数）。新口径 = **括号内点名制**：
+ *
+ * 1. **点名池** = 标记括号内**被反引号包住**的 token（反引号必需），按**精确字符串**
+ *    逐族比对（仓内路径 / `node --run` 写法 / markdown 链接目标 / 绝对路径 / 裸 spec 名 /
+ *    提交哈希各拿自己的 token 去查）—— 点名哈希不会顺带豁免路径族。
+ * 2. **作用域 = 同块**：`.md` = 标记所在**行**；`.ts` = 标记所在**注释块** —— 一块 =
+ *    一整个块注释 / JSDoc（可达数十行），或**相邻的整行 `//` 连片**（故跨行的括号体能
+ *    闭合；行尾注释不并入下一行，免得代码行尾的死路径被下一行的标记顺带豁免）。
+ *    块外的同名字符串**不豁免**。
+ * 3. **不是整块丢弃**：命中的 token 从块内移除，**块内其余内容照扫**。三态语义
+ *    （点名 ⇒ 豁免 / 未点名 ⇒ 照扫 / 同块外 ⇒ 不豁免）+「点名别的 token 时同行死路径照红」
+ *    由下方合成用例逐条锁住。
+ * 4. **`[historical]`（括号内无内容）= 空池 = no-op** —— 这是**破坏性语义变更**：写无内容
+ *    的标记**不再豁免任何东西**。迁移写法 = 把要豁免的条目写进括号：
+ *    `[History: `src/gone.ts` 已随 ADR-0013 删除]`。
+ * 5. **连带变化：行级围栏豁免消失**（`#126` AC4 的旧语义）。新口径只移除点名的 token、
+ *    **不移除整行** ⇒ 标记行照常参与围栏配对。实测今天无依赖（`docs/` 全档围栏 0 红）；
+ *    要恢复该豁免属**新机制、新票**。
+ *
+ * **与 `#93` 那条结构性分歧的关系**：`#93` 实测过"整行豁免会让两条 AC 在同一行上互相抵消"，
+ * 那时判为跨票判据变更、须单独立票 —— **本票就是那张票**。现在 `GLOSSARY.md:12` 按新语法
+ * 点名其占位路径，同一行未点名的死路径照红；变异验证仍用**非豁免载体**（`#93` 的教训）。
+ * 记录点按 `#127` 的 Q3 放在本头注（与 `#93`/`#94`/`#126` 同先例），`ADR-0015` 已有回指。
  *
  * 边界：路径与命令只看**注释**（TS scanner 取 trivia，字符串字面量天然不进来）、
  * `docs/**` 看全文；排除 `node_modules`、`lib/`；外部检出里的路径（宿主树的 CLI 入口）
@@ -96,10 +117,57 @@ import { ALLOWED_USERS } from "../scripts/privacy-scan.mjs";
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 /**
- * 历史性提及的豁免标记。沿用仓内既有写法 `[History: …]`（见 `src/wsl-plugin/index.ts`），
- * 也接受 `#78` brief 举例的 `[historical]`。标记所在**注释整块**（`.md` 为该行）豁免。
+ * 历史豁免标记的**括号体**（`#127` 的粒度改革）：`[History: …]` / `[historical]`。
+ *
+ * 标记本身**不再**豁免整块/整行文本 —— 它只提供一个**点名池**：括号内被反引号包住的 token。
+ * 豁免 = 命中这些 token 的引用从该块内移除，块内其余内容**照扫**（见模块头注
+ * 「豁免粒度的沿革」）。`[historical]`（括号内无内容）保留识别，但池为空 ⇒ **no-op**
+ * —— 这是 `#127` 的破坏性语义变更。
+ *
+ * ⚠️ 括号体必须**在同一块内闭合**（`.md` 同一行 / `.ts` 同一注释块）：没写 `]` 就等于没点名。
  */
-const HISTORICAL = /\[histor(?:y|ical)\b/iu;
+const HISTORICAL_BODY = /\[histor(?:y|ical)\b([^\]]*)\]/giu;
+
+/** 标记括号体里的 token 形态：一对反引号包住、**不跨行**（跨行的反引号多半是围栏，不是点名）。 */
+const BACKTICK_TOKEN = /`([^`\n]+)`/gu;
+
+/**
+ * 参与扫描的**文本块**：正文 + 该块的点名池（`exempt`，精确字符串）。
+ *
+ * 逐族比对是**精确字符串**（`#127` Q2=A）：路径族拿路径 token 去池里查、哈希族拿哈希 token
+ * 去池里查 —— 故 `[History: `c74b2d5`]` 只豁免那条哈希，不影响路径族。
+ */
+export interface ScanBlock {
+  readonly text: string;
+  readonly exempt: ReadonlySet<string>;
+}
+
+/** 空池：合成用例直接喂字符串时等价于"没有点名池"。 */
+const NO_EXEMPT: ReadonlySet<string> = new Set();
+
+/** 统一入参形态：合成用例可继续直接喂字符串（等价于空池）。 */
+function asBlock(block: string | ScanBlock): ScanBlock {
+  return typeof block === "string" ? { text: block, exempt: NO_EXEMPT } : block;
+}
+
+/** 取出参与判定的**正文**（围栏判据只要正文，不吃点名池 —— 见「行级围栏豁免消失」）。 */
+export function blockTexts(blocks: readonly (string | ScanBlock)[]): string[] {
+  return blocks.map((block) => asBlock(block).text);
+}
+
+/** 该块的点名池：标记括号内被反引号包住的 token（`[historical]` ⇒ 空集）。 */
+function exemptTokensIn(block: string): ReadonlySet<string> {
+  const pool = new Set<string>();
+  for (const marker of block.matchAll(HISTORICAL_BODY)) {
+    for (const token of marker[1].matchAll(BACKTICK_TOKEN)) pool.add(token[1]);
+  }
+  return pool;
+}
+
+/** 由一个文本块造 `ScanBlock`（点名池从**该块自己**的括号体里取，故块外不豁免）。 */
+function blockOf(text: string): ScanBlock {
+  return { text, exempt: exemptTokensIn(text) };
+}
 
 /** 根目录下参与扫描的文档。 */
 const ROOT_DOCS = ["AGENTS.md", "README.md", "GLOSSARY.md"].filter((f) =>
@@ -113,22 +181,22 @@ const ROOT_DOCS = ["AGENTS.md", "README.md", "GLOSSARY.md"].filter((f) =>
 const PATH_REF = /(?<![\w/.-])((?:src|tests)\/[\w./-]*?\.(?:ts|tsx|mjs|js|json|md))/gu;
 
 /**
- * 取一段源码文本里的注释正文。
+ * 一段源码文本里的注释 **range**（按文档顺序、去重）。
  *
  * 走 AST 的 leading / trailing comment ranges（不是裸 `ts.createScanner`：后者对含
  * `${}` 的模板串会错位，把模板后面的 `//` 误当注释——已由下面的回归用例锁住）。
  * 字符串字面量与模板串天然不是注释。
  */
-function commentTexts(text: string, fileName = "probe.ts"): string[] {
+function commentRanges(text: string, fileName = "probe.ts"): { pos: number; end: number }[] {
   const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
   const seen = new Set<string>();
-  const comments: string[] = [];
-  const add = (ranges: readonly ts.CommentRange[] | undefined) => {
-    for (const range of ranges ?? []) {
+  const ranges: { pos: number; end: number }[] = [];
+  const add = (rangesOfNode: readonly ts.CommentRange[] | undefined) => {
+    for (const range of rangesOfNode ?? []) {
       const key = `${range.pos}:${range.end}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      comments.push(sf.text.slice(range.pos, range.end));
+      ranges.push({ pos: range.pos, end: range.end });
     }
   };
   const visit = (node: ts.Node) => {
@@ -138,43 +206,107 @@ function commentTexts(text: string, fileName = "probe.ts"): string[] {
   };
   visit(sf);
   add(ts.getLeadingCommentRanges(sf.text, sf.endOfFileToken.getFullStart()));
-  return comments;
-}
-
-/** 一段源码文本里参与扫描的注释块（带历史标记的注释整块豁免）。 */
-export function commentBlocks(text: string, fileName = "probe.ts"): string[] {
-  return commentTexts(text, fileName).filter((c) => !HISTORICAL.test(c));
-}
-
-/** 一个文件里参与扫描的文本块：代码看注释，`.md` 看逐行（行内历史标记豁免该行）。 */
-function blocksOf(rel: string): string[] {
-  const text = readFileSync(join(repoRoot, rel), "utf8");
-  return rel.endsWith(".md")
-    ? text.split("\n").filter((line) => !HISTORICAL.test(line))
-    : commentBlocks(text, rel);
+  return ranges.sort((a, b) => a.pos - b.pos);
 }
 
 /**
- * 合成用例版：对**一段 markdown 文本**套用与 `blocksOf` **同一套**行级豁免规则。
+ * 该注释是否**独占行首**（前面只有缩进）—— 行尾注释（`code(); // …`）不算。
  *
- * 存在的意义：让"整行豁免"这条语义能被合成用例直接锁住，而不必去动产品树里的文档
- * （合成用例不该依赖某个真实文件恰好长什么样）。判据必须与 `blocksOf` 同源，
- * 否则锁住的就不是真规则 —— 故这里复用同一个 `HISTORICAL` 常量与同一行过滤式。
+ * 用于 `mergeAdjacentLineComments` 的边界：行尾注释不并入下一行，否则**代码行尾**的
+ * 死路径会被下一行标记的括号顺带豁免（那是"远处藏毒"的入口，`#127` Q2 明确否决同文件级）。
  */
-function blocksOfLine(text: string): string[] {
-  return text.split("\n").filter((line) => !HISTORICAL.test(line));
+function startsOwnLine(text: string, pos: number): boolean {
+  return /^[ \t]*$/u.test(text.slice(text.lastIndexOf("\n", pos - 1) + 1, pos));
 }
 
-/** 文本块里的仓内路径引用。 */
-export function pathRefsIn(blocks: string[]): string[] {
-  return blocks.flatMap((block) => [...block.matchAll(PATH_REF)].map((m) => m[1]));
+/**
+ * 把相邻的**整行 `//` 注释**并成**一个注释块**（两块之间只允许"换行 + 缩进"）。
+ *
+ * 为什么必须并：标记的括号体可以跨行（`[History: `x` dropped in` 换行接着写哈希），而
+ * `ts.get*CommentRanges` 对每个 `//` 行各报一个 range —— 不并，括号体就被切断、点名池
+ * 静默变空。块注释与 JSDoc 本来就是单个 range，不参与合并（中间隔了代码或空行也不并）。
+ * **行尾注释不并入**（见 `startsOwnLine`）。
+ */
+function mergeAdjacentLineComments(
+  text: string,
+  ranges: readonly { pos: number; end: number }[],
+): { pos: number; end: number }[] {
+  const merged: { pos: number; end: number }[] = [];
+  for (const range of ranges) {
+    const prev = merged[merged.length - 1];
+    if (
+      prev !== undefined &&
+      text.startsWith("//", range.pos) &&
+      text.startsWith("//", prev.pos) &&
+      startsOwnLine(text, range.pos) &&
+      startsOwnLine(text, prev.pos) &&
+      /^[ \t]*\r?\n[ \t]*$/u.test(text.slice(prev.end, range.pos))
+    ) {
+      merged[merged.length - 1] = { pos: prev.pos, end: range.end };
+      continue;
+    }
+    merged.push({ ...range });
+  }
+  return merged;
 }
 
-/** 文本块里本仓脚本的 pnpm/npm 调用写法（返回命中片段）。 */
-export function runnerRefsIn(blocks: string[], scripts: string[]): string[] {
+/** 一段源码文本里参与扫描的注释块（`#127`：每块自带点名池，不再整块豁免）。 */
+export function commentBlocks(text: string, fileName = "probe.ts"): ScanBlock[] {
+  return mergeAdjacentLineComments(text, commentRanges(text, fileName)).map((range) =>
+    blockOf(text.slice(range.pos, range.end)),
+  );
+}
+
+/** 一个文件里参与扫描的文本块：代码看注释，`.md` 看逐行（点名池按注释块 / 按行构建）。 */
+function blocksOf(rel: string): ScanBlock[] {
+  const text = readFileSync(join(repoRoot, rel), "utf8");
+  return rel.endsWith(".md") ? blocksOfLine(text) : commentBlocks(text, rel);
+}
+
+/**
+ * 合成用例版：对**一段 markdown 文本**套用与 `blocksOf` **同一套**行级规则。
+ *
+ * 存在的意义：让"`.md` 的块 = 标记所在行"这条语义能被合成用例直接锁住，而不必去动产品树
+ * 里的文档（合成用例不该依赖某个真实文件恰好长什么样）。判据必须与 `blocksOf` 同源 ——
+ * `blocksOf` 对 `.md` 走的就是这个函数，否则锁住的就不是真规则。
+ */
+function blocksOfLine(text: string): ScanBlock[] {
+  return text.split("\n").map(blockOf);
+}
+
+/**
+ * 逐块提取引用并**按点名池过滤**（`#127`）：每族拿自己的 token 去池里查（精确字符串）。
+ *
+ * 合成用例可以直接喂字符串（`asBlock` 视作空池），故所有 `*RefsIn` 都走这一个形状 ——
+ * 六族共用同一条豁免语义，不各写一套（`#112` AC5 的落地形态）。
+ */
+function collectRefs(
+  blocks: readonly (string | ScanBlock)[],
+  extract: (text: string) => string[],
+): string[] {
+  return blocks.flatMap((block) => {
+    const { text, exempt } = asBlock(block);
+    return extract(text).filter((token) => !exempt.has(token));
+  });
+}
+
+/** 文本块里的仓内路径引用（点名池里的路径 token 出判定面）。 */
+export function pathRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
+  return collectRefs(blocks, (text) => [...text.matchAll(PATH_REF)].map((m) => m[1]));
+}
+
+/** 文本块里本仓脚本的 pnpm/npm 调用写法（返回命中片段；点名池里写的是**去掉反引号**的命令）。 */
+export function runnerRefsIn(
+  blocks: readonly (string | ScanBlock)[],
+  scripts: string[],
+): string[] {
   const names = scripts.map((s) => s.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|");
   const pattern = new RegExp("`(?:pnpm|npm)\\s+(?:run\\s+)?(?:" + names + ")`", "gu");
-  return blocks.flatMap((block) => [...block.matchAll(pattern)].map((m) => m[0]));
+  // 池里的 token 是括号内那对反引号**里面**的命令，故比对时剥掉命中片段的反引号，
+  // 过滤后再补回来（返回值形态与调用方既有期望一致）。
+  return collectRefs(blocks, (text) =>
+    [...text.matchAll(pattern)].map((m) => m[0].slice(1, -1)),
+  ).map((command) => `\`${command}\``);
 }
 
 /**
@@ -185,9 +317,9 @@ export function runnerRefsIn(blocks: string[], scripts: string[]): string[] {
 export const HASH_ALLOWLIST = new Set(["687f282e", "1600d8a1", "639ed015", "639ed01539"]);
 
 /** 文本块里的提交哈希引用（7–40 位 hex；纯数字的版本号片段 / 权限位不算）。 */
-export function hashRefsIn(blocks: string[]): string[] {
-  return blocks.flatMap((block) =>
-    [...block.matchAll(/\b[0-9a-f]{7,40}\b/gu)].map((m) => m[0]).filter((t) => !/^[0-9]+$/u.test(t)),
+export function hashRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
+  return collectRefs(blocks, (text) =>
+    [...text.matchAll(/\b[0-9a-f]{7,40}\b/gu)].map((m) => m[0]).filter((t) => !/^[0-9]+$/u.test(t)),
   );
 }
 
@@ -223,9 +355,9 @@ const LINK_REF = /!?\[[^\]]*\]\(\s*(<[^>]*>|[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/
  * 剥锚点放在空目标过滤**之前**，故 `#sec` 先变成 `""` 被滤掉，
  * 不再需要单独的 `startsWith("#")` 分支。
  */
-export function linkRefsIn(blocks: string[]): string[] {
-  return blocks.flatMap((block) =>
-    [...block.matchAll(LINK_REF)]
+export function linkRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
+  return collectRefs(blocks, (text) =>
+    [...text.matchAll(LINK_REF)]
       .map((m) => m[1])
       .map((raw) => (raw.startsWith("<") ? raw.slice(1, -1) : raw))
       .map((raw) => raw.split("#")[0])
@@ -371,9 +503,9 @@ function inNodeModules(target: string): boolean {
  * 剥尾部标点：路径常被写在句中被 `。`/`,`/`)` 收尾，尾缀不是路径的一部分。
  * 但**保留** `…`（它是占位符信号，要在下一步滤掉整条）。
  */
-export function absPathRefsIn(blocks: string[]): string[] {
-  return blocks.flatMap((block) =>
-    [...block.matchAll(ABS_PATH_REF)]
+export function absPathRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
+  return collectRefs(blocks, (text) =>
+    [...text.matchAll(ABS_PATH_REF)]
       .map((m) => m[0].replace(/[.,;:!?、。）+]*$/u, ""))
       .filter((target) => !URL_SCHEME.test(target))
       .filter((target) => !BARE_DRIVE_ROOT.test(target))
@@ -405,10 +537,13 @@ export function absPathRefsIn(blocks: string[]): string[] {
  */
 const TILDE_REF = /(?<![\w/.\\:-])~\/(?:[\w.$-]+\/?)*/gu;
 
-/** 文本块里的波浪号路径引用（`~/…`；`~user` 与孤立 `~` 不匹配）。 */
-export function tildeRefsIn(blocks: string[]): string[] {
-  return blocks.flatMap((block) =>
-    [...block.matchAll(TILDE_REF)]
+/** 文本块里的波浪号路径引用（`~/…`；`~user` 与孤立 `~` 不匹配）。
+ *
+ * 与盘符族同属"外部绝对路径"，故**同构**滤点名池（`#127` 的六族枚举里它并入绝对路径族；
+ * 本族目前只出提取器与合成用例，活体存在性基准留给 `#128`）。 */
+export function tildeRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
+  return collectRefs(blocks, (text) =>
+    [...text.matchAll(TILDE_REF)]
       .map((m) => m[0].replace(/[.,;:!?、。）+]*$/u, ""))
       .filter((target) => !isPlaceholder(target)),
   );
@@ -426,8 +561,9 @@ export function tildeRefsIn(blocks: string[]): string[] {
  * 读一遍（本文件在扫描面内），写一个已删的名字就会当场判红。故此处刻意**不**复写那个
  * 已删文件名 —— 它的沿革记在 `.scratch/94-landing.md` 与本票正文里（tracker 不在本判据
  * 的读取面内，票面 Out of scope 已明写）。
- * ⚠️ **这就是 `#93` 那条硬提醒的第二次实证**：豁免是整块/整行粒度，为了"说清楚一个已删
- * 文件名"而在本块加 `[History: …]`，会把**整块**判据说明一起移出扫描面 —— 得不偿失。
+ * ⚠️ `#93` 那条"为说清楚一个已删文件名而在本块加 `[History: …]`，会把整块判据说明一起
+ * 移出扫描面"的硬提醒，在 `#127` 的点名制下**已不成立**：标记只移除点名的 token，本段
+ * 其余说明照旧在面内。仍不必无谓加标记 —— 但代价已从"整块出局"降到"只少看一个 token"。
  * **与 `PATH_REF` 的分工**（不重复覆盖）：带前缀的写法归 `PATH_REF`（第 1 条断言），
  * 本判据**只收无前缀**的裸文件名 —— 靠否定环视 `(?<![\w/.-])` 把带 `tests/` 前缀的写法
  * 整体挡在外面。否则同一个引用会被两条断言各报一次，点名口径也会打架。
@@ -444,7 +580,7 @@ export function tildeRefsIn(blocks: string[]): string[] {
  *    把星号收到手上、**再**用占位符规则真排除它。
  *    ⚠️ 复核期间有人主张"那 3 处都在带前缀语境、左边界已挡住"——**实测证伪**：
  *    原始正则在那三行上返回 `["*.spec.ts"]`（见 `.scratch/t94-probe-tmp7.log`）；
- *    带前缀的是**同一行里的** `tests/helper.ts`，与 `*.spec.ts` 是两个 token。
+ *    带前缀的是**同一行里的** `tests/<name>.ts`，与 `*.spec.ts` 是两个 token。
  * 3. **右边界 `(?![\w.-])` 是必需的**（两轴复核发现 c2，**实测有洞**）：没有它时
  *    一个 spec 文件名后面再跟 `.bak` / `x` 后缀（同目录下另有其文件）都会被**截断**成
  *    前半段 ⇒ 把**别的文件**当成本文件判，既可能假红、也可能把真断链错判成存在
@@ -491,10 +627,10 @@ function isSpecPlaceholder(name: string): boolean {
   return /^x+\.spec\.ts$/u.test(name.toLowerCase());
 }
 
-/** 文本块里的裸 spec 文件名引用（占位符 / 模式形态已排除）。 */
-export function bareSpecRefsIn(blocks: string[]): string[] {
-  return blocks.flatMap((block) =>
-    [...block.matchAll(BARE_SPEC_REF)].map((m) => m[1]).filter((name) => !isSpecPlaceholder(name)),
+/** 文本块里的裸 spec 文件名引用（占位符 / 模式形态已排除；点名池里的文件名出判定面）。 */
+export function bareSpecRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
+  return collectRefs(blocks, (text) =>
+    [...text.matchAll(BARE_SPEC_REF)].map((m) => m[1]).filter((name) => !isSpecPlaceholder(name)),
   );
 }
 
@@ -553,8 +689,8 @@ export function bareSpecRefsIn(blocks: string[]): string[] {
  *   （含 14 档 adr）**全部平衡**，故此刻不产生任何红。
  * - **与 `#112` 的关系**：`#126` AC4 要求"与 `#112` 的链接判据**共用 `blocksOf`
  *   文本块面**"—— 这条已照办（本函数只吃 `blocksOf` 的产物，不另起扫描）。
- *   但 `blocksOf` 的**行级豁免**（`[History: …]` 整行移出扫描面）在这里的语义是
- *   "**该行免受围栏配对判定**"—— 与第 4 条断言的"该行不受链接存在性判定"同族。
+ *   ⚠️ `#127` 起 `blocksOf` 的豁免是**点名制**（只移除括号里点名的 token、不移除整行）⇒
+ *   旧口径"该行免受围栏配对判定"的语义**已废止**；`fenceGapsIn` 只喂 `blockTexts` 的正文。
  *
  * ## 返回什么
  *
@@ -563,7 +699,7 @@ export function bareSpecRefsIn(blocks: string[]): string[] {
  * 一个围栏行必然是**开栏**（不是"多余闭栏"），所以"多出来的闭栏"这一形态在
  * CommonMark 语义下**根本不存在** —— 报它只会是假红。
  *
- * @param lines 参与扫描的文本块（与 `blocksOf` 同源；`.md` 已逐行过滤掉豁免行）
+ * @param lines 参与扫描的正文行（与 `blocksOf` 同源；`#127` 起点名池不参与围栏判定 ⇒ 没有"豁免行"）
  */
 export function unclosedFencesOf(lines: string[]): number[] {
   let open: { char: string; len: number; line: number } | null = null;
@@ -593,9 +729,9 @@ export function unclosedFencesOf(lines: string[]): number[] {
  * 某档文档的**围栏配对**结果（`#126`）：返回未闭合的开栏行号列表。
  *
  * 与第 4/5/6 条断言**共用 `blocksOf`**（AC4）——不再另起一套读文件 / 豁免基础设施。
- * ⚠️ 这里显式**不**用 `blocksOfLine`：那个函数是"对任意一段合成文本套用同一套行级豁免"
- * 的合成用例入口，与 `blocksOf(rel)` 走的是同一条 `HISTORICAL` 过滤式；合成用例要
- * 直接喂内存文本，故走 `blocksOfLine`，活体档走 `blocksOf`。
+ * ⚠️ 围栏判据只吃**正文**（`blockTexts`）：`#127` 的点名池不进围栏判定，故没有"豁免行"。
+ * 合成用例要直接喂内存文本，故走 `blocksOfLine`（它与 `blocksOf` 对 `.md` 走同一出口，
+ * 判据同源），活体档走 `blocksOf`。
  *
  * ## ⚠️ 行尾归一化（`#126` 的**真实缺陷**，由 pre-push 的 msys 车道暴露）
  *
@@ -626,7 +762,9 @@ export function unclosedFencesOf(lines: string[]): number[] {
  */
 export function fenceGapsIn(rel: string): number[] {
   // 归一化后再判：CRLF 档的尾随 `\r` 不该让闭栏判据失效（见头注）。
-  return unclosedFencesOf(blocksOf(rel).map((line) => line.replace(/\r$/u, "")));
+  // ⚠️ `#127` 起**只取正文**（`blockTexts`）：点名池不参与围栏判定，标记行照常进面
+  // （旧口径的「行级围栏豁免」已废止，见模块头注「豁免粒度的沿革」第 5 条）。
+  return unclosedFencesOf(blockTexts(blocksOf(rel)).map((line) => line.replace(/\r$/u, "")));
 }
 
 /**
@@ -740,16 +878,24 @@ describe("引用腐烂检查器自身的边界（合成文本）", () => {
     expect(bareSpecRefsIn(["曾指向 descriptor.spec.ts"])).toEqual(["descriptor.spec.ts"]);
   });
 
-  it("豁免标记对裸 spec 文件名族同样生效（#94 AC3）", () => {
+  it("豁免标记对裸 spec 文件名族同样生效（#94 AC3；`#127` 起必须点名）", () => {
     // 票面 AC3「历史性提及可豁免（沿用既有 `[History: …]`）」。
-    // 活体正例：`tests/patch-shape.spec.ts` 的 `[History: `c74b2d5`]` 注释块里正提到
-    // 已删的那个 detector spec —— 那是**正当历史叙述**，不能判红。
-    // `.ts` 的豁免粒度是**注释整块**（`commentBlocks`），故标记在注释里任一处即整块出豁免面。
-    const marked = "// 曾与 descriptor.spec.ts 一起消失（[History: `c74b2d5`]）";
-    const bare = "// 曾与 descriptor.spec.ts 一起消失";
-    expect(bareSpecRefsIn(commentBlocks(marked))).toEqual([]);
-    // 对照：同一句话去掉标记 ⇒ 照常进面（判据本身有效，不是"抓不到裸文件名"）。
-    expect(bareSpecRefsIn(commentBlocks(bare))).toEqual(["descriptor.spec.ts"]);
+    // 活体正例：`tests/patch-shape.spec.ts` 头注里点名了已删的那个 detector spec ——
+    // 那是**正当历史叙述**，不能判红。
+    // ⚠️ `#127` 起豁免必须在**括号里点名**（`#94` 时代的"整块出局"口径已废止）。
+    const named = "// 曾与 descriptor.spec.ts 一起消失（[History: `descriptor.spec.ts` 已删]）";
+    expect(bareSpecRefsIn(commentBlocks(named))).toEqual([]);
+    // 对照 1：**不点名** ⇒ 照扫（含 `[historical]` 的空池 = no-op）。
+    expect(
+      bareSpecRefsIn(commentBlocks("// 曾与 descriptor.spec.ts 一起消失（[History: 旧例]）")),
+    ).toEqual(["descriptor.spec.ts"]);
+    expect(
+      bareSpecRefsIn(commentBlocks("// 曾与 descriptor.spec.ts 一起消失 [historical]")),
+    ).toEqual(["descriptor.spec.ts"]);
+    // 对照 2：没有标记 ⇒ 照常进面（判据本身有效，不是"抓不到裸文件名"）。
+    expect(bareSpecRefsIn(commentBlocks("// 曾与 descriptor.spec.ts 一起消失"))).toEqual([
+      "descriptor.spec.ts",
+    ]);
   });
 
   it("合成断链真的判红：裸 spec 文件名在 tests/ 下找不到即点名（#94）", () => {
@@ -785,13 +931,65 @@ describe("引用腐烂检查器自身的边界（合成文本）", () => {
     ]);
   });
 
-  it("历史标记（[History: …] / [historical]）的注释整块豁免", () => {
+  it("豁免粒度 = 括号内点名制：点名豁免 / 未点名照扫 / 同块外不豁免（#127）", () => {
+    // `#127` Q1=B（括号内点名制）、Q2=A（反引号必需 + 同块作用域 + 逐族精确字符串）。
+    //
+    // ① 括号内点名该 token ⇒ 豁免。
+    expect(
+      pathRefsIn(commentBlocks("// 见 src/gone-127.ts（[History: `src/gone-127.ts` 已删]）")),
+    ).toEqual([]);
+    // ② 未点名 ⇒ 照扫：空标记（`[historical]`）是 **no-op**，这是破坏性语义变更。
     for (const marker of ["[historical]", "[History: ADR-0013 删除了该文件]"]) {
-      expect(pathRefsIn(commentBlocks(`// （src/removed.ts，已删除）${marker}`))).toEqual([]);
+      expect(
+        pathRefsIn(commentBlocks(`// 见 src/gone-127.ts（${marker}）`)),
+        `${marker} 是空池，不该豁免任何东西`,
+      ).toEqual(["src/gone-127.ts"]);
     }
-    expect(pathRefsIn(commentBlocks("// （src/removed.ts，已删除）"))).toEqual([
-      "src/removed.ts",
-    ]);
+    // ③ 点名了但 token 在**另一块**（被代码隔开）⇒ 不豁免。
+    const separated = [
+      "// （[History: `src/gone-127.ts` 已删]）",
+      "const boundary = 1;",
+      "// 见 src/gone-127.ts",
+    ].join("\n");
+    expect(pathRefsIn(commentBlocks(separated))).toEqual(["src/gone-127.ts"]);
+    // ④ 点名**别的** token 时，同行未点名的死路径照红（防过度豁免 —— 旧口径的死穴）。
+    const sibling =
+      "// 见 src/gone-127.ts 与 src/also-gone-127.ts（[History: `src/also-gone-127.ts`]）";
+    expect(pathRefsIn(commentBlocks(sibling))).toEqual(["src/gone-127.ts"]);
+    // ⑤ 逐族**精确字符串**：点名哈希不影响路径族（`#127` Q2=A 的原话）。
+    const crossFamily = "// 见 src/gone-127.ts [History: `c74b2d5` 那次改动删的]";
+    expect(pathRefsIn(commentBlocks(crossFamily))).toEqual(["src/gone-127.ts"]);
+    expect(hashRefsIn(commentBlocks(crossFamily))).toEqual([]);
+    // ⑥ `.ts` 的块 = **相邻 `//` 行连成的一块**（`commentRanges` 对每行各报一个 range，
+    // 不合并的话跨行括号体会被切断、点名池静默变空）。故括号体可以跨行闭合。
+    const multiLine = [
+      "// （[History: `src/gone-127.ts` 已删、",
+      "// `c74b2d5` 那次改动）] 见 src/gone-127.ts",
+    ].join("\n");
+    expect(pathRefsIn(commentBlocks(multiLine))).toEqual([]);
+    // ⑦ **行尾注释不并入下一行**（否则代码行尾的死路径会被下一行标记顺带豁免）。
+    const trailing = [
+      "const kept = 1; // 见 src/gone-127.ts",
+      "// （[History: `src/gone-127.ts`]）",
+    ].join("\n");
+    expect(pathRefsIn(commentBlocks(trailing))).toEqual(["src/gone-127.ts"]);
+  });
+
+  it("`.md` 的点名制作用域是标记所在行（#127）", () => {
+    // `.md` 的块 = 标记所在**行**：同一份档案里，另一行的同名字符串不享受豁免。
+    const twoLines = [
+      "- 见 `src/gone-127.ts`（[History: `src/gone-127.ts` 已删]）",
+      "- 另一行又见 `src/gone-127.ts`",
+    ].join("\n");
+    expect(pathRefsIn(blocksOfLine(twoLines))).toEqual(["src/gone-127.ts"]);
+    // 对照 1：同一行点名 ⇒ 豁免。
+    expect(
+      pathRefsIn(blocksOfLine("- 见 `src/gone-127.ts`（[History: `src/gone-127.ts` 已删]）")),
+    ).toEqual([]);
+    // 对照 2：同一行未点名 ⇒ 照扫。
+    expect(
+      pathRefsIn(blocksOfLine("- 见 `src/gone-127.ts`（[History: 旧布局已废止]）")),
+    ).toEqual(["src/gone-127.ts"]);
   });
 
   it("命令检查只认本仓脚本名，且不碰字符串字面量", () => {
@@ -951,14 +1149,23 @@ describe("引用腐烂检查器自身的边界（合成文本）", () => {
     expect(absPathRefsIn(["- `C:/Windows/Temp`"])).toEqual(["C:/Windows/Temp"]);
   });
 
-  it("豁免标记所在行对绝对路径族同样生效（#93 AC2 的形态）", () => {
-    // GLOSSARY.md:12 的 `<old-work>\deepseek-harness` 是**正当历史叙述**，
-    // 加 `[History: …]` 后整行出豁免面 —— 与 #78 的既有约定同一条 `HISTORICAL`。
-    const live = "- 原政策为从本地源码库 `<old-work>\\deepseek-harness` 解析";
-    expect(absPathRefsIn([live])).toEqual([]); // 占位符已令其出豁免面
-    // 而**无占位符**的历史路径必须靠标记豁免，否则真红。
-    const legacy = "- 原政策为从本地源码库 `D:\\old-work\\deepseek-harness` 解析";
-    expect(absPathRefsIn([legacy])).toEqual(["D:\\old-work\\deepseek-harness"]);
+  it("豁免标记对绝对路径族同样生效——必须**点名**，不再整行豁免（#93 AC2 / #127）", () => {
+    // `#93` 时代 `GLOSSARY.md:12` 靠"标记所在行整行出豁免面"过；`#127` 改成点名制后，
+    // 该行必须把要豁免的路径写进括号，且**只有被点名的 token** 出判定面。
+    const named =
+      "- 原政策为从本地源码库 `D:\\old-work-127\\deepseek-harness` 解析（[History: `D:\\old-work-127\\deepseek-harness` 旧布局]）";
+    expect(absPathRefsIn(blocksOfLine(named))).toEqual([]);
+    // 未点名 ⇒ 照扫（叙述型标记 / 空标记都不豁免）。
+    const unnamed =
+      "- 原政策为从本地源码库 `D:\\old-work-127\\deepseek-harness` 解析（[History: 旧布局，已废止]）";
+    expect(absPathRefsIn(blocksOfLine(unnamed))).toEqual(["D:\\old-work-127\\deepseek-harness"]);
+    // 对照 1：**无占位符**的历史路径不点名就是真红（判据本身有效）。
+    const legacy = "- 原政策为从本地源码库 `D:\\old-work-127\\deepseek-harness` 解析";
+    expect(absPathRefsIn(blocksOfLine(legacy))).toEqual(["D:\\old-work-127\\deepseek-harness"]);
+    // 对照 2：占位符形态本就出判定面（与豁免机制无关，`#93` AC3）。
+    expect(absPathRefsIn(blocksOfLine("- 原政策为从本地源码库 `<old-work>\\deepseek-harness` 解析"))).toEqual(
+      [],
+    );
   });
 
   it("存在性判定不因大小写与斜杠形态假红（#93 AC4，实测锁住）", () => {
@@ -1026,25 +1233,21 @@ describe("引用腐烂检查器自身的边界（合成文本）", () => {
     ]);
   });
 
-  it("豁免标记会连整行的绝对路径一起放过——这是它有意的语义（#93 AC1/AC2 的分歧）", () => {
-    // ⚠️ 本票实测踩到的**结构性张力**，必须写清楚（human 2026-10-18 拍"写清楚"）：
+  it("同一行上的两条 AC 不再互相抵消：点名只豁免点名的条目（#93 分歧已被 #127 消解）", () => {
+    // ⚠️ 旧口径的**结构性张力**（`#93` 实测，human 2026-10-18 拍"写清楚"）：当时 `blocksOf()`
+    // 按**整行**豁免，于是"给该行加标记"会顺带把同一行上**任何**死路径一起放过 —— 对非占位符
+    // 形态的死路径，这就是两条 AC 在同一行上互相抵消（实测 A/B 见 `.scratch/t93-mut2.log`：
+    // 带标记行→绿/漏报；非标记行→红并点名）。
+    // （`#93` 票面那个标本本身是**占位符**形态、按 AC3 本就出判定面，故抵消只在非占位符形态上
+    // 真实成立 —— 这里正是用非占位符载体把它锁住。）
     //
-    // `blocksOf()` 的豁免粒度是**整行**（`.md` 逐行过滤），而票面 AC2 要求给
-    // `GLOSSARY.md:12` 加 `[History: …]` —— 票面 AC1 点名的标本**正好落在那一行上**。
-    // 两条 AC 在同一行上**互相抵消**：加了豁免，那条死路径就再也抓不到了。
-    //
-    // 实测 A/B（`.scratch/t93-mut2.log`）：同一条 `D:\old-work\deepseek-harness`，
-    // 在带标记的行上探针**绿（漏报）**，在不带标记的行上探针**红并点名**。
-    // ⇒ 故本票的变异验证改用**非豁免行**做载体，并把这条分歧写进落地文档。
-    //
-    // 这个用例锁住的就是"整行豁免"这个语义本身 —— 免得日后有人以为它是 bug 而改窄，
-    // 改窄会影响 #78 / #112 的既有豁免行为（那是跨票判据变更，得单独立票）。
-    const marked = "历史：原路径 `D:\\old-work-93\\deepseek-harness` [History: 旧布局，已废止]";
-    const bare = "现路径 `D:\\old-work-93\\deepseek-harness`";
-    // 带标记 ⇒ 整行出豁免面（即使里面有真实存在的死路径）。
-    expect(absPathRefsIn(blocksOfLine(marked))).toEqual([]);
-    // 不带标记 ⇒ 照常进面（判据本身是有效的，不是"抓不到盘符路径"）。
-    expect(absPathRefsIn(blocksOfLine(bare))).toEqual(["D:\\old-work-93\\deepseek-harness"]);
+    // `#127` 的点名制**消解了这个分歧**：豁免只针对括号里点名的 token，同一行其余内容照扫。
+    // （"点名 ⇒ 豁免 / 未点名 ⇒ 照扫"的正面形态由上一条 #93 AC2 用例覆盖，此处不重复。）
+    // 变异验证仍用**非豁免载体**做（`#93` 的教训），三态语义由前面的合成用例锁住。
+    const sibling =
+      "历史：`D:\\old-work-127b\\deepseek-harness` 与 `D:\\old-work-127c\\deepseek-harness` " +
+      "[History: `D:\\old-work-127b\\deepseek-harness` 旧布局]";
+    expect(absPathRefsIn(blocksOfLine(sibling))).toEqual(["D:\\old-work-127c\\deepseek-harness"]);
   });
 
   it("合成断链真的判红：普通链接与图片链接都会被点名", () => {
@@ -1174,14 +1377,23 @@ describe("代码围栏配对检查器自身的边界（合成文本，#126）", 
     expect(unclosedFencesOf(["```", "aaa", "``` x"])).toEqual([1]);
   });
 
-  it("围栏检查同样受 `[History: …]` 整行豁免（与 #112 共用 blocksOf 的语义）", () => {
-    // AC4 要求与 #112 的链接判据共用 blocksOf 文本块面 —— 于是行级豁免在这里的语义是
-    // "该行免受围栏配对判定"。免疫行被移出扫描面后，其后的围栏按剩下的行重新配对。
-    const withMarker = ["[History: 旧例]```bash", "echo hi"];
-    // 带标记那行被过滤掉 ⇒ 剩下的正文里没有开栏 ⇒ 配平。
-    expect(unclosedFencesOf(blocksOfLine(withMarker.join("\n")))).toEqual([]);
-    // 对照：同两行去掉标记 ⇒ 第一行是开栏且无闭栏 ⇒ 报第 1 行（证明判据本身有效）。
-    expect(unclosedFencesOf(blocksOfLine(["```bash", "echo hi"].join("\n")))).toEqual([1]);
+  it("围栏检查**不再**享受行级豁免：标记行照常参与配对（#127 的连带变化）", () => {
+    // 旧口径（`#126` AC4）下"带标记的行整行出扫描面"⇒ 该行免受围栏配对判定。
+    // `#127` 的点名制只移除点名的 token、**不移除整行** ⇒ **行级围栏豁免消失**。
+    //
+    // 实测今天无依赖（`docs/` 全档围栏 0 红）；要恢复该豁免属新机制、新票。
+    const markerOnFenceLine = ["```bash [History: 旧例]", "echo hi"];
+    // 标记行**仍在面内** ⇒ 它是个开栏且无闭栏 ⇒ 报第 1 行（旧口径会整行过滤掉 ⇒ 空数组）。
+    expect(unclosedFencesOf(blockTexts(blocksOfLine(markerOnFenceLine.join("\n"))))).toEqual([1]);
+    // 对照：补上闭栏即配平（判据本身没坏）。
+    expect(
+      unclosedFencesOf(blockTexts(blocksOfLine([...markerOnFenceLine, "```"].join("\n")))),
+    ).toEqual([]);
+    // 对照 2：**点名了 token 也不移除整行** —— 围栏判据只吃正文（`blockTexts`）。
+    // 用 `~` 围栏：反引号围栏的 info string 不得含反引号（CommonMark），而点名池的 token
+    // 必须写在反引号里 —— 波浪号围栏没有这条限制，故它才能把"标记与围栏同行"构造出来。
+    const namedOnFenceLine = ["~~~bash [History: `src/gone-127.ts`]", "echo hi"];
+    expect(unclosedFencesOf(blockTexts(blocksOfLine(namedOnFenceLine.join("\n"))))).toEqual([1]);
   });
 });
 
@@ -1199,7 +1411,7 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
     expect(
       dangling,
       "markdown 链接指向不存在的仓内路径（目标相对所在文件目录解析）：" +
-        "修正目标、或历史提及在同一条注释里标 [History: …]",
+        "修正目标、或在同一条注释里用 [History: `目标` …] 点名该条目",
     ).toEqual([]);
   });
 
@@ -1210,10 +1422,10 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
         .filter((ref) => !existsSync(join(repoRoot, ref)))
         .map((ref) => `${rel} -> ${ref}`),
     );
-    expect(dangling, "注释引用了不存在的仓内路径；历史提及请在同一条注释里标 [History: …]").toEqual([]);
+    expect(dangling, "注释引用了不存在的仓内路径；历史提及请在同一条注释里用 [History: `路径` …] 点名").toEqual([]);
   });
 
-  it("本仓脚本一律按 node --run 书写（`pnpm <script>` 只在 [historical] 处）", () => {
+  it("本仓脚本一律按 node --run 书写（历史命令由括号点名豁免，`[historical]` 是空池）", () => {
     const scripts = scriptNames();
     const files = [
       ...walk("src", [".ts", ".tsx"]),
@@ -1227,7 +1439,7 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
     const stale = files.flatMap((rel) =>
       runnerRefsIn(blocksOf(rel), scripts).map((hit) => `${rel}: ${hit}`),
     );
-    expect(stale, "本该 node --run 的调用写成了 pnpm/npm；历史叙述请加 [historical]").toEqual([]);
+    expect(stale, "本该 node --run 的调用写成了 pnpm/npm；历史叙述请用 [History: `pnpm <command>` …] 点名").toEqual([]);
   });
 
   it("docs/** 与根文档里的外部绝对路径在本机存在（#93）", () => {
@@ -1236,11 +1448,10 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
     //
     // ⚠️ **覆盖边界的诚实声明**（别把这条读成"票面点名的标本已被守住"）：
     // 票面 AC1 点名的标本 `<old-work>\deepseek-harness` 是**占位符形态** —— 按 AC3 的
-    // 口径它本就该出豁免面（否则文档里每一条 `C:\Users\<user>` 都会假红）。而它所在的
-    // `GLOSSARY.md:12` 又被 AC2 要求加了 `[History: …]`（整行豁免）⇒ **那一行的死路径
-    // 抓不到，是两条 AC 相互抵消的结果，不是判据失效**。判据本身有效：换成非豁免行，
-    // 同一条死路径会被红并点名（实测 `.scratch/t93-mut2.log`）。
-    // 故本票的变异验证载体 = **非豁免行**；详见模块头注的「AC1 与 AC2 的结构性分歧」。
+    // 口径它本就该出豁免面（否则文档里每一条 `C:\Users\<user>` 都会假红）。`#127` 之后
+    // `GLOSSARY.md:12` 按点名制语法把该占位路径写进括号，两条 AC 的抵消关系消失；
+    // 判据本身有效：换成非豁免载体，同一条死路径会被红并点名（实测 `.scratch/t93-mut2.log`）。
+    // 变异验证载体仍用**非豁免载体**；三态语义详见模块头注的「豁免粒度的沿革」。
     const files = [...walk("docs", [".md"]), ...ROOT_DOCS];
     const missing = files.flatMap((rel) =>
       absPathRefsIn(blocksOf(rel))
@@ -1250,7 +1461,7 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
     );
     expect(
       missing,
-      "文档引用了本机不存在的绝对路径：修正路径、在同一条注释/该行标 [History: …]，" +
+      "文档引用了本机不存在的绝对路径：修正路径、在同一条注释/该行用 [History: `路径` …] 点名，" +
         "或（确属「别的机器长这样」的举例）登记进 PATH_ALLOWLIST 并写明理由",
     ).toEqual([]);
   });
@@ -1280,7 +1491,7 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
     expect(
       missing,
       "注释 / 文档里裸写的 spec 文件名在 tests/ 下不存在：" +
-        "修正文件名、写全 `tests/…` 前缀、在同一条注释/该行标 [History: …]，" +
+        "修正文件名、写全 `tests/…` 前缀、在同一条注释/该行用 [History: `文件名` …] 点名，" +
         "或（确属跨仓引用）登记进 BARE_SPEC_ALLOWLIST 并写明理由",
     ).toEqual([]);
   });
@@ -1293,9 +1504,9 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
     // 而第 4/5/6 条排除 `docs/adr/`（"决定记录，按惯例不回头改"）。human 2026-10-18 拍板
     // 取字面；取舍与代价见 `unclosedFencesOf` 头注「扫描面的取舍」。
     //
-    // ⚠️ 本判据与第 4 条**共用 `blocksOf`**（AC4）⇒ 也吃 `[History: …]` 的**整行豁免**：
-    // 带标记的行会被移出扫描面，故它**不再参与围栏配对**。这是有意的共用语义（AC4 明写），
-    // 代价是"给一行加标记"可能顺带改变围栏配对结果 —— 合成用例已锁住该语义。
+    // ⚠️ 本判据与第 4 条**共用 `blocksOf`**（AC4）。`#127` 改点名制后**行级豁免已废止**：
+    // 标记只移除点名的 token，`docs/` 的每一行都参与围栏配对（合成用例已锁住该变化）。
+    // 代价与恢复路径见模块头注「豁免粒度的沿革」第 5 条。
     const files = walk("docs", [".md"]);
     const unbalanced = files.flatMap((rel) =>
       fenceGapsIn(rel).map((line) => `${rel}:${line}（该开栏没有闭栏）`),

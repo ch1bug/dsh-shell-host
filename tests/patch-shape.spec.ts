@@ -2,8 +2,9 @@
  * patch 形状守卫：`cordis.patch.yml` 只允许**自有 id 的 insert 行**（`#77`；红线 = ADR-0012）。
  *
  * 为什么存在：这条红线此前**纯人肉守**——全仓唯一碰 `cordis.patch` 的断言随 ADR-0012/0013
- * 与 `tests/descriptor.spec.ts` 一起消失（[History: `c74b2d5`]；那条是**正向钉住当时仍存在
- * 的接管行** —— 断言 `terminal-controller` 行的 config ——外加一句单 id 黑名单），此后
+ * 与 `tests/descriptor.spec.ts` 一起消失（[History: `tests/descriptor.spec.ts` 已删、
+ * `c74b2d5` 那次改动删的]；那条是**正向钉住当时仍存在**的接管行
+ * —— 断言 `terminal-controller` 行的 config ——外加一句单 id 黑名单），此后
  * `tests/*.ts` 里 `cordis.patch` 零命中。它守的是 AGENTS.md 列出的高危面之一（loader 行 /
  * 组合树：*"Never mount a loader row that takes over an upstream row id (ADR-0012)"*）：
  * patch 顶层 `id` 行 = 同 id 接管上游 loader 行或重配其 config（ADR-0012 逐个点名清掉的
