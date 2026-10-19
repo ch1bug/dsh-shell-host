@@ -35,6 +35,14 @@
  * Isolation: temp DSH_HOME under os.tmpdir() + `--port 0`, so no fixed dev port
  * (19387 / 19501 / 19502) is ever occupied.
  *
+ * SHARED MECHANISM (#100): the install, the instance boot (`startInstance`), the
+ * typert RPC envelope (`rpcValue` / `rpcZeroArg`), the token → cookie exchange
+ * (`exchangeToken`) and the stop-with-verdict (`stopChild`) all come from
+ * `tests/helpers/e2e-chain.ts` — the same harness the two mock tiers run, so the
+ * chain cannot drift into "the same chain, spelled twice". What stays HERE is
+ * what the mock tiers cannot express: the provider wiring, the credential route
+ * and the model-route assertions (the three silent-failure shapes below).
+ *
  * OWNERSHIP OF THE TEMP TREE (#97): the whole body — temp tree creation, the
  * official install, the credential copy, the spawn — sits inside ONE `try`, and
  * two `Z cleanup` rings report whether the instance stopped and whether the temp
@@ -69,17 +77,21 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { MY_ROWS, stopChild } from "./helpers/e2e-chain.ts";
 import {
-  HOST_DIR,
-  NODE,
+  MY_ROWS,
+  exchangeToken,
+  portOf,
+  rpcValue,
+  rpcZeroArg,
+  startInstance,
+  stopChild,
+} from "./helpers/e2e-chain.ts";
+import {
   PLUGIN_DIR,
-  hostEnv,
   installPlugin,
   missingEnvironment,
 } from "./helpers/e2e-install.ts";
@@ -162,12 +174,11 @@ async function readDurableEvents(port: number, cookie: string, sessionId: string
   if (typeof cursor !== "number" || cursor <= 0) return [];
 
   const address = { kind: "session", sessionId };
-  const page = await rpc(
+  const page = await rpcValue(
     port,
     cookie,
     "session/page",
     { address, throughSeq: cursor, maxMessages: 200 },
-    "request",
   ).catch(() => null);
   const records: any[] = Array.isArray(page?.records) ? page.records : [];
   // Records may be wrapped ({ type: 'event', event: {...} }) or already bare.
@@ -177,50 +188,12 @@ async function readDurableEvents(port: number, cookie: string, sessionId: string
   });
 }
 
-/** One typert Remote envelope.
- *
- * The gateway validates argument NAMES against each method's descriptor, and
- * the naming differs per method — this tripped a real run:
- *   - method with a `request` parameter → { request: value }
- *   - zero-argument method               → { _request: {} }
- *   - some zero-argument methods         → {} (plain empty args)
- * Verified against the RC host: `session/list` wants `_request`, while
- * `session/modelCatalog` REJECTS `_request` ("unexpected _request") and wants
- * plain `{}`. Callers therefore pass the envelope explicitly via `argShape`.
- */
-type ArgShape = "request" | "named" | "none";
-
-function rpc(port: number, cookie: string, method: string, args: unknown, argShape: ArgShape = "request") {
-  const wrapped = argShape === "request" ? { request: args } : argShape === "named" ? { _request: {} } : {};
-  const body = JSON.stringify({ type: "client-request", rpcId: `real-${method}`, method, payload: { args: wrapped } });
-  return fetch(`http://127.0.0.1:${port}/api/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", cookie },
-    body,
-  }).then(async (res) => {
-    if (!res.ok) throw new Error(`${method} HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const parsed = (await res.json()) as any;
-    if (parsed?.result?.ok !== true) throw new Error(`${method}: ${JSON.stringify(parsed?.result?.error ?? parsed).slice(0, 300)}`);
-    return parsed.result.value as any;
-  });
-}
-
-/** Try the argument shapes a zero-arg session method might want, in the order
- * the RC host is known to use, so a descriptor mismatch self-corrects instead
- * of failing the run on envelope trivia. */
-async function rpcZeroArg(port: number, cookie: string, method: string) {
-  const shapes: ArgShape[] = ["none", "named"];
-  let lastError: unknown = null;
-  for (const shape of shapes) {
-    try {
-      return await rpc(port, cookie, method, undefined, shape);
-    } catch (error) {
-      lastError = error;
-      if (!/arguments-invalid/u.test(String(error))) throw error;
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
+// The RPC envelope used to live here as this tier's own copy (#100). It does not
+// any more: `rpcValue()` / `rpcZeroArg()` in `tests/helpers/e2e-chain.ts` write the
+// same typert envelope the mock tiers use (`envelope()` there) and keep THIS tier's
+// reading — throw with the host's failure text, unwrap `result.value`, and
+// auto-correct the zero-arg shapes. The per-method argument-name facts stay
+// documented in GLOSSARY 「#82」; only their spelling moved.
 
 describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + real model behaviour", () => {
   it("runs a real turn whose tool call the instance really executes", { timeout: 300_000 }, async () => {
@@ -258,9 +231,10 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
     // the body managed to create (#97 — the leak came from state created before
     // the old `finally` even started).
     let root: string | undefined;
-    let instance: ChildProcess | undefined;
-    let instOut = "";
-    let instErr = "";
+    /** The instance handle from the SHARED boot helper (#100). It carries the
+     * child (stopped in `Z cleanup`) and the stderr reading the failure messages
+     * quote — this tier keeps no second stdout/stderr accumulator. */
+    let inst: ReturnType<typeof startInstance> | undefined;
     let launchUrl: string | undefined;
     let port = 0;
     let cookie: string | undefined;
@@ -322,28 +296,14 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
 
       // ── ring 3: boot — real instance on an OS-assigned port ────────────────
       await ring("3 boot: real instance up on --port 0, stderr clean", async () => {
-        const child: ChildProcess = spawn(
-          NODE,
-          ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", PROFILE, "--no-open", "--port", "0"],
-          {
-            cwd: HOST_DIR,
-            env: hostEnv(dshHome, hasKey ? { DEEPSEEK_API_KEY: API_KEY } : {}),
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        );
-        instance = child;
-        child.stdout?.on("data", (c: Buffer) => { instOut += c.toString(); });
-        child.stderr?.on("data", (c: Buffer) => { instErr += c.toString(); });
-
-        const launch = await new Promise<string>((resolve, reject) => {
-          const timer = setTimeout(() => { reject(new Error(`instance not ready in 120s: ${instErr.slice(-400)}`)); }, 120_000);
-          child.stdout?.on("data", () => {
-            const match = /dsh web: (http:\/\/\S+)/u.exec(instOut);
-            if (match?.[1] !== undefined) { clearTimeout(timer); resolve(match[1]); }
-          });
-          child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`instance exited ${String(code)}: ${instErr.slice(-400)}`)); });
-        });
-        launchUrl = launch;
+        // The boot plumbing (spawn argv, cwd, host env, the 120s readiness
+        // window, the launch-URL regex) is the shared one (#100): this tier used
+        // to carry its own copy, which is how "the same chain" drifts. What stays
+        // local is the PROVIDER WIRING handed in below — the key travels via env
+        // only, never through a file.
+        const started = startInstance(PROFILE, dshHome, hasKey ? { DEEPSEEK_API_KEY: API_KEY } : {});
+        inst = started;
+        launchUrl = await started.ready;
 
         // Failure attribution comes BEFORE the cleanliness check, on purpose
         // (#101): when stderr is not empty, the first red must say whether it
@@ -353,11 +313,12 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
         // the attribution. Same three assertions in the same order as the packed
         // tier's boot ring (`e2e-tarball-machine` ring 4); the row list lives in
         // exactly one place, the shared helper.
-        const blamed = MY_ROWS.filter((row) => new RegExp(`\\b${row}\\b`, "u").test(instErr));
+        const stderr = started.stderr();
+        const blamed = MY_ROWS.filter((row) => new RegExp(`\\b${row}\\b`, "u").test(stderr));
         expect(blamed, "stderr never blames this bundle's loader rows").toEqual([]);
-        expect(instErr, "stderr never blames this bundle").not.toContain("dsh-shell-host");
-        expect(instErr.trim(), "instance stderr is clean at startup").toBe("");
-        port = Number(new URL(launch).port);
+        expect(stderr, "stderr never blames this bundle").not.toContain("dsh-shell-host");
+        expect(stderr.trim(), "instance stderr is clean at startup").toBe("");
+        port = portOf(launchUrl);
         expect(Number.isInteger(port) && port > 0, "instance bound a real port").toBe(true);
         // The launch URL carries its one-time auth token: report the port, not the token.
         return `http://127.0.0.1:${String(port)}`;
@@ -367,18 +328,17 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
       await ring("4 auth: the launch URL exchanges its token for a cookie", async () => {
         const url = launchUrl;
         if (url === undefined) throw new Error("no launch URL (ring 3 red above)");
-        const exchange = await fetch(url, { redirect: "manual" });
-        const setCookie = exchange.headers.get("set-cookie");
+        const exchange = await exchangeToken(url);
         expect(exchange.status, "token exchange redirects").toBe(303);
-        expect(setCookie, "exchange issues a cookie").toBeTruthy();
-        cookie = setCookie!.split(";", 1)[0]!;
-        return `303 → cookie on port ${String(port)}`;
+        expect(exchange.cookie, "exchange issues a cookie").toBeTruthy();
+        cookie = exchange.cookie;
+        return `303 → cookie on port ${String(exchange.port)}`;
       });
 
       // ── ring 5: session + model route ──────────────────────────────────────
       await ring("5 session+model: the credential-matched route is pinned", async () => {
         const auth = needAuth();
-        const created = await rpc(auth.port, auth.cookie, "session/create", { cwd: PLUGIN_DIR });
+        const created = await rpcValue(auth.port, auth.cookie, "session/create", { cwd: PLUGIN_DIR });
         expect(created?.sessionId, "real session created").toBeTruthy();
         const sid = String(created.sessionId);
         sessionId = sid;
@@ -430,7 +390,7 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
           expect(pick.provider, "account credentials select the account route, not the api-key route").toBe("deepseek-account");
         }
 
-        const selected = await rpc(auth.port, auth.cookie, "session/selectModel", {
+        const selected = await rpcValue(auth.port, auth.cookie, "session/selectModel", {
           sessionId: sid,
           provider: pick.provider,
           model: pick.model,
@@ -447,7 +407,7 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
         const chosen = selection;
         if (sid === undefined || chosen === undefined) throw new Error("no session/model selected (ring 5 red above)");
 
-        await rpc(auth.port, auth.cookie, "session/prompt", {
+        await rpcValue(auth.port, auth.cookie, "session/prompt", {
           requestId: `real-${Date.now()}`,
           sessionId: sid,
           mode: "queue",
@@ -508,7 +468,7 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
         expect(lastStats, "the session reports stats after the turn").toBeTruthy();
         expect(
           usage > 0,
-          `the REAL provider billed a round trip (usage=${String(usage)} route=${chosen.provider}/${chosen.model} lastUsed=${JSON.stringify(lastValues?.modelSelection?.lastUsed ?? null)} stats=${JSON.stringify(lastStats)} events=${types} stderr=${instErr.slice(-400) || "(empty)"})`,
+          `the REAL provider billed a round trip (usage=${String(usage)} route=${chosen.provider}/${chosen.model} lastUsed=${JSON.stringify(lastValues?.modelSelection?.lastUsed ?? null)} stats=${JSON.stringify(lastStats)} events=${types} stderr=${(inst?.stderr() ?? "").slice(-400) || "(empty)"})`,
         ).toBe(true);
         expect(String(lastTurn?.response ?? "").trim(), "the REAL model produced a response").not.toBe("");
 
@@ -533,11 +493,11 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
       // report whether it actually stopped: a hung child is a reading, not a hang.
       // Guarded like the removal below: a throw here would skip the `rm` and the
       // table — the very "no reading + leftover tree" shape #97 removes.
-      if (instance === undefined) {
+      if (inst === undefined) {
         note("Z cleanup: instance stopped — no instance was started");
       } else {
         try {
-          if (await stopChild(instance)) ok("Z cleanup: instance stopped", "SIGTERM → exit");
+          if (await stopChild(inst.child)) ok("Z cleanup: instance stopped", "SIGTERM → exit");
           else bad("Z cleanup: instance stopped", "ignored SIGTERM and SIGKILL within the budget");
         } catch (error) {
           bad("Z cleanup: instance stopped", error);

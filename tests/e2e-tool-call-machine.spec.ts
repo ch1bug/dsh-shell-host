@@ -25,19 +25,20 @@
  * never occupies the fixed dev ports (19387 desktop / 19501 neighbor / 19502
  * this workspace's resident instance).
  *
- * The chain plumbing itself (mock provider, instance boot, RPC envelope) is
- * shared with the packed tier and lives in `tests/helpers/e2e-chain.ts`.
+ * The chain plumbing itself (mock provider, instance boot, the typert RPC
+ * envelope, the launch-URL token exchange, the stop-with-verdict) is shared
+ * with the packed tier and the real-LLM tier, and lives in
+ * `tests/helpers/e2e-chain.ts` (#100).
  *
  * @module tests/e2e-tool-call-machine
  */
 
 import { describe, expect, it } from "vitest";
-import { request as httpRequest } from "node:http";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MY_ROWS, rpc, startInstance, startMockLlm } from "./helpers/e2e-chain.ts";
+import { MY_ROWS, exchangeToken, rpc, startInstance, startMockLlm, stopChild } from "./helpers/e2e-chain.ts";
 import {
   PLUGIN_DIR,
   installPlugin,
@@ -116,31 +117,30 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
     }
 
     try {
-      expect(inst.stderr(), "instance stderr is clean").toBe("");
-      // Failure attribution: whatever stderr says must never blame THIS repo's
-      // rows — that separates "harness/host missing something" from "our bug".
-      const blamed = MY_ROWS.filter((row) => new RegExp(`\\b${row}\\b`, "u").test(inst.stderr()));
+      // Failure attribution comes BEFORE the cleanliness check, on purpose
+      // (#100): when stderr is not empty, the first red must say whether it
+      // blames this bundle's loader rows — that is what separates an environment
+      // gap from our own bug (TESTING.md). Asserting emptiness first aborts on the
+      // bare fact and never reaches the attribution — the ordering this tier had
+      // backwards while both siblings were already right (#100). Same order as the
+      // packed tier (`e2e-tarball-machine` ring 4) and the real-LLM tier's boot ring.
+      const stderr = inst.stderr();
+      const blamed = MY_ROWS.filter((row) => new RegExp(`\\b${row}\\b`, "u").test(stderr));
       expect(blamed, "stderr never blames this bundle's loader rows").toEqual([]);
-      expect(inst.stderr(), "stderr never blames this bundle").not.toContain("dsh-shell-host");
+      expect(stderr, "stderr never blames this bundle").not.toContain("dsh-shell-host");
+      expect(stderr, "instance stderr is clean").toBe("");
 
-      const port = Number(/127\.0\.0\.1:(\d+)/u.exec(launchUrl)?.[1]);
+      // token → cookie (the browser-trust exchange) — the port comes from the same
+      // launch URL, because `--port 0` means it exists nowhere else.
+      const exchanged = await exchangeToken(launchUrl);
+      const port = exchanged.port;
       expect(Number.isInteger(port) && port > 0, "instance bound a real port").toBe(true);
-
-      // ── token → cookie (the browser-trust exchange) ─────────────────────
-      const parsed = new URL(launchUrl);
-      const exchange = await new Promise<{ status: number; setCookie?: string[] }>((resolve) => {
-        const req = httpRequest({ hostname: "127.0.0.1", port, path: `${parsed.pathname}${parsed.search}` }, (res) => {
-          resolve({ status: res.statusCode ?? 0, setCookie: res.headers["set-cookie"] });
-        });
-        req.on("error", () => { resolve({ status: 0 }); });
-        req.end();
-      });
-      const cookie = exchange.setCookie?.[0]?.split(";")[0];
-      expect(exchange.status, "launch URL exchanges the token").toBe(303);
+      expect(exchanged.status, "launch URL exchanges the token").toBe(303);
+      const cookie = exchanged.cookie;
       expect(cookie, "exchange issues an auth cookie").toBeTruthy();
 
       // ── session: a real Session on the real controller ──────────────────
-      const created = await rpc(port, cookie, "session/create", { request: { cwd: PLUGIN_DIR } });
+      const created = await rpc(port, cookie, "session/create", { cwd: PLUGIN_DIR });
       const createdValue = (JSON.parse(created.text) as any)?.result?.value;
       expect(createdValue?.sessionId, "session/create returns a sessionId").toBeTruthy();
       // agentPreset resolving proves the agentPresets service is live — the
@@ -150,12 +150,10 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
 
       // ── call: the model asks, the instance executes, the result comes back ─
       await rpc(port, cookie, "session/prompt", {
-        request: {
-          requestId: `e2e-${Date.now()}`,
-          sessionId: createdValue.sessionId,
-          mode: "queue",
-          content: [{ type: "text", text: "Call the pty_open tool once." }],
-        },
+        requestId: `e2e-${Date.now()}`,
+        sessionId: createdValue.sessionId,
+        mode: "queue",
+        content: [{ type: "text", text: "Call the pty_open tool once." }],
       });
 
       const deadline = Date.now() + 90_000;
@@ -184,13 +182,11 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
       // A real PTY really ran the command: the value carries a live session id.
       expect(raw, "the tool result carries the PTY session it opened").toContain("sessionId");
     } finally {
-      // Waiting for exit is required: killing while the agent loop is live
-      // leaves libuv teardown noise (and ECONNRESET) in the report.
-      const exited = new Promise<void>((resolve) => { inst.child.once("exit", () => { resolve(); }); });
-      inst.child.kill("SIGTERM");
-      const forced = setTimeout(() => { inst.child.kill("SIGKILL"); }, 10_000);
-      await exited;
-      clearTimeout(forced);
+      // Stop the instance BEFORE closing the mock and removing the tree, and wait
+      // for it to exit: killing while the agent loop is live leaves libuv teardown
+      // noise (and ECONNRESET) in the report. Shared with both sibling tiers — the
+      // "kill, then wait" dance had a second copy here (#100).
+      await stopChild(inst.child);
       await mock.close();
       await rm(root, { recursive: true, force: true });
     }

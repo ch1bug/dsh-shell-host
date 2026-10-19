@@ -286,11 +286,14 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
    不能取 `captured[0]` —— 取错会把标题请求当第 1 轮（假红）。
 3. **kill 实例后必须等子进程退出**（`SIGTERM` → await exit → `SIGKILL` 兜底），
    否则 libuv 断言噪音 + ECONNRESET 污染输出。预期 ECONNRESET 应静音。
+   这套「kill 后等退出 + 预算判词（忽略 SIGTERM **和** SIGKILL 也要返回读数，不挂死）」
+   **只写一份**：`stopChild()`（`e2e-chain.ts`），三个套件都用它（`#100` 起不要再在 spec 里写一遍）。
 4. **`pty_open` 必填 `command`**（在 PTY 上 spawn 的命令）；**`shell_open` 必填 `preset`**
    （launcher preset id）。混淆会得到 `missing required property "command"`
    —— 这是**测试传错参**，不是插件缺陷。
 5. **无参 RPC 方法建议自动纠正参数名**（先 `{}` 再 `_request`），别把信封琐事
-   变成用例失败。
+   变成用例失败。挂具里已实现为 `rpcZeroArg()`（`e2e-chain.ts`）：只把
+   `arguments-invalid` 当「形态不对」继续试下一个，其余错误立刻抛。
 6. **构建期限制**（tsdown 路径双拼、rolldown 需 Windows node）见
    [#80](https://github.com/ch1bug/dsh-shell-host/issues/80) /
    [#81](https://github.com/ch1bug/dsh-shell-host/issues/81) 与
@@ -339,10 +342,17 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 
 三个 e2e 套件都在 **machine 车道**（串行，`fileParallelism` off），隔离用临时
 `DSH_HOME`（`os.tmpdir`）+ `--port 0`，**不占任何固定端口**（19387 / 19501 / 19502）。
-两个 mock 层套件共用同一份链挂具（mock provider / 实例启动与收尾 / RPC 信封，见
-`tests/helpers/e2e-chain.ts`）；安装与环境门禁在 `tests/helpers/e2e-install.ts`
-（装箱交付档多两件：`packTarball()` / `tarballFiles()`）。真实层是另一条
-（自有供应商路由与凭据形态），只共用收尾挂具 `stopChild()`（#97）。
+三个 e2e 套件共用**同一份链挂具** `tests/helpers/e2e-chain.ts`（`#89` 抽出机制、
+`#100` 收全，此前真实层只共用 `MY_ROWS` 与 `stopChild()`）：mock provider、实例启动
+`startInstance()` 与收尾 `stopChild()`、launch URL 的 token→cookie 交换
+`exchangeToken()`、端口 `portOf()`，以及 typert RPC 信封。信封**只有一种写法**
+（模块内的 `envelope()`），**两个明确命名的读法**：`rpc()` 返回原始
+`{status, text}` 且**不抛**（mock 层要把响应字节交给断言，传输失败要以读数形态出现）；
+`rpcValue()` **抛错并解包 `result.value`**（真实层要拿值，失败必须带宿主原文）；
+无参方法用 `rpcZeroArg()` 自动纠正 `none` / `named`。**真实层共用机制、不共用断言**：
+供应商路由、凭据形态与模型路由断言是它自己的领域事实，留在它自己的档里。
+安装与环境门禁在 `tests/helpers/e2e-install.ts`
+（装箱交付档多两件：`packTarball()` / `tarballFiles()`）。
 
 可选 env：`DSH_E2E_PLUGIN_DIR` / `DSH_E2E_HOST_DIR` / `DSH_E2E_NODE` /
 `DSH_E2E_PNPM_DIR`（三套件），

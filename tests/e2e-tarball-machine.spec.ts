@@ -58,12 +58,11 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { request as httpRequest } from "node:http";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { MY_ROWS, rpc, startInstance, startMockLlm, stopChild } from "./helpers/e2e-chain.ts";
+import { MY_ROWS, exchangeToken, portOf, rpc, startInstance, startMockLlm, stopChild } from "./helpers/e2e-chain.ts";
 import {
   PLUGIN_DIR,
   installSpec,
@@ -215,7 +214,7 @@ describe.skipIf(absent.length > 0)("e2e: pack → install from tarball → confi
               expect(instance.stderr(), "stderr never blames this bundle").not.toContain("dsh-shell-host");
               expect(instance.stderr(), "instance stderr is clean").toBe("");
 
-              port = Number(/127\.0\.0\.1:(\d+)/u.exec(launchUrl)?.[1]);
+              port = portOf(launchUrl);
               expect(Number.isInteger(port) && port > 0, "instance bound a real port").toBe(true);
               return launchUrl;
             });
@@ -231,23 +230,16 @@ describe.skipIf(absent.length > 0)("e2e: pack → install from tarball → confi
                 if (llm === undefined) throw new Error("no mock provider (ring 4 red above)");
 
                 // token → cookie (the browser-trust exchange)
-                const parsed = new URL(url);
-                const exchange = await new Promise<{ status: number; setCookie?: string[] }>((resolve) => {
-                  const req = httpRequest({ hostname: "127.0.0.1", port, path: `${parsed.pathname}${parsed.search}` }, (res) => {
-                    resolve({ status: res.statusCode ?? 0, setCookie: res.headers["set-cookie"] });
-                  });
-                  req.on("error", () => { resolve({ status: 0 }); });
-                  req.end();
-                });
-                const cookie = exchange.setCookie?.[0]?.split(";")[0];
-                expect(exchange.status, "launch URL exchanges the token").toBe(303);
+                const exchanged = await exchangeToken(url);
+                expect(exchanged.status, "launch URL exchanges the token").toBe(303);
+                const cookie = exchanged.cookie;
                 expect(cookie, "exchange issues an auth cookie").toBeTruthy();
 
                 // The session cwd is the temp root, NOT the checkout: with the
                 // checkout as cwd, Node's own self-reference could resolve
                 // `dsh-shell-host/*` from the source tree and make a broken profile
                 // install look green.
-                const created = await rpc(port, cookie, "session/create", { request: { cwd: root } });
+                const created = await rpc(port, cookie, "session/create", { cwd: root });
                 const createdValue = (JSON.parse(created.text) as any)?.result?.value;
                 expect(createdValue?.sessionId, "session/create returns a sessionId").toBeTruthy();
                 // agentPreset resolving proves the agentPresets service is live —
@@ -256,12 +248,10 @@ describe.skipIf(absent.length > 0)("e2e: pack → install from tarball → confi
                 expect(createdValue?.agentPreset, "session resolves an agent preset").toBeTruthy();
 
                 await rpc(port, cookie, "session/prompt", {
-                  request: {
-                    requestId: `e2e-${Date.now()}`,
-                    sessionId: createdValue.sessionId,
-                    mode: "queue",
-                    content: [{ type: "text", text: "Call the pty_open tool once." }],
-                  },
+                  requestId: `e2e-${Date.now()}`,
+                  sessionId: createdValue.sessionId,
+                  mode: "queue",
+                  content: [{ type: "text", text: "Call the pty_open tool once." }],
                 });
 
                 const deadline = Date.now() + 90_000;
