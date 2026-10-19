@@ -514,6 +514,18 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
   的日志 **ESC 字节 = 0**（stdout 不是 TTY，vitest 自动不打色）——要抓**真实带色**输出，
   只能在 PTY 控制台里跑并把控制台字节读出来（`.scratch/t122-colored-vitest-raw.log` 即此来源）。
   别用重定向伪造"带色环境"的读数。
+- **`.bat` 证据模板：日志名必填、先 `del`、退出码用括号形式重定向**（批 E 聚合 E6/E9，
+  `#103`/`#100` 实测）：
+  - **`echo exit=%RC%> file` 会被 cmd 当成句柄重定向**：RC=0 时该行解析成 `echo exit=` + `0>`
+    ⇒ **证据文件被建成 0 字节、`exit=` 打在 stdout** —— 与"没跑"不可区分（同 A9「空日志 ≠ 没跑」）。
+    正确写法：`(echo exit=%RC%)> file` 或前置重定向 `> file echo exit=%RC%`。
+  - **模板形状**：`<name>.bat` 第一行取 `%1` 当**日志名**（先 `del` 旧 `.log`/`.exit` 再写，
+    跑完 `type` 出 `.exit`）—— 复跑同名会**覆盖红步读数**（`#103` 的红步因此只剩文档里抄的异常原文）。
+  - **交接文档点名的模板名要先核存在**：`#100` 照抄一个不存在的 bat 名，cmd 直接报
+    「不是内部或外部命令」；自建同形状模板后才跑通。
+  - **`pwsh` 工具里没有 POSIX 工具**：`grep` / `sed` / `find` 都不可用（报"术语…不会被识别"）。
+    搜内容用 harness 的 grep 工具、或走 msys bash；`.bat` 里也别用 grep（cmd 的 `findstr`
+    语义不同，`#103` 实测踩过一次 `exit 1`）。
 - **判断后台套件在不在跑，看日志文件的 size/mtime**：沙箱下 `tasklist` / `Get-Process node`
   返回 Access denied。
 - **PTY 会话不跨轮存活**（下一个 tool call 里即报 `no pty session … for this agent`）：
