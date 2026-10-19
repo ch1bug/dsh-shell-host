@@ -204,12 +204,15 @@ if ! (cd "$COPY" && node --run typecheck) >"$typeslog" 2>&1; then
   fail "typecheck 未通过（副本 $copy_short）"
 fi
 
-# 逐档读数走 **json reporter → 临时文件 → 小段 node 解析**。为什么不靠控制台行：
-#   - 默认 reporter 只在 **TTY** 下打逐档行，本脚本重定向后只剩汇总两行（实测）；
-#   - `--reporter=verbose` 会把**逐用例**行也打出来（300+ 行）；
-#   - `--reporter=tree` 有逐档行但同样拖出全部用例；
-#   - vitest 4 已没有旧版的 `basic`（实测：`Failed to load custom Reporter from basic`）。
-# 读 JSON 是确定口径：每个 spec 文件一条，带 status 与用例计数。
+# 读数走**双 reporter**（两个一起给，缺一不可）：
+#   - `--reporter=json --outputFile=…` → 逐档表（每个 spec 一条：status + 用例计数 + 耗时）。
+#     为什么不解析控制台行来出表：`--reporter=verbose` / `tree` 会把**逐用例**行也打出来
+#     （300+ 行），vitest 4 又已没有旧版的 `basic`（实测：`Failed to load custom Reporter from basic`）。
+#   - `--reporter=default` → **控制台输出**（`!! SKIP (loud)` 行、三档 e2e 环表、红档诊断原文）。
+#     缺了它，下面读 `$log` 的那几个读数（loud / loud_by_file / rings）**结构性恒空** ——
+#     json reporter 不记 console（`#133`）。机制 / 取舍 / 代价的单一来源：docs/dev-environment.md §0.1.1。
+#     （汇总两行**不走**它：msys 下 reporter 会给那两行上 ANSI 色码，`^ *Test Files` 锚不到 ⇒
+#     照旧由下面的 JSON 兜底给出稳定的同形汇总。）
 JSON_OUT="dsh-lane-results.json"
 if [ -n "$LANE" ]; then
   runner=(node node_modules/vitest/vitest.mjs run --project "$LANE")
@@ -218,7 +221,7 @@ else
   runner=(node node_modules/vitest/vitest.mjs run)
   [ "$NO_LIVE" = 1 ] && runner+=(--exclude "$LIVE_SPEC")
 fi
-(cd "$COPY" && rm -f "$JSON_OUT" && "${runner[@]}" --reporter=json --outputFile="$JSON_OUT") >"$log" 2>&1
+(cd "$COPY" && rm -f "$JSON_OUT" && "${runner[@]}" --reporter=json --reporter=default --outputFile="$JSON_OUT") >"$log" 2>&1
 rc=$?
 trap 'rm -f "$log" "$typeslog" "$buildlog"; [ -n "${COPY:-}" ] && rm -f "$COPY/$JSON_OUT"' EXIT
 
@@ -262,13 +265,26 @@ else
 fi
 rings=$(grep -E "^ *(✓|×|–) [0-9]" "$log" || true)
 [ -n "$rings" ] && printf '%s\n' "$rings" | sed 's/^/  /'
+# loud 计数读 `$log` 的**控制台**：这些行只有 `--reporter=default` 会写进来（json reporter 不记
+# console，#133）⇒ 上面 runner 少了 default 时本读数会静默退回 0。`tests/msys-lane.spec.ts`
+# 的契约 4 钉住了这条耦合（变异验证：删掉 default ⇒ 守卫红）。
 loud=$(grep -c "!! SKIP (loud)" "$log" || true)
+# 逐档归因（#133，票面「影响」要的就是"哪一档"）：default reporter 把每条 console 输出打在
+# `stderr | <spec> > <用例>` 头行之后 ⇒ 记住最近一次头行里的 spec，再数 loud 行。
+# 只锚「`| ` + 路径」这一段：msys 下色码会夹在路径与 `>` 之间（实测 `.ts\e[2m > `），
+# 锚字面 ` >` 或行首都会假空；而 `$log` 里只有 console 头行带 `| tests/…spec.ts` 这个形状。
+loud_by_file=$(awk '
+  { if (match($0, /\| tests\/[^ ]+\.spec\.ts/)) { s = substr($0, RSTART, RLENGTH); sub(/^\| /, "", s); f = s } }
+  /!! SKIP \(loud\)/ { if (f != "") c[f]++; else c["(未归因)"]++ }
+  END { for (k in c) printf "%s ×%d\n", k, c[k] }
+' "$log" 2>/dev/null | sort || true)
 guard=$(grep -E "privacy-scan: (干净|命中)" "$log" | tail -1 || true)
 files_line=$(grep -E "^ *Test Files" "$log" | tail -1 | sed 's/^ *//' || true)
 tests_line=$(grep -E "^ *Tests " "$log" | tail -1 | sed 's/^ *//' || true)
-# json reporter 下控制台没有 `Test Files` / `Tests` 两行（那是默认 reporter 的），故从 json 自己拼
-# 一份同形汇总。**注意 `numTotalTestSuites` 数是 suite 不是文件**（实测 22 个文件报成 96），
-# 文件级计数只能从 `testResults` 数。
+# 兜底：msys 下 reporter 会给汇总两行上 **ANSI 色码**（行首是 `\e[2m`，不是空格 —— 实测），
+# 故上面那两条 `^ *…` 锚不到、永远走这个 JSON 版。它也是本脚本的**稳定口径**（与颜色无关）。
+# **注意 `numTotalTestSuites` 数是 suite 不是文件**（实测 22 个文件报成 96），文件级计数只能从
+# `testResults` 数。
 if [ -z "$files_line" ] && [ -f "$JSON_OUT_PATH" ]; then
   summary_lines=$(node -e '
     const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
@@ -290,16 +306,23 @@ fi
 [ -f "$JSON_OUT_PATH" ] && rm -f "$JSON_OUT_PATH"
 echo "  ---"
 echo "  typecheck=ok（副本 $copy_short）  ·  loud skip 行数：$loud"
+# 逐档归因：只列**确实打了 loud** 的档（票面「影响」要的就是"哪一档"，不是只有总数）。
+[ -n "$loud_by_file" ] && printf '%s\n' "$loud_by_file" | sed 's/^/  含 loud 的档：/'
 [ -n "$files_line" ] && echo "  $files_line"
 [ -n "$tests_line" ] && echo "  $tests_line"
 [ -n "$guard" ] && echo "  $guard"
-echo "  注：直调 vitest，故没有 verify-all 的 PASS* 计数（含 loud skip 的档看上面行尾 skipped / loud 行数）"
+echo "  注：直调 vitest，故没有 verify-all 的 PASS* 计数；含 loud skip 的档看上面 loud 行数 + 逐档归因"
+echo "      （口径 = 本次控制台打出的 \`!! SKIP (loud)\` 行数，跨车道合计；行尾 \`| N skipped\` 是"
+echo "       vitest 级跳过，**与 loud 不是一回事** —— loud 是用例仍 passed、只放弃了环境侧断言）"
 echo "  exit=$rc"
 if [ "$rc" != 0 ]; then
   echo ""
   echo "--- 红档原文（末 40 行）---"
+  # 隐私提醒：这一步把**控制台**原文打出来（#133 之后才有控制台可打），而 e2e 的打点里含
+  # 一次性引导 URL（token）与本机绝对路径 —— 贴进 issue / 聊天前先脱敏（docs/agents/privacy.md）。
+  echo "  （提醒：以下原文含控制台输出，可能有一次性 token / 本机绝对路径 —— 外贴前先脱敏）"
   tail -40 "$log" | sed 's/^/  /'
   fail "套件红（exit $rc）—— 完整输出见上面末 40 行"
 fi
-step "全绿 ✅（读数口径见上；验收依据 docs/agents/TESTING.md，machine 档含 loud skip 时看 skipped 数与 loud 行数）"
+step "全绿 ✅（读数口径见上；验收依据 docs/agents/TESTING.md，含 loud skip 的档看逐档归因与 loud 行数）"
 exit 0

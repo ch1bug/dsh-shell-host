@@ -182,6 +182,25 @@ bash <repo>/scripts/msys-lane.sh --no-sync        # 只验当前副本提交，�
 - 同步后**重建副本 `lib/`**（`node --run build`，实测 ≈2s）：`lib/` 被 gitignore，同步只搬源码 ——
   不重建就是「新 spec + 旧构件」的**空心绿**（三档 e2e 安装/打包的正是它）；
 - 读数汇总**绿红都收**：逐文件行、`!! SKIP (loud)` 行数、隐私扫描读数、退出码；红时把末 40 行原文打出来。
+  - **`loud` 行数的口径**（`#133` 修正）：= 本次运行**控制台**打出的 `!! SKIP (loud)` 行数（跨车道合计），
+    外加一行**逐档归因**（`含 loud 的档：tests/x.spec.ts ×N`）—— 票面「影响」要的正是"哪一档跑得不全"。
+    归因靠 reporter 的 `stderr | <spec> > <用例>` 头行，**不锚行首**（msys 下会带 ANSI 色码）。
+    这些行只有 `--reporter=default` 会写进日志 —— vitest 4 的 **json 报告不记 console**
+    （`testResults[]` 只有 `assertionResults` / `startTime` / `endTime` / `status` / `message` / `name`），
+    所以跑套件那行**必须同时给** `--reporter=json`（逐档表）与 `--reporter=default`（控制台）。
+    `#133` 之前只给 json ⇒ 该读数**结构性恒 0**，`PASS*`（"跑过但部分断言没验"）在 msys 面哑火 ——
+    **历史车道读数里的 `loud skip 行数：0` 不可当基线**（那是缺陷，不是"没有 loud skip"）。
+    形状守卫：`tests/msys-lane.spec.ts` 契约 4（变异：删掉 `--reporter=default` ⇒ 守卫红）。
+    - **汇总两行仍走 JSON**（不是 reporter）：msys 下 reporter 会给 `Test Files` / `Tests` 上 ANSI 色码，
+      行首是 `\e[2m` 而不是空格 ⇒ `^ *Test Files` 锚不到。JSON 版与颜色无关，是本脚本的稳定口径。
+    - **同一份控制台还喂 `rings`**（三档 e2e 的环表 `✓ 1 pack …`）：修复前同样恒空，`#133` 一并变成
+      真读数（实测：同一副本 `c0a573c` 上，旧脚本 0 行 → 新脚本 5 行）。
+    - **代价（隐私面）**：控制台原文含 e2e 的一次性引导 URL（`?token=…`，随实例销毁）与本机绝对路径；
+      车道只在**红时**打末 40 行，脚本已在该节印一行脱敏提醒 —— 外贴日志（issue / 聊天）前按
+      [agents/privacy.md](agents/privacy.md) 脱敏。
+    - 反例（**不属此类**）：`guard`（`privacy-scan: 干净|命中`）**目前取不到值** —— 那读数由
+      `tests/script-entry.spec.ts` 用子进程捕获后**断言**，从不落控制台；给不给 default reporter 都一样。
+      该行是"永远不出现的读数"，已在队列外记录、待立票处置（别把它当已验证）。
 
 ⚠️ **`amend` 过提交之后，副本必须先 `reset --hard` 才能同步**（批 D 聚合 A8，`#126` D0b 实测）：
 车道同步用的是 `merge --ff-only`，而 `--amend` **重写了历史** ⇒ 副本里那个旧提交不再是新提交的祖先
