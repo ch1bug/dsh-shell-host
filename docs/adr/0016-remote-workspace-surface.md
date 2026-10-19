@@ -210,6 +210,28 @@ have made the eventual upstream migration a rewrite instead of a swap.
 - Live layer: one `DSH_SSH_LIVE_HOST` gate (reusing the existing env), running
   "open workspace → ls → read → atomic write → close"; no gate ⇒ `!! SKIP (loud)`.
 
+## 参考实现与可抄点（2026-10-19 调研）
+
+三个实现被逐一读过（一手代码 / 文档）：
+
+| 实现 | 形状 | 裁决 |
+|---|---|---|
+| VS Code Remote-SSH | 远端装 VS Code Server；**文件在远端就地读写**；客户端只经一条 SSH 隧道；明确**不用 SFTP**（要让本地工具碰远端文件时建议 sshfs/rsync，并承认更慢） | 采纳"远端就地执行"的结论（决策 2）；**不采纳**"远端 server"（决策 3/4） |
+| ZCode（`zai-org/ZCode`，Apache-2.0） | `ssh2` 库 + **远端部署 runtime**（manifest + SHA-256 + CDN 双模式 + 部署锁 + node-pty 预编译），agent 在远端跑 | **不采纳**（与零安装冲突）；下列五点照抄 |
+| `@linxin666/dsh-ssh`（dsh-web） | `ssh2` 池化长连接 + `exec`（stderr 分离）+ **SFTP 传输** + 隧道 + 集群 + GUI | **正交分工**（Q7）；不重复其传输 / GUI |
+
+照抄的五点（实现约束，票面逐条落）：
+
+1. **exec 一律包 `/bin/sh`** —— 远端默认 shell 是 fish/zsh 时 POSIX 语法会翻车；我们的单条远程命令必须显式 `sh -c`。
+2. **`exit` 只记码、`close` 才收尾** —— 帧化 stdio 上等价存在：EOF 与尾部数据的先后必须处理对。
+3. **传输要有"降级形态"的意识** —— 网关 / 跳板机下 exec 与 SFTP 可能落在不同文件系统视图；我们用单一 exec 通道 + base64，这本身就是那个降级形态，文档要写明是有意选择。
+4. **断连补偿事件** —— 底层 `error` / `close` / `end` 与业务流 close 不是同一条链，必须有断连事件 + `remote_status`，否则半开会话不会被回收。
+5. **握手带协议版本 + clientId** —— 版本不配就响亮拒绝，别让新旧帧格式互相误读。
+
+**活体验证用 Docker sshd 挂具**（`#141` 的方向）：起一个容器 sshd（固定密钥、非 22 端口）、
+等就绪、用完即收，把"开工作区 → ls → read → 原子写 → 关闭"变成**本机可复跑读数**，不再依赖
+一台真实主机；没有 Docker 时仍响亮跳过（`DSH_SSH_LIVE_HOST` 保留为真实主机通道）。
+
 ## 修订（2026-10-19，与 dsh-web 的 `dsh-ssh` 分工：Q7=A）
 
 调研 `zhu1090093659/dsh-web` 的 `packages/dsh-ssh`（npm `@linxin666/dsh-ssh`）后拍板
