@@ -42,6 +42,24 @@ shell（PowerShell 尤甚）的 here-string 会把**反引号当转义符**：``
 实测（2026-10-16）：一条 `#83` 跟进评论经 here-string 写入，`tests/verify-all.spec.ts` 掉了
 首字母，靠回读才发现（`gh issue comment --edit-last` 修正）。
 
+**同一次回读里顺带核标签**（`#125` 会话实测的教训）：`gh issue create --label X` 若只给了一个标签，
+票就**缺 category 或 state**，从此在**任何**按 state 查的面上不可见
+（`gh issue list --label needs-triage`、`scripts/frontier.mjs` 的 ready 面都看不到它），
+直到人工翻全量列表才发现。实测：一次会话里连建 4 张票，**4 张全漏 state 标签**。
+
+⇒ 回读时一并确认**恰一个 category**（`bug` / `enhancement`）**且恰一个 state**
+（五个角色之一）。缺了就补齐：
+
+```bash
+gh issue view <n> --json labels --jq '[.labels[].name]'   # 回读：核恰一个 category + 恰一个 state
+gh issue edit <n> --add-label <缺的那个>
+```
+
+无需机械守卫：本仓**无 CI**（ADR-0014）且 `node --run test` 是**离线**套件，
+联网查 GitHub 会破坏离线性（`gh` 未登录时只能响亮跳过，等于没守卫）。
+实测 2026-10-18：**全部 OPEN 票都齐备**，缺口只在已关闭的早期归档票里 —
+故这条**回读核对**就是够用的闸。
+
 ### Labels are part of filing, not a later step
 
 `gh issue create` writes **no labels**. An issue filed without them enters the
