@@ -60,6 +60,15 @@
  *    根文档 + `vitest.config.ts`）；**模式/占位符形态**（`<base>.spec.ts` / `*.spec.ts` /
  *    `xxx.spec.ts`）出豁免面，否则文档里写"新脚本请配对 `xxx.spec.ts`"会**假红**。
  *
+ * 7. **`docs/**\/*.md` 的代码围栏必须配对**（`#126` 的扩展，见 `unclosedFencesOf` 头注）：奇数个围栏
+ *    会把其后的正文**整段吞进代码块**（渲染错乱），而 `node --run test` 全绿 —— 这类缺陷
+ *    在 #108 文档审计里被观测到过。判据是**CommonMark 围栏状态机**，不是数 ` ``` ` 出现次数
+ *    （嵌套反例见 `unclosedFencesOf` 头注）。**扫描面 = `docs` 下全部 `.md`（含 `adr/`）**，
+ *    与第 4/5/6 条的 `docs`（除 `adr/`）**不同** —— 取票面 `#126` 的 `docs/**` 字面
+ *    （human 2026-10-18 拍板），理由与代价见 `unclosedFencesOf` 头注「扫描面的取舍」。
+ *    本判据与第 4 条**共用 `blocksOf` 文本块面**（`#126` AC4），故照样受 `[History: …]`
+ *    的**整行豁免**约束 —— 那意味着行级豁免在这里的语义是"该行免受围栏配对判定"。
+ *
  * ⚠️ **AC1 与 AC2 的结构性分歧**（`#93` 实测 + 两轴复核，human 2026-10-18 拍"写清楚"）：
  * 票面 AC2 要求给 `GLOSSARY.md:12` 加 `[History: …]`，而票面 AC1 点名的标本
  * （`<old-work>\deepseek-harness`）**正落在那一行上**。豁免粒度是**整行**
@@ -487,6 +496,137 @@ export function bareSpecRefsIn(blocks: string[]): string[] {
   return blocks.flatMap((block) =>
     [...block.matchAll(BARE_SPEC_REF)].map((m) => m[1]).filter((name) => !isSpecPlaceholder(name)),
   );
+}
+
+/**
+ * **代码围栏配对**检查（`#126`）：`docs/**\/*.md` 里的行，是否把围栏开闭配平。
+ *
+ * ## 为什么不能数偶数（票面 `#112` 的警告，本判据的立身之本）
+ *
+ * ````markdown
+ * ```ts
+ * code
+ * ```
+ * ````
+ *
+ * 上面这段在 CommonMark 下是**一个**围栏块（外层四个反引号包住内层三个）——
+ * 单纯统计 ` ``` ` 出现次数会把**三个**反引号行都数成"围栏"（4 行里 4 个），
+ * 于是"嵌套"被误判成不平衡，或（凑巧偶数时）把真不平衡**误判成绿**。
+ * 本文件用 `unclosedFencesOf` 实测过这条：naive 计数对嵌套反例给出"balanced"是**碰巧**，
+ * 对 `["````", "```", "````"]`（闭栏短于开栏、**不算闭栏**）给出"unbalanced"才是洞。
+ * ⇒ 故本票实现**状态机**，不数个数。
+ *
+ * ## 状态机（票面四条的逐条落地）
+ *
+ * 1. **开栏**：行首缩进 ≤3 空格 + 连续 **≥3** 个 `` ` `` 或 `~`；
+ * 2. **闭栏**：**同**字符、长度 **≥ 开栏**、且行内**除空白外无其他内容**（info string
+ *    只出现在开栏行）；
+ * 3. **围栏内的行不再解析** —— 嵌套由此天然成立（外层开栏后，内层的 ` ``` ` 因**短于**
+ *    开栏而不满足闭栏条件，被当普通内容跳过）；
+ * 4. **info string 只出现在开栏行**（闭栏带了内容就不是闭栏）。
+ *
+ * ## 三条 CommonMark 细节（都实测锁在合成用例里）
+ *
+ * - **反引号开栏的 info string 里不能有反引号**：``` ```a`b ``` 不是合法开栏
+ *   （CommonMark 规定 backtick 围栏的 info string 不得含反引号）。少了这条，
+ *   行内代码的反引号会**误开栏**，把其后正文吞掉 ⇒ 假红。波浪号围栏无此限制。
+ * - **闭栏允许尾随空白**（` ```   ` 是闭栏），但**不允许**尾随其他字符。
+ * - **闭栏的缩进上限是 3 空格，且不必与开栏的缩进匹配** —— ⚠️ 这条被本票的 Spec 轴
+ *   复核**质疑过**（主张"应允许任意缩进"），我按 **commonmark-spec 一手原文**裁定为
+ *   **实现正确、质疑不成立**：规格 §"Fenced code blocks" 明写
+ *   「The closing code fence may be preceded by **up to three spaces** of indentation」
+ *   并配参考例「their indentation **need not match** that of the opening fence」
+ *   （0 缩进开栏 + **2 空格**闭栏 ⇒ 规格输出是**已闭合**）。
+ *   ⇒ 闭栏正则**必须有**与开栏同口径的 `( {0,3})` 组。裁定过程与两种规则的对照读数
+ *   留在 `.scratch/t126-adjudicate.mjs` / `.scratch/t126-adjudicate.log`。
+ *   （复核引的规格例「Four spaces of indentation is too many」讲的是**开栏** 4 空格
+ *   ⇒ 缩进代码块，**不**为"闭栏能否 4 空格"提供依据。）
+ *
+ * ## 扫描面的取舍（human 2026-10-18 拍板：含 `adr/`）
+ *
+ * 票面 `#126` 写的是 **`docs/**\/*.md` 每个文件**，**字面含 `docs/adr/`** ——
+ * 而本文件第 4/5/6 条断言的 `docs` 面**排除 `adr/`**（"决定记录，按惯例不回头改"）。
+ * 两条路径都问过 human：**取票面字面（含 adr）**。
+ * - **代价（显式留档）**：日后 `adr/` 里出现围栏不平衡会判红，而该目录的惯例是
+ *   "不回头改" —— 两者取向相反。取舍依据：围栏不平衡**破坏渲染**（读者看到的是
+ *   被吞掉的正文），这与"改不改历史决定的**内容**"是两回事；且实测本仓 26 档
+ *   （含 14 档 adr）**全部平衡**，故此刻不产生任何红。
+ * - **与 `#112` 的关系**：`#126` AC4 要求"与 `#112` 的链接判据**共用 `blocksOf`
+ *   文本块面**"—— 这条已照办（本函数只吃 `blocksOf` 的产物，不另起扫描）。
+ *   但 `blocksOf` 的**行级豁免**（`[History: …]` 整行移出扫描面）在这里的语义是
+ *   "**该行免受围栏配对判定**"—— 与第 4 条断言的"该行不受链接存在性判定"同族。
+ *
+ * ## 返回什么
+ *
+ * 返回**未闭合的开栏行号**（1-based）列表 —— 每个不平衡的档至少一条。
+ * 空数组 = 该档配平。**只报未闭合的**，不报"多余的闭栏"：状态机里没有开栏时，
+ * 一个围栏行必然是**开栏**（不是"多余闭栏"），所以"多出来的闭栏"这一形态在
+ * CommonMark 语义下**根本不存在** —— 报它只会是假红。
+ *
+ * @param lines 参与扫描的文本块（与 `blocksOf` 同源；`.md` 已逐行过滤掉豁免行）
+ */
+export function unclosedFencesOf(lines: string[]): number[] {
+  let open: { char: string; len: number; line: number } | null = null;
+  const unclosed: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (open === null) {
+      const m = /^( {0,3})(`{3,}|~{3,})(.*)$/u.exec(line);
+      // 反引号开栏的 info string 不得含反引号（CommonMark）——否则行内代码会误开栏。
+      if (m !== null && !(m[2][0] === "`" && m[3].includes("`"))) {
+        open = { char: m[2][0], len: m[2].length, line: i + 1 };
+      }
+      continue;
+    }
+    // 闭栏：同字符、长度 ≥ 开栏、行内除空白外无他物。
+    const closer = new RegExp(
+      "^( {0,3})(" + (open.char === "`" ? "`" : "~") + "{" + open.len + ",})[ \\t]*$",
+      "u",
+    );
+    if (closer.test(line)) open = null;
+  }
+  if (open !== null) unclosed.push(open.line);
+  return unclosed;
+}
+
+/**
+ * 某档文档的**围栏配对**结果（`#126`）：返回未闭合的开栏行号列表。
+ *
+ * 与第 4/5/6 条断言**共用 `blocksOf`**（AC4）——不再另起一套读文件 / 豁免基础设施。
+ * ⚠️ 这里显式**不**用 `blocksOfLine`：那个函数是"对任意一段合成文本套用同一套行级豁免"
+ * 的合成用例入口，与 `blocksOf(rel)` 走的是同一条 `HISTORICAL` 过滤式；合成用例要
+ * 直接喂内存文本，故走 `blocksOfLine`，活体档走 `blocksOf`。
+ *
+ * ## ⚠️ 行尾归一化（`#126` 的**真实缺陷**，由 pre-push 的 msys 车道暴露）
+ *
+ * `blocksOf` 走 `text.split("\n")`，故 **CRLF 档的每行都带一个尾随 `\r`**，而两个判据的
+ * 收尾字符类**都不收 `\r`**：
+ * - **开栏**判据以 `(.*)$` 收尾 —— JS 的 `$`（无 `m` 标志）匹配的是**串尾**，
+ *   而该行以 `\r` 结尾 ⇒ `(.*)` 到不了串尾之后 ⇒ `` ```bash\r `` **匹配不上**；
+ * - **闭栏**判据以 `[ \t]*$` 收尾 —— 同样**收不下 `\r`** ⇒ `` ```\r `` **匹配不上**。
+ *
+ * 实测（`.scratch/t126-crlf2.log`，三行 CRLF 档 `["```bash","echo hi","```"]`）：
+ * ```
+ * 行1 "```bash\r"  opener=false  closer=false
+ * 行2 "echo hi\r"  opener=false  closer=false
+ * 行3 "```"        opener=true   closer=true    <- 末行**没有** `\r`（split 的必然结果）
+ * ```
+ * ⇒ 第 1 行的开栏**没被认出来**，而**末行**（唯一不带 `\r` 的行）被当成开栏 ⇒
+ * 状态机报"**第 3 行**未闭合"——**完全虚假的红**。
+ *
+ * 同一份 `docs/research/research-official-terminal-ralph-bundles.md`（权威树 LF / msys 副本 CRLF）：
+ * - 按 CRLF 原样读 ⇒ `[395]`（**假红**，正是 msys 车道报的那条）；
+ * - 归一化后读 ⇒ `[]`（正确）。证据：`.scratch/t126-crlf.mjs` → `.scratch/t126-crlf.log`。
+ *
+ * ⇒ 故这里**先归一化行尾**再交给状态机。这不是"为了过测试而打的补丁"：
+ * 判据的对象是**文档的语义**（围栏配对），而行尾形态是**检出配置**的产物
+ * （同一份内容在不同检出里是 LF / CRLF），**不该影响判定**。
+ * ⚠️ 这也是 `blocksOf` 的既有消费者（第 4/5/6 条）**没有暴露**这个差异的原因：
+ * 它们的判据（路径/链接/哈希）都**不**要求"匹配到行尾"，故 `\r` 对它们无害。
+ */
+export function fenceGapsIn(rel: string): number[] {
+  // 归一化后再判：CRLF 档的尾随 `\r` 不该让闭栏判据失效（见头注）。
+  return unclosedFencesOf(blocksOf(rel).map((line) => line.replace(/\r$/u, "")));
 }
 
 /**
@@ -923,6 +1063,128 @@ describe("引用腐烂检查器自身的边界（合成文本）", () => {
   });
 });
 
+describe("代码围栏配对检查器自身的边界（合成文本，#126）", () => {
+  it("奇数围栏是真的不平衡：合成档必须点名未闭合的开栏行", () => {
+    // 本票的主诉：奇数个围栏会把其后正文整段吞进代码块，而套件全绿。
+    // 制造形态：开栏后正文没有闭栏。
+    const lines = ["# 标题", "正文", "```bash", "echo hi", "这段正文会被吞进代码块"];
+    expect(unclosedFencesOf(lines)).toEqual([3]);
+    // 对照：补上闭栏即配平（判据不是"见到围栏就报"）。
+    expect(unclosedFencesOf([...lines, "```"])).toEqual([]);
+  });
+
+  it("正常单层围栏配平（票面 AC2 的绿例）", () => {
+    expect(unclosedFencesOf(["```ts", "const a = 1;", "```"])).toEqual([]);
+    // 多块文档同样配平。
+    expect(
+      unclosedFencesOf(["```bash", "ls", "```", "中间正文", "```json", "{}", "```"]),
+    ).toEqual([]);
+    // 波浪号围栏按同一规则配平。
+    expect(unclosedFencesOf(["~~~yaml", "a: 1", "~~~"])).toEqual([]);
+  });
+
+  it("四反引号包三反引号（嵌套）判绿 —— 数偶数会在这里翻车（票面 AC2 的关键反例）", () => {
+    // 票面 `#112` 的 Possible directions 明确警告：嵌套围栏**不能靠数偶数**。
+    // 这段在 CommonMark 下是**一个**围栏块（外层 4 个反引号包住内层 3 个）。
+    const nested = ["````markdown", "```ts", "code", "```", "````"];
+    expect(unclosedFencesOf(nested)).toEqual([]);
+    // 而朴素计数（数所有"看起来像围栏"的行）在这段上给出的是**别的**结论 ——
+    // 锁住它，免得日后有人用"个数"替换状态机。
+    const naiveCount = nested.filter((l) => /^\s{0,3}[`~]{3,}/u.test(l)).length;
+    expect(naiveCount, "嵌套档里像围栏的行确实有 4 条 —— 状态机才是判据").toBe(4);
+    // 若把内层 3 反引号误当闭栏，剩下的 4 反引号会变成"未闭合开栏" ⇒ 假红。
+    // 反向锁：真的不平衡的嵌套档仍要报（状态机没有把嵌套一律放过）。
+    expect(unclosedFencesOf(["````markdown", "```ts", "code", "```"])).toEqual([1]);
+  });
+
+  it("闭栏必须不短于开栏、且行内无其他内容（票面状态机的两条硬条件）", () => {
+    // 闭栏短于开栏 ⇒ **不是**闭栏，只是围栏内的内容 ⇒ 该档不平衡。
+    // （这正是 [` ```` `, "```", "````"] 的反例形态：中间那行挡不住任何东西。）
+    expect(unclosedFencesOf(["````", "```", "````"])).toEqual([]);
+    expect(unclosedFencesOf(["````", "```"])).toEqual([1]);
+    // 闭栏带 info string / 尾随非空白 ⇒ 不是闭栏（info string 只在开栏行）。
+    expect(unclosedFencesOf(["```ts", "code", "```ts"])).toEqual([1]);
+    expect(unclosedFencesOf(["```", "code", "``` more"])).toEqual([1]);
+    // 对照：闭栏**允许**尾随空白（CommonMark）。
+    expect(unclosedFencesOf(["```", "code", "```   "])).toEqual([]);
+  });
+
+  it("CRLF 档不该假报未闭合（#126 真实缺陷：pre-push 的 msys 车道暴露）", () => {
+    // ⚠️ 这是本票**真实发生过**的缺陷，不是假想用例 —— 记在下以免日后被"简化"掉。
+    //
+    // 机理：`blocksOf` 走 `text.split("\n")` ⇒ CRLF 档每行带尾随 `\r`；
+    // 闭栏判据 `[ \t]*$` **不收** `\r`，而开栏判据以 `(.*)$` 收尾（`.` 吃得下 `\r`）
+    // ⇒ 开栏匹配、闭栏不匹配 ⇒ **假报未闭合**。
+    // 实测：权威树是 LF、msys 副本被 core.autocrlf 转 CRLF，同一份档案在这两棵树里
+    // 判定结果不同（`.scratch/t126-crlf.log`）。
+    //
+    // 故这里把**两种行尾**喂给同一套判据，要求结论**一致** —— 判据的对象是文档语义，
+    // 行尾形态是检出配置的产物，不该影响判定。
+    const lf = ["```bash", "echo hi", "```"].join("\n");
+    const crlf = ["```bash", "echo hi", "```"].join("\r\n");
+    // 归一化后（`fenceGapsIn` 的做法）两者都必须判绿。
+    const normalize = (text: string) => text.split("\n").map((line) => line.replace(/\r$/u, ""));
+    expect(unclosedFencesOf(normalize(lf))).toEqual([]);
+    expect(unclosedFencesOf(normalize(crlf))).toEqual([]);
+    // 未归一化时 CRLF 会**真的**假报（锁住机理本身，证明上面那条不是同义反复）。
+    // ⚠️ 报的行号是 **3**（末行），**不是** 1 —— 实测（`.scratch/t126-crlf2.log`）：
+    // CRLF 下第 1 行的开栏**匹配不上**（`$` 收不下尾随 `\r`），而 `split("\n")` 的必然
+    // 结果是**末行不带 `\r`** ⇒ 末行被当成开栏且找不到闭栏 ⇒ 报"第 3 行未闭合"。
+    // 这正是"虚假的红"的形状：**真开栏没认出来，末行反被认成开栏**。
+    expect(unclosedFencesOf(crlf.split("\n")), "不归一化时 CRLF 会假报末行未闭合").toEqual([3]);
+    // 对照：CRLF 下的**真不平衡**照旧要报（归一化没有把判据弄哑）。
+    expect(unclosedFencesOf(normalize(["```bash", "echo hi"].join("\r\n")))).toEqual([1]);
+  });
+
+  it("缩进与反引号 info string 的两条边界（#126 实测假红）", () => {
+    // 开栏允许 ≤3 空格缩进；4 空格是**缩进代码块**，不是围栏。
+    expect(unclosedFencesOf(["   ```ts", "code", "   ```"])).toEqual([]);
+    expect(unclosedFencesOf(["    ```ts", "code"])).toEqual([]);
+    // ⚠️ 反引号开栏的 info string **不得含反引号**（CommonMark）——
+    // 少了这条，文档里的行内代码 `` ```a`b `` 会**误开栏**，把它后面的正文吞掉 ⇒ 假红。
+    expect(unclosedFencesOf(["```a`b", "正文不该被判成围栏内"])).toEqual([]);
+    // 对照：波浪号围栏**没有**这条限制（info string 可含反引号）。
+    expect(unclosedFencesOf(["~~~a`b", "正文"])).toEqual([1]);
+  });
+
+  it("闭栏的缩进上限是 3 空格、且**不必与开栏的缩进匹配**（#126 复核争点，按一手规格裁定）", () => {
+    // ⚠️ **这是一条被复核者质疑过、并按 CommonMark 一手规格裁定过的语义** —— 详见本用例末注。
+    //
+    // 规格原文（`commonmark/commonmark-spec` spec.txt §"Fenced code blocks"，v0.31.2）：
+    //   「The closing code fence may be preceded by up to three spaces of
+    //     indentation, and may be followed only by spaces or tabs, which are ignored.」
+    //   并配一条**参考例**（逐字）：
+    //     「Closing fences may be preceded by up to three spaces of indentation, and
+    //       their indentation need not match that of the opening fence:」
+    //       开栏 0 缩进 + 闭合 `  ``` `（**2 空格**）⇒ 规格给出的输出是**已闭合**。
+    //
+    // ⇒ 故闭栏的正则里**必须**有 `( {0,3})` 缩进组（与开栏同口径），
+    //   且**不**要求缩进相等（`0 缩进开栏 + 2 空格闭栏` 是合法配对）。
+    expect(unclosedFencesOf(["```", "aaa", "  ```"]), "2 空格缩进的闭栏是合法闭栏（规格参考例）").toEqual([]);
+    expect(unclosedFencesOf(["```", "aaa", "```"]), "0 缩进闭栏同样合法").toEqual([]);
+    expect(unclosedFencesOf(["   ```", "aaa", " ```"]), "缩进不必与开栏匹配").toEqual([]);
+    // 边界：**4 空格**缩进的行不是闭栏（规格明写 up to three）。
+    // ⚠️ 注意规格里那条「Four spaces of indentation is too many」讲的是**开栏**被 4 空格缩进
+    //    ⇒ 那是**缩进代码块**，不是围栏；它**不**为"闭栏能否 4 空格"提供依据。
+    //    本行的判据来自上面那句 up to three spaces 的**字面**。
+    expect(unclosedFencesOf(["```", "aaa", "    ```"])).toEqual([1]);
+    expect(unclosedFencesOf(["    ```", "aaa"])).toEqual([]); // 4 空格开栏本就不是围栏
+    // 对照：闭栏的**长度**下限与"行内无他物"两条照旧（别被缩进这条挤掉）。
+    expect(unclosedFencesOf(["````", "aaa", "```"])).toEqual([1]);
+    expect(unclosedFencesOf(["```", "aaa", "``` x"])).toEqual([1]);
+  });
+
+  it("围栏检查同样受 `[History: …]` 整行豁免（与 #112 共用 blocksOf 的语义）", () => {
+    // AC4 要求与 #112 的链接判据共用 blocksOf 文本块面 —— 于是行级豁免在这里的语义是
+    // "该行免受围栏配对判定"。免疫行被移出扫描面后，其后的围栏按剩下的行重新配对。
+    const withMarker = ["[History: 旧例]```bash", "echo hi"];
+    // 带标记那行被过滤掉 ⇒ 剩下的正文里没有开栏 ⇒ 配平。
+    expect(unclosedFencesOf(blocksOfLine(withMarker.join("\n")))).toEqual([]);
+    // 对照：同两行去掉标记 ⇒ 第一行是开栏且无闭栏 ⇒ 报第 1 行（证明判据本身有效）。
+    expect(unclosedFencesOf(blocksOfLine(["```bash", "echo hi"].join("\n")))).toEqual([1]);
+  });
+});
+
 describe("文档引用腐烂（活体仓库扫描）", () => {
   it("docs/**/*.md 与根文档的相对链接目标都存在（#112）", () => {
     // 根文档的链接相对**仓库根**解析（它们就在根上），与 docs/ 下的文件同一个函数即可。
@@ -1020,6 +1282,28 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
       "注释 / 文档里裸写的 spec 文件名在 tests/ 下不存在：" +
         "修正文件名、写全 `tests/…` 前缀、在同一条注释/该行标 [History: …]，" +
         "或（确属跨仓引用）登记进 BARE_SPEC_ALLOWLIST 并写明理由",
+    ).toEqual([]);
+  });
+
+  it("docs/**/*.md 的代码围栏都配对（#126）", () => {
+    // 本票主诉：奇数个围栏会把其后正文**整段吞进代码块**（渲染错乱），而 `node --run test`
+    // 全绿 —— #108 文档审计实测到过。判据 = CommonMark 围栏状态机（见 `unclosedFencesOf` 头注）。
+    //
+    // **扫描面与第 4/5/6 条不同**：这里取票面 `#126` 的 `docs/**` **字面（含 `adr/`）**，
+    // 而第 4/5/6 条排除 `docs/adr/`（"决定记录，按惯例不回头改"）。human 2026-10-18 拍板
+    // 取字面；取舍与代价见 `unclosedFencesOf` 头注「扫描面的取舍」。
+    //
+    // ⚠️ 本判据与第 4 条**共用 `blocksOf`**（AC4）⇒ 也吃 `[History: …]` 的**整行豁免**：
+    // 带标记的行会被移出扫描面，故它**不再参与围栏配对**。这是有意的共用语义（AC4 明写），
+    // 代价是"给一行加标记"可能顺带改变围栏配对结果 —— 合成用例已锁住该语义。
+    const files = walk("docs", [".md"]);
+    const unbalanced = files.flatMap((rel) =>
+      fenceGapsIn(rel).map((line) => `${rel}:${line}（该开栏没有闭栏）`),
+    );
+    expect(
+      unbalanced,
+      "docs 下的 markdown 有未闭合的代码围栏：奇数个围栏会把其后正文吞进代码块（渲染错乱但套件全绿）；" +
+        "补上闭栏（同字符、长度 ≥ 开栏、行内只有空白）",
     ).toEqual([]);
   });
 
