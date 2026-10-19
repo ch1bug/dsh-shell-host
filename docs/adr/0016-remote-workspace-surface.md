@@ -60,8 +60,8 @@ writable there. A reference-implementation survey (VS Code Remote-SSH, its
 - `./remote-files` (new, a **sibling** of `./remote`, deliberately not merged
   into it): the remote file face (list / read / write / stat / path), depending
   on `./ssh` only; own settings namespace `remote-files`.
-- Mount surface: `cordis.patch.yml` goes from two own-id rows to **four**
-  (`pty` / `ssh` / `remote` / `remote-files`); `tests/patch-shape.spec.ts`'s
+- Mount surface: `cordis.patch.yml` goes from two own-id rows (`pty`, `terminal`) to
+  **five** (`pty` / `ssh` / `terminal` / `remote` / `remote-files`); `tests/patch-shape.spec.ts`'s
   ratchet is updated explicitly (that is what the ratchet is for).
 - Everything stays **plugin-layer** (`defineTool` + `ctx.tools` + own settings
   namespace): the executor world is not resurrected and `ctx.shell` remains
@@ -139,3 +139,21 @@ should exist is **not decided here** — it stays a separate ticket.
   error frame, timeout, channel death).
 - Live layer: one `DSH_SSH_LIVE_HOST` gate (reusing the existing env), running
   "open workspace → ls → read → atomic write → close"; no gate ⇒ `!! SKIP (loud)`.
+
+## 修订（2026-10-19，与 dsh-web 的 `dsh-ssh` 分工：Q7=A）
+
+调研 `zhu1090093659/dsh-web` 的 `packages/dsh-ssh`（npm `@linxin666/dsh-ssh`）后拍板
+**正交分工**。它的实测形状：`ssh2@^1.17` 库在进程内 + 每主机池化长连接（空闲 30 分钟断、
+断线重连 ≤3）、`exec`（stdout/stderr 分离、60s 超时、2MB 截断）、**SFTP** 上传/下载
+（宿主 ↔ 远端搬文件）、本地端口转发、集群并发、GUI 终端（xterm）、主机配置
+`$DSH_HOME/dsh-ssh.json`（0600、自己存凭据）、六个 Agent 工具
+（`ssh_list`/`ssh_exec`/`ssh_upload`/`ssh_download`/`ssh_tunnel`/`ssh_cluster`）。
+
+- **它管的**：库内 ssh 会话池、一次性命令、SFTP 传输、隧道、集群、GUI、自管认证。
+- **本包管的**：远程**工作区**（多会话编排）+ **远端就地读写**（agent 直接编辑远端文件，
+  不落地本地）+ 零依赖的系统 OpenSSH 通道。
+- **边界一句话**：「在远端编辑」归本包，「在两边搬」归 `dsh-ssh`。
+- 推论：决策 5 里留待决定的 **one-shot 便捷工具 ⇒ 不做**；需要一次性远程命令的场景
+  指向 `dsh-ssh` 的 `ssh_exec`。决策 3/4（零安装、无 server）不变。
+- 推论：文件面的语义**只做就地读写**，不做"上传/下载"；进度流、断点续传、目录树同步
+  都不在本包（那是传输语义，归 `dsh-ssh`）。

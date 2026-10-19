@@ -214,7 +214,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 
 - **三组件 + pty 回归纯核心**:`./ssh` 独立组件(owns ssh 四工具 + 命令合成 / keepalive /
   `port` / `-o` 透传)、`./remote` 远程工作区 = 多会话编排、`./remote-files` 远端文件面
-  (与 remote 兄弟、只依赖 ssh);挂载面 **2 行 → 4 行**(`pty`/`ssh`/`remote`/`remote-files`),
+  (与 remote 兄弟、只依赖 ssh);挂载面 **2 行 → 5 行**(`pty`/`ssh`/`terminal`/`remote`/`remote-files`),
   `tests/patch-shape.spec.ts` 的棘轮显式更新;全部插件层 —— 执行器 world 仍不复活,
   `ctx.shell` 仍只由平台 shell 执行器提供(ADR-0013 主体不变)。
 - **文件操作远端就地执行**:工作区持有一条长驻 `ssh <host> -- sh` 通道,帧化请求
@@ -226,7 +226,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **远程 one-shot 便捷工具(哨兵法)不在本 ADR**:留独立决定。
 - **supersede 范围**:仅覆盖 ADR-0013 的「Remote one-shot goes route C」一节。
 
-## D12 (#ADR-0012, 2026-10-16, human 拍板:只保留独立插件注册)【行清单已被 D13 收窄:现挂载面 = `pty` + `terminal`,无 `shell-host`;又被 D14 扩到 4 行】
+## D12 (#ADR-0012, 2026-10-16, human 拍板:只保留独立插件注册)【行清单已被 D13 收窄:现挂载面 = `pty` + `terminal`,无 `shell-host`;又被 D14 扩到 5 行】
 
 - **改上游路径全部摒弃,挂载形态 = 自有 id 插件行**:patch 只允许自有 id 的
   insert 行(`shell-host` / `pty` / `terminal`);同 id 接管上游 loader 行、
