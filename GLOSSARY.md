@@ -213,10 +213,25 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 ## D14 (ADR-0016, 2026-10-19, human 拍板:远程工作区收回本包)
 
 - **三组件 + pty 回归纯核心**:`./ssh` 独立组件(owns ssh 四工具 + 命令合成 / keepalive /
-  `port` / `-o` 透传)、`./remote` 远程工作区 = 多会话编排、`./remote-files` 远端文件面
-  (与 remote 兄弟、只依赖 ssh);挂载面 **2 行 → 5 行**(`pty`/`ssh`/`terminal`/`remote`/`remote-files`),
+  `port` / `-o` 透传)、`./remote` 远程工作区 = 多会话编排 + 连接池、`./remote-fs` 远端文件面
+  (与 remote 兄弟、只依赖 ssh);挂载面 **2 行 → 5 行**(`pty`/`ssh`/`terminal`/`remote`/`remote-fs`),
   `tests/patch-shape.spec.ts` 的棘轮显式更新;全部插件层 —— 执行器 world 仍不复活,
   `ctx.shell` 仍只由平台 shell 执行器提供(ADR-0013 主体不变)。
+- **文件面 = 加性后端,不替换 `ctx.fs`**(Q14 纠正 / Q15=A):提供 **`ctx.remoteFs`**(与
+  `dsh-fs` 同形契约:resolve / stat / readText / streamText / readBytes / listDir / watch /
+  writeText / editText + 稳定错误码)与消费它的 `remote_*` 工具族;`ctx.fs` 与
+  `fs-local`/`fs-sandbox` 一字不动,上游 read/write/edit/glob/grep 行为不变。
+  确定代价 = **两套文件词汇**(锚点目录对上游工具是空目录);干净长期解 = DSH 上游的
+  工作区作用域化 `ctx.fs`(本包不自行实现,但保持同形契约以便平移)。
+- **承载面 = 本地锚点目录**(Q11=A):远程工作区在 DSH 的 workspace 注册表里就是一个
+  普通项目,path = 本地空锚点目录(内含 marker:host + 远端 root);会话 cwd 绑定锚点,
+  会话历史仍按本地目录分区;远端目录**不做本地镜像**。
+- **配置 = settings 面 + 零凭据**(Q12=A):非敏感元数据(标题 / ssh 别名 / 远端 root /
+  锚点 / 默认 preset / 连接选项)走本包 settings namespace;host/user/port/key/跳板
+  一律来自用户 OpenSSH 配置与 agent,**本包不存任何凭据**;v1 **不做前端半区**。
+- **连接生命周期归工作区服务**:每主机一条通道(按工作区/会话引用计数)、keepalive、
+  有界重连;**组合装载时预热**(在任何 agent 轮次之前建连),工具永不建连,
+  通道不在 ⇒ 稳定错误码 + 原因,`remote_status` 暴露状态。
 - **文件操作远端就地执行**:工作区持有一条长驻 `ssh <host> -- sh` 通道,帧化请求
   (长度前缀 + 请求 id),只传 payload(base64 / `tar` 批量);**不用 SFTP / SSHFS / rsync**,
   零新增依赖。
@@ -252,7 +267,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **WSL 桥(WSL bridge)**:wsl 后端专属的跨 VM 路径映射层,toShell/fromShell 双向(ADR-0003 决策 5)——通用 descriptor 映射与透传都不承担该职责。
 - **远程工作区(Remote workspace)**:远端目录 = 工作区根;一个工作区持有**多条**持久会话(shell / 构建 / 测试)与一套远端文件面,命令与文件操作都**在远端就地执行**(长驻 `ssh <host> -- sh` 通道 + 帧化请求),不装远端 server、不用 SFTP(ADR-0016)。前身 = `dsh-shell-remote` 仓的 one-shot 远程执行世界(ADR-0004)与被吸收的 `./remote` entry(ADR-0007 吸收,ADR-0013 删除);现在**不要求**该独立插件安装。
 - **持久会话(Persistent session)**:交互式/长生命周期 shell 语义,归 `dsh-pty-session` 仓(本地或 ssh 实例);shell-host 与 shell-remote 都不承载(ADR-0004 决策 5)。ADR-0007 后迁入 shell-host 包的 `./pty` entry,所有权结论不变。
-- **Entry(包入口)**:dsh-shell-host 单包多入口的导出单元(ADR-0007)。现行 entry 面(ADR-0016):`./pty`(持久 PTY 会话核心)、`./ssh`(ssh 通道能力 + ssh 四工具)、`./terminal`(`shell_open` launcher 预设)、`./remote`(远程工作区 = 多会话编排)、`./remote-files`(远端文件面)、`./wsl`(WSL 桥工具)。全部是插件层 entry(defineTool + ctx.tools),各 entry 独立 settings namespace,共享包不合并配置面;执行器 entry(`./host`)及其执行语义已随 ADR-0013 删除。
+- **Entry(包入口)**:dsh-shell-host 单包多入口的导出单元(ADR-0007)。现行 entry 面(ADR-0016):`./pty`(持久 PTY 会话核心)、`./ssh`(ssh 通道能力 + ssh 四工具)、`./terminal`(`shell_open` launcher 预设)、`./remote`(远程工作区 = 多会话编排 + 连接池)、`./remote-fs`(加性 `ctx.remoteFs` 后端 + `remote_*` 工具)、`./wsl`(WSL 桥工具)。全部是插件层 entry(defineTool + ctx.tools),各 entry 独立 settings namespace,共享包不合并配置面;执行器 entry(`./host`)及其执行语义已随 ADR-0013 删除。
 
 ## #52 grill 共识(2026-10-09,进行中)
 

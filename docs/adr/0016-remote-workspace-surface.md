@@ -2,10 +2,12 @@
 
 - Status: Accepted
 - Date: 2026-10-19
-- Deciders: human (2026-10-19 grill, five questions settled one by one:
+- Deciders: human (2026-10-19 grill, 逐问拍板:
   Q1=A ssh becomes its own component · Q2=B a workspace holds multiple sessions ·
-  Q3=B `remote-files` is a sibling component · Q4'=A file operations execute on the
-  remote side · Q5=A no remote server, zero install)
+  Q3=B 文件面独立成组件 · Q4'=A file operations execute on the remote side ·
+  Q5=A no remote server, zero install · Q7=A 与 `dsh-ssh` 正交分工 ·
+  Q11=A 承载面 = 本地锚点目录 · Q12=A v1 不做前端 · Q13/Q14=A 文件面走 `ctx.fs`
+  路由后端 —— 见下方「修订（2026-10-19，文件面改走 `ctx.fs`）」)
 - Context: ADR-0013 ("this package is a tools-only plugin"; its section
   "Remote one-shot goes route C" sent remote work to the standalone
   `dsh-shell-remote` plugin); ADR-0004/0006/0007/0008 (remote boundaries, entry
@@ -57,25 +59,32 @@ writable there. A reference-implementation survey (VS Code Remote-SSH, its
   workspace may hold several sessions: shell, build, test), plus session
   bookkeeping, the `cwd` / `env` entry contract, workspace-level listing and
   teardown; own settings namespace `remote`.
-- `./remote-files` (new, a **sibling** of `./remote`, deliberately not merged
-  into it): the remote file face (list / read / write / stat / path), depending
-  on `./ssh` only; own settings namespace `remote-files`.
+- `./remote-fs` (new, a **sibling** of `./remote`, deliberately not merged into
+  it): provides **`ctx.remoteFs`** — a *separate* service with the same shape as
+  `dsh-fs`'s `ctx.fs` contract (`resolve` / `stat` / `readText` / `streamText` /
+  `readBytes` / `listDir` / `watch` / `writeText` / `editText` + stable error
+  codes) — plus the model-facing **`remote_*` tools** that consume it. It
+  **never replaces `ctx.fs`**: the platform backend (`fs-local` / `fs-sandbox`)
+  and every upstream file tool keep their exact behaviour (see 修订, Q13/Q14/Q15).
 - Mount surface: `cordis.patch.yml` goes from two own-id rows (`pty`, `terminal`) to
-  **five** (`pty` / `ssh` / `terminal` / `remote` / `remote-files`); `tests/patch-shape.spec.ts`'s
+  **five** (`pty` / `ssh` / `terminal` / `remote` / `remote-fs`); `tests/patch-shape.spec.ts`'s
   ratchet is updated explicitly (that is what the ratchet is for).
 - Everything stays **plugin-layer** (`defineTool` + `ctx.tools` + own settings
   namespace): the executor world is not resurrected and `ctx.shell` remains
   provided by the platform shell executors alone.
 
-**2. File operations execute on the remote side (Q4'=A).**
+**2. File operations execute on the remote side, behind `ctx.remoteFs` (Q4'=A, Q13/Q15=A).**
 
-`./remote-files` sends framed requests over the workspace's **single long-lived
-`ssh host -- sh` channel**; the remote side performs the reads/writes in place
-with `sh` + coreutils; only request parameters and payload (base64, or `tar` for
-batches) cross the tunnel. Rationale: same shape as the reference
-implementation, zero new dependencies, and it inherits the user's OpenSSH
-configuration file, jump hosts and the agent. **No SFTP (library or binary), no
-SSHFS, no rsync.**
+`./remote-fs` serves remote targets through `ctx.remoteFs`: each call is framed
+onto the workspace's **single long-lived `ssh host -- sh` channel** and executed
+in place with `sh` + coreutils; only request parameters and payload (base64, or
+`tar` for batches) cross the tunnel. Its tools mirror the upstream shapes
+(`remote_read` / `remote_write` / `remote_edit` / `remote_ls` / `remote_glob` …)
+with the same stable error codes and the same "atomic write + version guard"
+semantics, so a remote workspace does not inherit a weaker editing model.
+Rationale: same shape as the reference implementation, zero new dependencies, and
+it inherits the user's OpenSSH configuration file, jump hosts and the agent.
+**No SFTP (library or binary), no SSHFS, no rsync, and no `ctx.fs` replacement.**
 
 **3. Zero remote install (Q5=A).**
 
@@ -103,6 +112,46 @@ Remote commands run inside a workspace session, i.e. the persistent session core
 Whether a one-shot convenience tool (send a command and wait for an exit sentinel)
 should exist is **not decided here** — it stays a separate ticket.
 
+**6. Carrier: a local anchor directory (Q11=A).**
+
+A remote workspace is registered in DSH's own workspace registry as an ordinary
+project whose path is a **local anchor directory** (empty except for a marker
+file naming host and remote root). Sessions bind to that anchor as their `cwd`
+(so session history keeps its per-workspace partition and `dsh-working-directory`
+keeps working); the `ctx.fs` router translates anchor-prefixed paths to the
+remote host. The remote directory is never mirrored locally: the anchor is an
+identity, not a copy.
+
+**7. Configuration: settings namespace, zero credentials (Q12=A).**
+
+Non-secret workspace metadata (title, ssh host alias, remote root, anchor path,
+default preset, connection options) lives in this package's own settings
+namespace and is persisted by DSH's settings service. **No credential is stored
+by this package at all**: host/user/port/key/jump host come from the user's
+OpenSSH configuration and agent. v1 ships **no front-end half** (no `dsh.client`
+bundle); humans interact through DSH's own workspace list and the tools.
+
+**8. Connection lifecycle is owned by the workspace service, not the model.**
+
+The remote workspace service holds one channel per host (ref-counted by
+workspace/session), with keepalive and bounded reconnect. Channels are opened
+**eagerly when the composition loads** — before the first agent turn — so the
+model never spends a turn "connecting" and a failure surfaces before any work is
+attempted. Tools never open connections: on a dead channel they return a stable
+error code plus the reason, and `remote_status` exposes the connection state to
+the model and to humans.
+
+**9. The residual risk is the two-vocabulary split, not the local paths (Q14 correction).**
+
+Because `ctx.fs` stays untouched, a bug in this package cannot break a local
+workspace — that blast radius is gone. What remains: inside a remote workspace the
+anchor directory looks **empty** to `read` / `write` / `edit`, so the model can
+pick the wrong tool family. Mitigations: the `remote_*` descriptions state the
+boundary; opening a remote workspace returns an explicit hint naming that family;
+and a local tool hitting an anchor path gets an error message that points at the
+remote family. The clean long-term fix — a **workspace-scoped `ctx.fs`** — is a
+DSH upstream capability, not something this package can do today.
+
 ## Consequences
 
 - Positive: the three pieces a remote workspace needs (channel / session / files)
@@ -127,9 +176,10 @@ should exist is **not decided here** — it stays a separate ticket.
   workspace`** (multi-session + remote file face); `dsh-shell-remote` is recorded
   as the **predecessor** plugin (no longer expected to be installed). The
   "installed in the profile" claim is removed (tracked in `#134`).
-- Existing guards touched: the patch ratchet (2→4 rows), the doc-reference guard
-  (new module headers reference real paths), and the ssh live suite (the tools
-  move from `./pty` to `./ssh`; the harness stays).
+- Existing guards touched: the patch ratchet (**2→5** rows), the doc-reference
+  guard (new module headers reference real paths), and the ssh live suite (the
+  tools move from `./pty` to `./ssh`; the harness stays). `ctx.fs` and the
+  upstream file tools are **not** touched (Q14 correction).
 
 ## Acceptance (detail belongs to the tickets)
 
@@ -157,3 +207,28 @@ should exist is **not decided here** — it stays a separate ticket.
   指向 `dsh-ssh` 的 `ssh_exec`。决策 3/4（零安装、无 server）不变。
 - 推论：文件面的语义**只做就地读写**，不做"上传/下载"；进度流、断点续传、目录树同步
   都不在本包（那是传输语义，归 `dsh-ssh`）。
+
+## 修订（2026-10-19，文件面改走加性后端：Q13=A → Q14 纠正 → Q15=A）
+
+**查到的内核实证**（读 DSH 安装内的 `@deepseek-ai/dsh-fs` / `dsh-tool-fs` 源码：
+
+- `ctx.fs` 是 cordis `Service`，**每个组合一个**（由 `fs-local` 或 `fs-sandbox` 填充）；
+- `dsh-tool-fs` 的每次解析都用**它自己那个** `ctx.fs`（app 级），cwd 则来自
+  `ctx.workingDirectory.ensure(agent)` ⇒ **"按会话换一个远程 fs"在今天不可行**；
+- 但 `dsh-fs` 的契约本身明确为"一个执行世界的文件系统"设计，文档写明**远程后端**可以
+  实现它（`resolve` / `stat` / `readText` / `streamText` / `readBytes` / `listDir` /
+  `watch` / `writeText` / `editText` + `FS_NOT_FOUND` / `FS_STALE_VERSION` /
+  `FS_AMBIGUOUS_EDIT` 等稳定错误码；策略在 `dsh-fs-observation-policy` 里，通过
+  `fs/write-intent` / `fs/edit-intent` / `fs/observed` 三个事件）。
+
+**拍板经过**：Q13 先选 A（做远程 `ctx.fs` 后端）；随后 human 纠正
+**「我们实现的后端，不应替换 DSH 原本的」**；Q15 定为 **A = 加性**。
+
+**因此本 ADR 的决策 1/2/9 按加性改写**：
+
+- 我们提供 **`ctx.remoteFs`**（与 `dsh-fs` 同形的独立服务）+ 消费它的 **`remote_*`** 工具族；
+- **`ctx.fs` 与 `fs-local` / `fs-sandbox` 一字不动**，上游 `read` / `write` / `edit` /
+  `glob` / `grep` 行为完全不变；
+- 确定代价：**两套文件词汇**（锚点目录对上游工具是空目录），缓解措施见决策 9；
+- 干净的长期方案 = DSH 上游支持**工作区作用域化的 `ctx.fs`**；本包不自行实现它，
+  但 `ctx.remoteFs` 保持同形契约以便那一天**平移**（届时只需把同一个实现挂到 scoped fs）。
