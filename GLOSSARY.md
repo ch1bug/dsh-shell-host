@@ -179,13 +179,17 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   `registry.schemas(agent)` 建绑定 ⇒ **渲染了即能调** —— "第三方"在 PTC 里没有差别。
 - **必要条件**（挂载期判定，缺了是**响亮失败**而不是被静默排除）：`defineTool` 必须给
   `output: { schema, render }`；`output.schema` 必须过 `assertSupportedJsonSchema`。本仓
-  9 个工具（pty 四 + ssh 四 + `shell_open`）全部满足。
+  11 个工具（pty 六 + ssh 四 + `shell_open`）全部满足 —— `pty_list` / `pty_signal` 是
+  `#119` 后新增的两个（原记 9 个）。
 - **`presentation` 不是工具字段**：`presentation: 'ptc'` 是 loader 行
   `@deepseek-ai/dsh-agent-tool-presentation` 的 `config.mode`（实验里用 `DSH_TOOLS_MODE=ptc`）；
   `presentationMeta` 只是可选投影进结果 `meta` 的展示面，与 PTC 可用性无关。
-- **与官方 `tool-terminal` 的实际差距**（都**不影响 PTC 可用性**）：① 无 `pty_list` /
-  `pty_signal` 等价工具；② 无 `run_in_background`（官方走 `ctx.jobs`）；③ 无
-  `presentationMeta` / `presentResult` / `finalizeContent` 字节上限。已按此立票。
+- **与官方 `tool-terminal` 的实际差距**（都**不影响 PTC 可用性**）：① `pty_list` /
+  `pty_signal` 已由 `#119` 补齐 —— 但 Windows/ConPTY 侧 `pty_signal` **只有终止语义**
+  （`SIGTERM`/`SIGKILL` = 杀会话，其余白名单项响亮拒绝），是平台事实、不假装与 POSIX
+  等价（单源：`src/pty/session-core.ts` 的 `PTY_SIGNAL_SEMANTICS`）；② 无
+  `run_in_background`（官方走 `ctx.jobs`）；③ 无 `presentationMeta` / `presentResult` /
+  `finalizeContent` 字节上限。
 - **`./wsl` entry**：默认 bundle patch 不挂 ⇒ SDK 里不会出现 `win_*`（opt-in entry 的预期行为，非缺陷）。
 
 ## #68 POSIX launcher 预设行事实(2026-10-11)

@@ -48,13 +48,13 @@ session, owner binding, awaited dispose cleanup), per-session line buffers
 with incremental read cursors, the #56 soft cap (`maxSessions`, default 8,
 counted from the registry so an entry remount cannot reset it — the #62
 root cause is structurally gone) and the opt-in per-session
-`idleTimeoutMs` (auto-close on no new output). Four tools — `pty_open` /
-`pty_send` / `pty_tail` / `pty_close` — plus a programmatic facade
-(`ctx.provide("pty")`) for consumer plugins. Persistent/interactive session
-ownership (ADR-0004 decision 5) is unchanged, and the entry keeps its own
-settings namespace (`dsh-pty-session` plugin name, `maxSessions` +
-`tailLines` config) — ADR-0007: sharing the package does not merge config
-surfaces.
+`idleTimeoutMs` (auto-close on no new output). Six tools — `pty_open` /
+`pty_send` / `pty_tail` / `pty_close` / `pty_list` / `pty_signal` — plus a
+programmatic facade (`ctx.provide("pty")`) for consumer plugins. Persistent/
+interactive session ownership (ADR-0004 decision 5) is unchanged, and the
+entry keeps its own settings namespace (`dsh-pty-session` plugin name,
+`maxSessions` + `tailLines` config) — ADR-0007: sharing the package does not
+merge config surfaces.
 
 ```js
 import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
@@ -63,6 +63,41 @@ import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
 Mount it via the bundle layer with `name: 'dsh-shell-host/pty'` — no
 dependency on any platform seam (the bundle patch mounts the pty + terminal
 rows unconditionally).
+
+### pty_list / pty_signal（#119）
+
+补齐官方 `terminal_list` / `terminal_signal` 的工具面覆盖。两者都**只作用于调用方
+agent 自己持有的会话**（数据源就是核心的 owner 注册表，与 `pty_close` 的
+`SESSION_OWNED` 同一姿态）：`pty_list` 只列自己的（别人的会话根本不出现在结果里）；
+`pty_signal` 拿别人的 id 一律 `SESSION_OWNED`、未知 id `NO_SESSION`，**归属判据先于信号名
+校验**（别人的 id 配一个非法信号名也只会得到 `SESSION_OWNED`）。
+
+- **`pty_list`**：每行 `{ id, status, pid? }`，**顺序稳定 = 创建顺序**（按 id 的数字
+  后缀排；字典序会在第 10 个会话起错位，`pty-10` 会跑到 `pty-2` 前面）。已退出但仍被
+  持有的会话照旧列出 —— 持久会话的契约是 `pty_close` 才回收。
+- **`pty_signal`**：白名单与官方一致（`SIGINT` / `SIGTERM` / `SIGKILL` / `SIGTSTP` /
+  `SIGHUP`）。**平台语义与代码共用同一份常量**（`PTY_SIGNAL_SEMANTICS`，
+  `src/pty/session-core.ts` 导出；工具描述逐字引用它，本节的取舍与它同源）：
+  - **POSIX**：`process.kill(-pid, signal)` 投递到会话的**进程组**（forkpty 的子进程是
+    session leader，pid 即 pgid）—— 真信号投递、尽力而为。**前台进程组够不着**（Node
+    没有 `tcgetpgrp`）：交互式 shell 把前台作业放进独立进程组时收不到，那种场景用
+    `pty_send` 发 `"\u0003"`（Ctrl-C，由终端驱动投递给前台组）。
+  - **Windows / ConPTY**：node-pty 的 `kill(signal)` 在 Windows 上直接抛
+    「Signals not supported on windows.」（摘录见落地文档的证据载体），**只有终止一种语义**
+    ⇒ 只接受 `SIGTERM` / `SIGKILL`，两者都等于**终止会话**（ConPTY 进程树被拆掉）；
+    `SIGINT` / `SIGTSTP` / `SIGHUP` **响亮拒绝**，不做静默映射。这是平台事实，不假装与
+    POSIX 等价。
+  - **`SIGKILL` 对 shell 目标一律拒绝**（官方同款语义：POSIX 上硬杀 shell 收不回它拥有的
+    子进程），改用 `pty_close` 走完整关闭路径。Windows 上任何可投递信号本来就是整棵进程树
+    的拆除，所以那里**结束 shell 会话的正规做法就是 `SIGTERM`**（`SIGKILL` 仍按官方的名字
+    拒掉）。**「shell 目标」由打开方声明**：`shell_open`（启动器预设，`./terminal`）传
+    `shell: true`；核心**不从命令行文本猜**，所以 `pty_open({ command: "bash" })` 不算
+    shell 目标 —— 猜不准就不猜（边界见 `src/pty/session-core.ts` 的 `OpenSpec.shell`）。
+    ssh 会话同理**不是** shell 目标：它的本地顶层进程是 ssh 客户端而不是 shell，
+    `SIGKILL` 在那里是一次正当的硬断开。
+  - 投递**不自己关闭**会话：信号之后用 `pty_tail` 读后事，再用 `pty_close` 回收（幂等）。
+    注意带 `idleTimeoutMs` 的会话若因信号停止产出，**空闲 watcher 之后仍可能把它回收** ——
+    那是空闲策略，不是 `pty_signal` 关的。
 
 ### ssh 四工具（issue #24，承接 dsh-pty-session#3）
 

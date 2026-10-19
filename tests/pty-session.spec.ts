@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { apply } from "../src/pty/index.ts";
-import { AUTO_CLOSE_SEMANTICS } from "../src/pty/session-core.ts";
+import { AUTO_CLOSE_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS } from "../src/pty/session-core.ts";
 import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
 import { waitUntil } from "./helpers/wait-until.ts";
 
@@ -35,22 +35,29 @@ function makeAgent(name: string) { return { agentName: name }; }
 const exec = (agent: unknown) => ({ agent, signal: new AbortController().signal });
 
 let ctx: any;
-function setup() {
-  handles.length = 0;
-  specs.length = 0;
-  ctx = {
+/** The boot context (tools register, `pty` service provides, one dispose effect). */
+function makeCtx(): any {
+  return {
     provided: {},
     provide(name: string, value: unknown) { this.provided[name] = value; },
     tools: { registered: [] as any[], register(t: unknown) { this.registered.push(t); } },
     effects: [] as Array<{ fn: () => () => Promise<void>; label: string }>,
     effect(fn: () => () => Promise<void>, label: string) { this.effects.push({ fn, label }); },
   };
-  apply(ctx, { tailLines: 200, maxSessions: 8 }, { spawnPty: echoSpawner });
+}
+
+/** Boot the pty entry over the echo spawner; `deps` reaches the core, so a
+ * case can swap in the signal seam (#119: `platform` / `procKill`). */
+function setup(deps: { platform?: NodeJS.Platform; procKill?: (pid: number, signal: string) => void } = {}) {
+  handles.length = 0;
+  specs.length = 0;
+  ctx = makeCtx();
+  apply(ctx, { tailLines: 200, maxSessions: 8 }, { spawnPty: echoSpawner, ...deps });
 }
 const tool = (n: string) => ctx.tools.registered.find((t: any) => t.name === n);
 const pty = () => ctx.provided.pty;
 
-beforeEach(setup);
+beforeEach(() => setup());
 
 // ---------------------------------------------------------------------------
 // AC 1 — open → send → tail → close lifecycle round-trip
@@ -289,5 +296,75 @@ describe("pty facade service (consumer plugins)", () => {
     expect(ctx.effects).toHaveLength(1);
     await ctx.effects[0].fn()();
     expect(pty().active(agent)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #119 — pty_list / pty_signal on the tool surface (AC1 契约、AC2 owner 边界)
+// ---------------------------------------------------------------------------
+
+describe("pty_list / pty_signal tool surface (#119)", () => {
+  it("registers both tools WITH the mandatory output contract (schema + render) and the signal whitelist", () => {
+    for (const name of ["pty_list", "pty_signal"]) {
+      const t = tool(name);
+      expect(t.name).toBe(name);
+      // defineTool 的硬要求（AC1）：缺 output.schema / render 会在挂载期响亮失败。
+      expect(t.output?.schema?.type).toBe("object");
+      expect(typeof t.output.render).toBe("function");
+    }
+    // 参数面的白名单是单源常量，不是第二份手抄列表。
+    expect(tool("pty_signal").parameters.properties.signal).toMatchObject({ type: "string", enum: [...PTY_SIGNALS] });
+    expect(tool("pty_signal").parameters.required).toEqual(["id", "signal"]);
+    expect(tool("pty_signal").description).toContain("Windows/ConPTY");
+    // 平台语义的单一来源（#66 的 AUTO_CLOSE 同款判据）：工具描述逐字引用常量，
+    // 文档与本档都指向它 ⇒ 三处不会各讲一套。
+    expect(tool("pty_signal").description).toContain(PTY_SIGNAL_SEMANTICS);
+  });
+
+  it("pty_list lists only the caller's own sessions, in creation order; render is one line per session", async () => {
+    const a = makeAgent("a");
+    const b = makeAgent("b");
+    expect(await tool("pty_list").execute({}, exec(a))).toEqual({ sessions: [] });
+    const s1 = await tool("pty_open").execute({ command: "one" }, exec(a));
+    await tool("pty_open").execute({ command: "two" }, exec(b));
+    const s2 = await tool("pty_open").execute({ command: "three" }, exec(a));
+    const listed = await tool("pty_list").execute({}, exec(a));
+    expect(listed.sessions.map((row: any) => row.id)).toEqual([s1.sessionId, s2.sessionId]);
+    expect(listed.sessions[0].status).toEqual({ kind: "running" });
+    const text = tool("pty_list").output.render({}, listed)[0].text as string;
+    expect(text.split("\n")).toHaveLength(2);
+    expect(text).toContain(s1.sessionId);
+    expect(text).toContain("running");
+    // 空列表也有明确读数，不是一个空串。
+    expect(tool("pty_list").output.render({}, { sessions: [] })[0].text).toBe("(no sessions)");
+  });
+
+  it("pty_signal is owner-scoped: foreign id is SESSION_OWNED, unknown id is NO_SESSION, exited is delivered:false", async () => {
+    const a = makeAgent("a");
+    const b = makeAgent("b");
+    const s = await tool("pty_open").execute({ command: "secret" }, exec(a));
+    await expect(tool("pty_signal").execute({ id: s.sessionId, signal: "SIGINT" }, exec(b)))
+      .rejects.toMatchObject({ code: "SESSION_OWNED" });
+    await expect(tool("pty_signal").execute({ id: "nope", signal: "SIGINT" }, exec(a)))
+      .rejects.toMatchObject({ code: "NO_SESSION" });
+    // 会话退出后仍被持有（持久默认）—— 报 delivered:false，而不是假装投递过。
+    handles[0].emitExit({ exitCode: 0 });
+    expect(await tool("pty_signal").execute({ id: s.sessionId, signal: "SIGTERM" }, exec(a)))
+      .toMatchObject({ delivered: false, status: { kind: "exited", exitCode: 0 } });
+    // 归属边界不因退出而失效：别人的 id 依旧响亮。
+    await expect(tool("pty_signal").execute({ id: s.sessionId, signal: "SIGTERM" }, exec(b)))
+      .rejects.toMatchObject({ code: "SESSION_OWNED" });
+  });
+
+  it("pty_signal reaches the core's delivery seam through the facade (POSIX: process group)", async () => {
+    // 平台分支与投递缝在 deps 上（核心档已逐条覆盖）；这里证的是工具 → facade →
+    // core 这条线真的接上了，且语义标签如实写进结果。
+    const calls: Array<[number, string]> = [];
+    setup({ platform: "linux", procKill: (pid, signal) => { calls.push([pid, signal]); } });
+    const a = makeAgent("a");
+    const opened = await tool("pty_open").execute({ command: "run" }, exec(a));
+    expect(await tool("pty_signal").execute({ id: opened.sessionId, signal: "SIGINT" }, exec(a)))
+      .toMatchObject({ id: opened.sessionId, signal: "SIGINT", delivered: true, semantics: "signal" });
+    expect(calls).toEqual([[-opened.pid!, "SIGINT"]]);
   });
 });

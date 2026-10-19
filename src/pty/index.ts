@@ -7,14 +7,19 @@
  * because rc.2's `terminals` seam is agent-execution-world scoped and
  * invisible to root-composition plugin rows (ADR-0009 blocked conclusion).
  *
- * Four tools, no protocol knowledge:
+ * Six tools, no protocol knowledge:
  *
  *   pty_open({ command, cwd?, env? }) → { sessionId, ... }  spawn the
  *       command on a ConPTY with process-level env injection; survives turns;
  *   pty_send({ id, data, submit? })  → write bytes, return the delta read;
  *   pty_tail({ id, lines? })         → incremental read from a per-session
  *       cursor — repeated tails never resend old lines;
- *   pty_close({ id })                → clean termination + reclaim.
+ *   pty_close({ id })                → clean termination + reclaim;
+ *   pty_list({})                     → the owner's own sessions (id +
+ *       status + pid, stable creation order);
+ *   pty_signal({ id, signal })       → one whitelisted signal, with the
+ *       platform semantics stated in PTY_SIGNAL_SEMANTICS (#119: POSIX
+ *       best-effort real delivery, Windows/ConPTY termination only).
  *
  * All sessions are owner-scoped: every call is authorized against
  * exec.agent and the registry reclaims sessions when the owning agent
@@ -32,7 +37,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { posixQuote } from '../posix-quote.ts'
-import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
 
 const name = 'dsh-pty-session'
 const inject = ['tools']
@@ -91,9 +96,12 @@ function requireAgent(exec: { agent?: Owner }): Owner {
 /** Injectable core dependencies (the unit lane's fake-spawn seam). */
 interface PtyDeps {
   spawnPty?: (spec: CoreSpawnSpec) => PtyLike
+  /** Signal-delivery seam (#119) — see `SessionCoreDeps`. */
+  procKill?: (pid: number, signal: string) => void
+  platform?: NodeJS.Platform
 }
 
-/** Register the four pty_* tools over the self-managed session core. */
+/** Register the six pty_* tools over the self-managed session core. */
 function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) {
   /** The self-managed core (src/pty/session-core.ts): the registry, cursors,
    * cap, idle watch and dispose all live in there — this tool surface and
@@ -108,7 +116,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
    */
   const facade = {
     /** Spawn the command on a ConPTY with env injected into the process. */
-    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean }, signal?: AbortSignal): Promise<any> =>
+    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean; shell?: boolean }, signal?: AbortSignal): Promise<any> =>
       core.open(owner, extractSpec(spec) as OpenSpec, signal),
 
     /** Exclusive send: write, await the settle, return the output read. */
@@ -124,6 +132,15 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
     /** Registry-derived liveness for the owner's own sessions (#62: the
      * counting source of truth). */
     active: (owner: Owner) => core.active(owner),
+
+    /** The owner's own sessions as structured rows (#119): id + status + pid,
+     * stable creation order. Same registry as `active`, richer view. */
+    list: (owner: Owner) => core.list(owner),
+
+    /** Deliver one whitelisted signal (#119). Platform semantics:
+     * `PTY_SIGNAL_SEMANTICS` — POSIX best-effort real delivery,
+     * Windows/ConPTY termination only (declared, never faked). */
+    signal: (owner: Owner, id: string, signal: string) => core.signal(owner, id, signal),
 
     /** Dispose effect: kill every session this core instance spawned. */
     dispose: () => core.dispose(),
@@ -254,6 +271,88 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       return facade.close(owner, args.id)
     },
     presentCall: (args: { id: string }) => ({ card: 'terminal', title: `close ${args.id}` }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'pty_list',
+    description:
+      'List the persistent PTY sessions owned by the CURRENT agent (owner-scoped: another agent\'s sessions are never listed). ' +
+      'Each row carries the session id, its status ({ kind: "running" } or { kind: "exited", exitCode? }) and the top-level pid when the backend exposes one. ' +
+      'Order is stable — creation order (the numeric id suffix) — so repeated calls line up. ' +
+      'An exited session stays listed until pty_close reclaims it (the persistent-session contract).',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          sessions: {
+            type: 'array',
+            required: true,
+            description: 'The owner\'s own sessions, creation order (empty when it holds none).',
+            items: {
+              type: 'object',
+              additionalProperties: true,
+              properties: {
+                id: { type: 'string', required: true, description: 'Session id — pass to pty_send / pty_tail / pty_close / pty_signal.' },
+                status: { type: 'object', additionalProperties: true, description: 'Session status: { kind: "running" } or { kind: "exited", exitCode? }.' },
+                pid: { type: 'number', description: 'Top-level process id, when the backend exposes one.' },
+              },
+            },
+          },
+        },
+      },
+      render: (_args: unknown, value: { sessions?: Array<{ id: string; status?: { kind?: string }; pid?: number }> }) => {
+        const rows = value.sessions ?? []
+        if (rows.length === 0) return [{ type: 'text' as const, text: '(no sessions)' }]
+        const lines = rows.map((row) => {
+          const pid = row.pid === undefined ? '' : `  pid=${String(row.pid)}`
+          return `${row.id}  ${row.status?.kind ?? 'unknown'}${pid}`
+        })
+        return [{ type: 'text' as const, text: lines.join('\n') }]
+      },
+    },
+    async execute(_args: Record<string, never>, exec: { agent?: Owner }) {
+      const owner = requireAgent(exec)
+      return { sessions: facade.list(owner) }
+    },
+    presentCall: () => ({ card: 'terminal', title: 'pty_list' }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'pty_signal',
+    description:
+      'Send an allowed signal to one of your own PTY sessions: ' + PTY_SIGNALS.join(' / ') + '. Owner-scoped like every pty_* call (a foreign id is a loud error). ' +
+      'Delivering a signal never closes the session — read the aftermath with pty_tail, then pty_close. ' +
+      PTY_SIGNAL_SEMANTICS,
+    parameters: {
+      id: { type: 'string', required: true, description: 'Session id from pty_open / shell_open / ssh_start.' },
+      signal: {
+        type: 'string',
+        required: true,
+        enum: PTY_SIGNALS,
+        description: 'The signal to deliver. On Windows/ConPTY only SIGTERM and SIGKILL are accepted (both terminate); see the tool description for the full platform semantics.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          id: { type: 'string', required: true, description: 'The session this call addressed.' },
+          signal: { type: 'string', required: true, description: 'The accepted signal name.' },
+          delivered: { type: 'boolean', required: true, description: 'False when the session had already exited — nothing was delivered.' },
+          semantics: { type: 'string', description: '"signal" = real POSIX delivery, "terminate" = Windows/ConPTY teardown; absent when not delivered.' },
+          status: { type: 'object', additionalProperties: true, description: 'Session status at call time (the exit event from a terminate lands asynchronously — re-read with pty_list / pty_tail).' },
+        },
+      },
+      render: jsonRender as any,
+    },
+    async execute(args: { id: string; signal: string }, exec: { agent?: Owner }) {
+      const owner = requireAgent(exec)
+      return facade.signal(owner, args.id, args.signal)
+    },
+    presentCall: (args: { id: string; signal: string }) => ({ card: 'terminal', title: `signal ${args.signal} ${args.id}` }),
   }))
 
   registerSshTools(ctx, facade, config)

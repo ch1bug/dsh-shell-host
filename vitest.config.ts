@@ -35,9 +35,12 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // with the unit suites, and it skips loudly when its trees are absent.
 // e2e-tarball-machine (#89) runs the same chain from an `npm pack` artifact and
 // carries that same cost, so it is in the serial lane for the same reason.
+// pty-signal-machine (#119) opens a REAL ConPTY session and kills it through
+// pty_signal, so it spawns/tears down real processes: serial, like its peers.
 const machineLane = [
   'tests/ssh-pty-live.spec.ts',
   'tests/terminal-machine.spec.ts',
+  'tests/pty-signal-machine.spec.ts',
   'tests/e2e-tool-call-machine.spec.ts',
   'tests/e2e-real-llm-machine.spec.ts',
   'tests/e2e-tarball-machine.spec.ts',

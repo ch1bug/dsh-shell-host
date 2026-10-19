@@ -347,3 +347,24 @@ describe("shell_open idleTimeoutMs (#56, #61 core-owned)", () => {
     await expect(tool("shell_open").execute({ preset: "pwsh", idleTimeoutMs: -5 }, { agent })).rejects.toThrow(/idleTimeoutMs/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #119 — a shell_open session is a SHELL TARGET on the pty signal surface
+// ---------------------------------------------------------------------------
+
+describe("shell_open sessions are shell targets for pty_signal (#119)", () => {
+  it("pty_list shows the shell session; pty_signal refuses SIGKILL and points at pty_close", async () => {
+    const { tool } = boot();
+    const opened = await tool("shell_open").execute({ preset: "pwsh" }, { agent });
+    // pty_list 的 id 就是核心 id（同一个注册表，不是第二套枚举）。
+    const listed = await tool("pty_list").execute({}, { agent });
+    expect(listed.sessions.map((row: any) => row.id)).toContain(opened.sessionId);
+    // shell 目标拒 SIGKILL（官方语义：杀 shell 收不回它拥有的子进程）——
+    // 拒绝发生在平台分支之前，所以这条判据在 win32 / POSIX 上都成立。
+    await expect(tool("pty_signal").execute({ id: opened.sessionId, signal: "SIGKILL" }, { agent }))
+      .rejects.toMatchObject({ code: "SIGNAL_FORBIDDEN" });
+    // 会话仍活着（拒绝 ≠ 关掉），pty_close 依旧是唯一的回收路径。
+    expect((await tool("pty_list").execute({}, { agent })).sessions[0].status).toEqual({ kind: "running" });
+    expect(await tool("pty_close").execute({ id: opened.sessionId }, { agent })).toEqual({ closed: true });
+  });
+});

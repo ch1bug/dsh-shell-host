@@ -28,6 +28,13 @@
  * (the pty core's registry is the single fact source — the #62 remount
  * zeroing is structurally gone): shell_open reads `core.active(owner)` for
  * the cap and hands `idleTimeoutMs` to the core's own watcher.
+ *
+ * #119: a shell_open session is declared a SHELL TARGET (`shell: true` on the
+ * open spec) — the one layer that knows it resolved a launcher preset. The
+ * consequence is visible on the pty surface: `pty_signal` refuses SIGKILL on
+ * such a session (killing a shell cannot reclaim its children) and points at
+ * pty_close, the single close path. The core never infers this from command
+ * text, so `pty_open({ command: "bash" })` stays a plain target on purpose.
  * @module dsh-shell-host/terminal
  */
 
@@ -85,7 +92,7 @@ interface TerminalCtx {
  * `open` accepts the opt-in per-session idleTimeoutMs, enforced by the
  * core's own watcher (output-defined idle, #56 ruling). */
 interface PtyCore {
-  open(owner: unknown, spec: { command: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number }, signal?: AbortSignal): Promise<{ sessionId: string; initialOutput?: string; [key: string]: unknown }>
+  open(owner: unknown, spec: { command: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; shell?: boolean }, signal?: AbortSignal): Promise<{ sessionId: string; initialOutput?: string; [key: string]: unknown }>
   close(owner: unknown, id: string): Promise<{ closed: boolean }>
   active(owner: unknown): string[]
 }
@@ -204,6 +211,11 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
         ...(cwd === undefined ? {} : { cwd }),
         ...(env === undefined ? {} : { env }),
         ...(args.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: args.idleTimeoutMs }),
+        // #119: this layer KNOWS it resolved a launcher preset (a shell), so it
+        // declares the session a shell target — pty_signal then refuses SIGKILL
+        // on it (official terminal_signal semantics: killing a shell cannot
+        // reclaim the children it owns). No heuristic in the core.
+        shell: true,
       }, exec.signal)
       return {
         sessionId: opened.sessionId,

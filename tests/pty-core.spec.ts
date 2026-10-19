@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { bootPlugin, fakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
-import { DEFAULT_MAX_SESSIONS, defaultSpawnPty } from "../src/pty/session-core.ts";
+import { DEFAULT_MAX_SESSIONS, PTY_SIGNALS, createSessionCore, defaultSpawnPty, type SessionCoreConfig } from "../src/pty/session-core.ts";
 import { waitUntil } from "./helpers/wait-until.ts";
 
 /**
@@ -338,5 +338,182 @@ describe("defaultSpawnPty argv[0] resolution (#67)", () => {
     );
     expect(calls[0]![0]).toBe("/bin/sh");
     expect(calls[0]![1]).toBe("-c");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #119 — the structured listing and the signal surface
+// ---------------------------------------------------------------------------
+
+/**
+ * 为什么这一档直接 `createSessionCore` 而不是走 `bootPlugin`：`pty_list` /
+ * `pty_signal` 的**平台分支**（POSIX 真投递 vs Windows 只有终止）与**投递缝**
+ * （`procKill` / `platform`）都挂在 `SessionCoreDeps` 上；`bootPlugin` 只转发
+ * spawner，测不到另一半。工具面的接线由 `pty-session.spec.ts` 那档覆盖。
+ */
+function signalCore(opts: { platform?: NodeJS.Platform; procKill?: (pid: number, signal: string) => void; config?: Partial<SessionCoreConfig> } = {}) {
+  const handles: FakePtyHandle[] = [];
+  /** 投递读数：`[pid, signal]`，pid 为**负数**时就是进程组投递。 */
+  const kills: Array<[number, string]> = [];
+  const core = createSessionCore(
+    { ...FAST, ...(opts.config ?? {}) },
+    {
+      spawnPty: (spec: CoreSpawnSpec) => {
+        const handle = fakePty(7000 + handles.length);
+        handles.push(handle);
+        return handle.pty;
+      },
+      platform: opts.platform ?? "linux",
+      procKill: opts.procKill ?? ((pid, signal) => { kills.push([pid, signal]) }),
+    },
+  );
+  return { core, handles, kills };
+}
+
+/** 取一个抛错的 `code`（本仓的 loud-error 判据形态）；没抛就是 undefined。 */
+function codeOf(fn: () => unknown): string | undefined {
+  try {
+    fn();
+    return undefined;
+  } catch (error) {
+    return (error as { code?: string }).code;
+  }
+}
+
+describe("pty_list (#119)", () => {
+  it("lists only the caller's own sessions; empty for an owner holding none; rows carry id/status/pid", async () => {
+    const { core } = signalCore();
+    const other = { name: "b" };
+    expect(core.list(agent)).toEqual([]);
+    expect(core.list(other)).toEqual([]);
+    const one = await core.open(agent, { command: "one" });
+    const foreign = await core.open(other, { command: "two" });
+    expect(core.list(agent).map((row) => row.id)).toEqual([one.sessionId]);
+    expect(core.list(other).map((row) => row.id)).toEqual([foreign.sessionId]);
+    expect(core.list(agent)[0]).toEqual({
+      id: one.sessionId,
+      status: { kind: "running" },
+      pid: 7000,
+    });
+  });
+
+  it("order is creation order by the NUMERIC id suffix (lexicographic would flip at the 10th open)", async () => {
+    const { core } = signalCore({ config: { maxSessions: 12 } });
+    const opened: string[] = [];
+    for (let i = 1; i <= 11; i += 1) opened.push((await core.open(agent, { command: `s${i}` })).sessionId);
+    const listed = core.list(agent).map((row) => row.id);
+    expect(listed).toEqual(opened);
+    // 反证：字典序会把 pty-10 / pty-11 排到 pty-2 前面 —— 那正是要钉住的失效形态。
+    expect([...opened].sort()).not.toEqual(opened);
+  });
+
+  it("an exited-but-unclosed session stays listed with its exit code (persistent default)", async () => {
+    const { core, handles } = signalCore();
+    const opened = await core.open(agent, { command: "persist" });
+    handles[0].emitExit({ exitCode: 3 });
+    expect(core.list(agent)).toEqual([{ id: opened.sessionId, status: { kind: "exited", exitCode: 3 }, pid: 7000 }]);
+  });
+});
+
+describe("pty_signal (#119)", () => {
+  it("accepts exactly the whitelist and refuses anything else loudly", async () => {
+    const { core, kills } = signalCore();
+    const opened = await core.open(agent, { command: "run" });
+    expect(codeOf(() => core.signal(agent, opened.sessionId, "SIGUSR1"))).toBe("SIGNAL_INVALID");
+    expect(codeOf(() => core.signal(agent, opened.sessionId, "sigint"))).toBe("SIGNAL_INVALID");
+    expect(codeOf(() => core.signal(agent, opened.sessionId, ""))).toBe("SIGNAL_INVALID");
+    expect(kills).toEqual([]);
+    // 白名单本身是单源常量：逐个都能进到投递面。
+    for (const signal of PTY_SIGNALS) {
+      expect(core.signal(agent, opened.sessionId, signal)).toMatchObject({ signal, delivered: true });
+    }
+    expect(kills.map(([, signal]) => signal)).toEqual([...PTY_SIGNALS]);
+  });
+
+  it("(POSIX) delivers to the session's process GROUP with a real signal — not node-pty's one-shot kill", async () => {
+    const { core, handles, kills } = signalCore({ platform: "linux" });
+    const opened = await core.open(agent, { command: "run" });
+    const result = core.signal(agent, opened.sessionId, "SIGINT");
+    expect(kills).toEqual([[-7000, "SIGINT"]]);
+    expect(result).toEqual({
+      id: opened.sessionId,
+      signal: "SIGINT",
+      delivered: true,
+      semantics: "signal",
+      status: { kind: "running" },
+    });
+    // #119 的取舍依据（核到 node-pty 源码，摘录见 `.scratch/t119-pty-kill-fact.log`）：
+    // `UnixTerminal.kill(signal)` 只是 `process.kill(this.pid, signal || 'SIGHUP')`，
+    // 外面套 `catch (e) { /* swallow */ }` —— 单 pid、且把投递失败整个吞掉 ⇒ 既够不着
+    // 会话的进程组，也报不出 SIGNAL_FAILED。故 POSIX 走我们自己的 process.kill，
+    // pty 的内部状态一概不碰（`killed` 只在 win32 分支与 pty_close 上出现）。
+    expect(handles[0].killed).toBe(0);
+  });
+
+  it("(POSIX) reports a delivery failure loudly instead of pretending success", async () => {
+    const { core } = signalCore({
+      platform: "linux",
+      procKill: () => { throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" }); },
+    });
+    const opened = await core.open(agent, { command: "run" });
+    expect(codeOf(() => core.signal(agent, opened.sessionId, "SIGTERM"))).toBe("SIGNAL_FAILED");
+  });
+
+  it("(Windows/ConPTY) only SIGTERM/SIGKILL are accepted, and both mean TERMINATE", async () => {
+    const { core, handles, kills } = signalCore({ platform: "win32" });
+    const opened = await core.open(agent, { command: "run" });
+    // 不可投递的三项：响亮报缺，绝不静默映射成 kill。
+    for (const signal of ["SIGINT", "SIGTSTP", "SIGHUP"]) {
+      expect(codeOf(() => core.signal(agent, opened.sessionId, signal))).toBe("SIGNAL_UNSUPPORTED");
+    }
+    expect(handles[0].killed).toBe(0);
+    expect(kills).toEqual([]);
+    // 可投递的两项 = 终止语义（ConPTY 唯一能做到的）。
+    for (const signal of ["SIGTERM", "SIGKILL"]) {
+      expect(core.signal(agent, opened.sessionId, signal)).toMatchObject({ signal, delivered: true, semantics: "terminate" });
+    }
+    expect(handles[0].killed).toBe(2);
+  });
+
+  it("refuses SIGKILL for shell targets on both platforms (killing a shell cannot reclaim its children)", async () => {
+    for (const platform of ["linux", "win32"] as const) {
+      const { core, handles, kills } = signalCore({ platform });
+      const shell = await core.open(agent, { command: "bash -l", shell: true });
+      expect(codeOf(() => core.signal(agent, shell.sessionId, "SIGKILL"))).toBe("SIGNAL_FORBIDDEN");
+      expect(handles[0].killed).toBe(0);
+      expect(kills).toEqual([]);
+      // 同一个会话的其他信号照旧（拒绝的是 SIGKILL，不是 shell 本身）。
+      expect(core.signal(agent, shell.sessionId, "SIGTERM")).toMatchObject({ delivered: true });
+      // 非 shell 目标的 SIGKILL 正常放行（pty_open 的会话不自称 shell）。
+      const plain = await core.open(agent, { command: "node server.js" });
+      expect(core.signal(agent, plain.sessionId, "SIGKILL")).toMatchObject({ delivered: true });
+    }
+  });
+
+  it("an exited session reports delivered:false (nothing left to signal) and delivers nothing", async () => {
+    const { core, handles, kills } = signalCore();
+    const opened = await core.open(agent, { command: "run" });
+    handles[0].emitExit({ exitCode: 0 });
+    const result = core.signal(agent, opened.sessionId, "SIGINT");
+    expect(result).toEqual({
+      id: opened.sessionId,
+      signal: "SIGINT",
+      delivered: false,
+      status: { kind: "exited", exitCode: 0 },
+    });
+    expect("semantics" in result).toBe(false);
+    expect(kills).toEqual([]);
+  });
+
+  it("owner boundary + invalid id: foreign is SESSION_OWNED, unknown is NO_SESSION", async () => {
+    const { core } = signalCore();
+    const opened = await core.open(agent, { command: "secret" });
+    expect(codeOf(() => core.signal({ name: "b" }, opened.sessionId, "SIGINT"))).toBe("SESSION_OWNED");
+    // 归属判据**先于**白名单：别人的 id 配一个非法信号名，仍然只报 SESSION_OWNED
+    // （AC2 的姿态不得随调用方的其它参数变化 —— 复核发现 #1）。
+    expect(codeOf(() => core.signal({ name: "b" }, opened.sessionId, "SIGUSR1"))).toBe("SESSION_OWNED");
+    expect(codeOf(() => core.signal(agent, "nope", "SIGINT"))).toBe("NO_SESSION");
+    // 自己的会话上，信号名才被校验（且先于已退出判据，见上一条用例）。
+    expect(codeOf(() => core.signal(agent, opened.sessionId, "SIGUSR1"))).toBe("SIGNAL_INVALID");
   });
 });

@@ -17,6 +17,12 @@
  * (a partial trailing line is held back until its newline arrives); a
  * tail reports `truncated` when the backlog exceeded the requested
  * budget (older lines are then lost).
+ *
+ * Signal/listing surface (#119): `list(owner)` is the registry's structured
+ * view (id + status + pid, stable creation order) and `signal(owner, id,
+ * signal)` delivers one whitelisted signal with the platform semantics
+ * spelled out in {@link PTY_SIGNAL_SEMANTICS} — POSIX best-effort real
+ * delivery, Windows/ConPTY termination only, declared rather than faked.
  * @module dsh-shell-host/pty/session-core
  */
 
@@ -110,6 +116,13 @@ export interface SessionCoreDeps {
   /** Defaults to the real @lydell/node-pty spawn of the command itself
    * (Windows: argv-tokenized direct spawn; POSIX: `/bin/sh -c`). */
   spawnPty?: (spec: CoreSpawnSpec) => PtyLike
+  /** POSIX signal delivery (#119), defaults to the real `process.kill`.
+   * Injected so the unit lane can pin the delivered pid/signal without a
+   * real process — and so the win32 branch is testable on any host. */
+  procKill?: (pid: number, signal: string) => void
+  /** Platform guard for the signal semantics (#119), defaults to
+   * `process.platform`. Injected for the same reason. */
+  platform?: NodeJS.Platform
 }
 
 interface Session {
@@ -133,10 +146,79 @@ interface Session {
   /** Absolute line count at the last idle-watch observation. */
   idleLastLines: number
   lastActivityAt: number
+  /** Shell target flag (#119) — declared by the opening surface, see
+   * `OpenSpec.shell`; only `signal()`'s SIGKILL gate reads it. */
+  shell?: boolean
 }
 
 /** Session status shape — the seam's sessionStatus contract, kept. */
 export type SessionStatus = { kind: 'running' } | { kind: 'exited'; exitCode?: number; signal?: number }
+
+/**
+ * The signals `pty_signal` accepts (#119) — the same five the official
+ * `terminal_signal` allows. SINGLE SOURCE (#66 keepalive / AUTO_CLOSE
+ * precedent): the tool parameter enum, the core's validation, README and the
+ * specs all derive from here, so the accepted list cannot drift between the
+ * agent-facing surface and the implementation.
+ */
+export const PTY_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGTSTP', 'SIGHUP'] as const
+
+/**
+ * The subset Windows/ConPTY can actually act on (#119). node-pty's own API
+ * contract says `kill(signal)` is "not supported on Windows" and THROWS, so
+ * the only lever there is a plain `kill()` — a TERMINATION. Only these two
+ * names are accepted on win32 (and both mean "terminate the session"); the
+ * other three are refused loudly rather than silently mapped onto a kill.
+ */
+export const PTY_WINDOWS_SIGNALS = ['SIGTERM', 'SIGKILL'] as const
+
+/**
+ * The platform semantics of `pty_signal`, stated ONCE (#119 AC3; #66
+ * precedent): the tool description quotes this constant verbatim and
+ * README/GLOSSARY point here, so the agent-facing surface and the docs cannot
+ * tell two different stories — and the Windows limitation is declared
+ * instead of glossed over ("做不到等价就响亮报缺").
+ *
+ * Every claim here is checkable: POSIX delivery is our own `process.kill`
+ * (group-addressed), the foreground group is unreachable because Node exposes
+ * no `tcgetpgrp`, the win32 branch is node-pty's own throw (see the excerpt in
+ * `.scratch/t119-pty-kill-fact.log`), and the idle-timeout caveat is the
+ * core's own watcher below.
+ */
+export const PTY_SIGNAL_SEMANTICS =
+  'Platform semantics, stated not glossed over: ' +
+  'POSIX — the signal is delivered with process.kill to the session\'s process GROUP (negative pid; a forkpty child is a session leader, so its pid is also its group id). ' +
+  'That is REAL signal delivery but only BEST EFFORT: the FOREGROUND process group cannot be addressed (Node exposes no tcgetpgrp), so an interactive shell that puts its foreground job in a separate group is not reached — ' +
+  'for Ctrl-C prefer pty_send with "\\u0003" (0x03), which the terminal driver delivers to the foreground group. ' +
+  'Windows/ConPTY — node-pty cannot deliver POSIX signals at all, so only SIGTERM and SIGKILL are accepted and BOTH mean TERMINATE (the ConPTY process tree is torn down); ' +
+  'SIGINT / SIGTSTP / SIGHUP are refused loudly instead of being silently mapped. ' +
+  'SIGKILL is refused for shell targets (sessions opened by shell_open) on every platform — on POSIX a hard-killed shell cannot reclaim the children it owns, so use pty_close (the single close path); ' +
+  'on Windows every accepted signal is a process-tree teardown anyway, so SIGTERM is the intended way to end a shell session there. ' +
+  'Delivering a signal does not ITSELF close the session — read the aftermath with pty_tail, then pty_close (idempotent); an opted-in idleTimeoutMs can still reclaim it later if the signal stops its output.'
+
+/** One row of the `pty_list` surface (#119): id + status, plus the pid when
+ * the backend exposes one (command/cwd are #121's display-metadata ticket).
+ * A TYPE LITERAL, not an interface: `defineTool`'s output inference maps an
+ * open object (`additionalProperties: true`) to `Record<string, JsonValue>`,
+ * and only object-literal types carry the implicit index signature that makes
+ * them assignable to it (the same reason `SshOption` is a literal type). */
+export type SessionSummary = {
+  id: string
+  status: SessionStatus
+  pid?: number
+}
+
+/** One `pty_signal` outcome (#119). `delivered` is false only for an
+ * already-exited session; `semantics` is present exactly when delivered and
+ * names what the platform ACTUALLY did. (Type literal for the reason stated
+ * on {@link SessionSummary}.) */
+export type SignalResult = {
+  id: string
+  signal: string
+  delivered: boolean
+  semantics?: 'signal' | 'terminate'
+  status: SessionStatus
+}
 
 export interface OpenSpec {
   command: string
@@ -148,6 +230,14 @@ export interface OpenSpec {
   /** One-shot mode (#64) — semantics have a single source of truth:
    * `AUTO_CLOSE_SEMANTICS` below. Default false: persistent, unchanged. */
   autoClose?: boolean
+  /**
+   * Declared by the OPENING SURFACE (#119): the session's top-level process IS
+   * a shell — `./terminal`'s shell_open sets it, because that layer is the one
+   * that knows it resolved a launcher preset. Gates SIGKILL in `signal()`.
+   * The core never guesses shell-ness from command text: a heuristic could not
+   * be honest about `pty_open({ command: "bash" })`, so it does not try.
+   */
+  shell?: boolean
 }
 
 /**
@@ -196,6 +286,13 @@ export interface SessionCore {
    * owner (the #62 fix — counting derives from HERE, not from any entry's
    * closure state). */
   active(owner: unknown): string[]
+  /** Owner-scoped listing (#119): id + status (+ pid when exposed), stable
+   * creation order. The data source is the same registry as `active` — this
+   * is its structured view, not a second enumeration. */
+  list(owner: unknown): SessionSummary[]
+  /** Deliver one whitelisted signal to the owner's session (#119). Platform
+   * semantics: {@link PTY_SIGNAL_SEMANTICS}. */
+  signal(owner: unknown, id: string, signal: string): SignalResult
   /** Awaited dispose: kill every session this core spawned. */
   dispose(): Promise<void>
 }
@@ -292,6 +389,10 @@ export function defaultSpawnPty(spec: CoreSpawnSpec, deps: DefaultSpawnDeps = {}
 export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: SessionCoreDeps = {}): SessionCore {
   const config = resolveCoreConfig(rawConfig)
   const spawnPty = deps.spawnPty ?? defaultSpawnPty
+  /** Signal delivery seams (#119): the real platform + process.kill unless a
+   * lane injects its own (the unit lane pins both branches hermetically). */
+  const platform = deps.platform ?? process.platform
+  const procKill = deps.procKill ?? ((pid: number, signal: string): void => { process.kill(pid, signal) })
 
   /** owner (Agent) -> Map<sessionId, Session>. THE registry — the fact
    * source for the cap, the idle watch, and dispose. */
@@ -312,6 +413,17 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
 
   const statusOf = (s: Session): SessionStatus =>
     s.exited ? { kind: 'exited', ...(s.exitCode === undefined ? {} : { exitCode: s.exitCode }) } : { kind: 'running' }
+
+  /** Stable listing order (#119): creation order by the NUMERIC id suffix.
+   * Plain lexicographic order would put `pty-10` before `pty-2`, so the same
+   * two sessions would swap places at the 10th open — the contract says the
+   * order must line up across calls. */
+  const idOrder = (a: Session, b: Session): number => {
+    const na = Number(a.id.slice(a.id.lastIndexOf('-') + 1))
+    const nb = Number(b.id.slice(b.id.lastIndexOf('-') + 1))
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  }
 
   const totalLines = (s: Session): number => s.absBase + s.lines.length
 
@@ -471,6 +583,9 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       if (spec.autoClose !== undefined && typeof spec.autoClose !== 'boolean') {
         throw new Error(`autoClose must be a boolean, got: ${JSON.stringify(spec.autoClose)}`)
       }
+      if (spec.shell !== undefined && typeof spec.shell !== 'boolean') {
+        throw new Error(`shell must be a boolean, got: ${JSON.stringify(spec.shell)}`)
+      }
       if (spec.idleTimeoutMs !== undefined && (!Number.isInteger(spec.idleTimeoutMs) || spec.idleTimeoutMs <= 0)) {
         throw new Error(`idleTimeoutMs must be a positive integer (ms), got: ${JSON.stringify(spec.idleTimeoutMs)}`)
       }
@@ -501,6 +616,7 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         ...extractSpec({
           idleTimeoutMs: spec.idleTimeoutMs,
           autoClose: spec.autoClose,
+          shell: spec.shell,
         }),
         idleLastLines: 0,
         lastActivityAt: Date.now(),
@@ -594,6 +710,64 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
 
     active(owner) {
       return [...(registry.get(owner)?.keys() ?? [])]
+    },
+
+    list(owner) {
+      const byId = registry.get(owner)
+      if (byId === undefined) return []
+      return [...byId.values()].sort(idOrder).map((s) => ({
+        id: s.id,
+        status: statusOf(s),
+        ...(s.pty.pid === undefined ? {} : { pid: s.pty.pid }),
+      }))
+    },
+
+    signal(owner, id, signal) {
+      // Ownership/existence FIRST (#119 AC2): a foreign id is a loud
+      // SESSION_OWNED no matter what signal name came with it (a privacy
+      // posture that must not depend on the caller's other arguments), and a
+      // truly unknown id is a loud NO_SESSION — never a silent miss.
+      const s = registry.get(owner)?.get(id)
+      if (s === undefined) {
+        if (ownerOf(id) !== undefined) throw terr('SESSION_OWNED', `pty session ${JSON.stringify(id)} belongs to another agent`)
+        throw terr('NO_SESSION', `no pty session ${JSON.stringify(id)} for this agent`)
+      }
+      // Then the NAME: a mistyped signal is a caller error on the caller's OWN
+      // session (the tool surface's parameter enum is the same single source).
+      if (!(PTY_SIGNALS as readonly string[]).includes(signal)) {
+        throw terr('SIGNAL_INVALID', `pty_signal: ${JSON.stringify(signal)} is not an accepted signal; allowed: ${PTY_SIGNALS.join(', ')}`)
+      }
+      const status = statusOf(s)
+      // An exited-but-unclosed session (persistent default) has nothing left
+      // to signal — report it, do not pretend a delivery happened.
+      if (s.exited) return { id, signal, delivered: false, status }
+      if (signal === 'SIGKILL' && s.shell === true) {
+        throw terr('SIGNAL_FORBIDDEN', `pty_signal: SIGKILL is refused for shell target ${JSON.stringify(id)} — killing a shell cannot reclaim the children it owns; use pty_close (the single close path)`)
+      }
+      if (platform === 'win32') {
+        if (!(PTY_WINDOWS_SIGNALS as readonly string[]).includes(signal)) {
+          throw terr('SIGNAL_UNSUPPORTED', `pty_signal: ${signal} cannot be delivered on Windows/ConPTY — node-pty exposes termination only (${PTY_WINDOWS_SIGNALS.join(' / ')}); for an interactive shell send "\\u0003" (Ctrl-C) with pty_send instead`)
+        }
+        try {
+          // ConPTY's only lever: a plain kill() — the session terminates.
+          s.pty.kill()
+        } catch (error) {
+          throw terr('SIGNAL_FAILED', `pty_signal: terminating ${JSON.stringify(id)} failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        return { id, signal, delivered: true, semantics: 'terminate', status }
+      }
+      const pid = s.pty.pid
+      if (pid === undefined) {
+        throw terr('SIGNAL_NO_PID', `pty_signal: session ${JSON.stringify(id)} exposes no pid — this backend cannot receive signals`)
+      }
+      try {
+        // Negative pid = the session's process GROUP (forkpty's session
+        // leader), so a `sh -c` child tree is reached as one unit.
+        procKill(-pid, signal)
+      } catch (error) {
+        throw terr('SIGNAL_FAILED', `pty_signal: delivering ${signal} to the process group of ${JSON.stringify(id)} (pid ${pid}) failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return { id, signal, delivered: true, semantics: 'signal', status }
     },
 
     async dispose() {
