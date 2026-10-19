@@ -203,13 +203,30 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   PTY 会话核心)、`./terminal`(shell_open launcher 预设)、`./wsl`(WSL 桥
   工具)。`launchers.ts` 吸收了原 backends 的 argv/prefix 常量
   (`*_INTERACTIVE_ARGV`、`msys2PathPrefix`、`parseWslDistroList`)。
-- **远程 one-shot = C 路线**:归独立 `dsh-shell-remote` 插件(ADR-0004 原边界
-  恢复;该插件已独立安装在 profile)。
+- **远程 one-shot = C 路线**【已被 D14 / ADR-0016 覆盖:远程工作区收回本包,
+  `dsh-shell-remote` 只记为前身】:原结论为归独立 `dsh-shell-remote` 插件
+  (ADR-0004 原边界恢复)。
 - **ADR 状态**:0001/0003/0006 被 ADR-0013 supersede;0002/0011 已被 0012
   supersede;0007/0008 收窄有效(所有 entry 均为插件层)。T5 e2e 执行器清单
   与执行器/registry/backend 测试面随删;machine lane = terminal + ssh-pty live。
 
-## D12 (#ADR-0012, 2026-10-16, human 拍板:只保留独立插件注册)【行清单已被 D13 收窄:现挂载面 = `pty` + `terminal`,无 `shell-host`】
+## D14 (ADR-0016, 2026-10-19, human 拍板:远程工作区收回本包)
+
+- **三组件 + pty 回归纯核心**:`./ssh` 独立组件(owns ssh 四工具 + 命令合成 / keepalive /
+  `port` / `-o` 透传)、`./remote` 远程工作区 = 多会话编排、`./remote-files` 远端文件面
+  (与 remote 兄弟、只依赖 ssh);挂载面 **2 行 → 4 行**(`pty`/`ssh`/`remote`/`remote-files`),
+  `tests/patch-shape.spec.ts` 的棘轮显式更新;全部插件层 —— 执行器 world 仍不复活,
+  `ctx.shell` 仍只由平台 shell 执行器提供(ADR-0013 主体不变)。
+- **文件操作远端就地执行**:工作区持有一条长驻 `ssh <host> -- sh` 通道,帧化请求
+  (长度前缀 + 请求 id),只传 payload(base64 / `tar` 批量);**不用 SFTP / SSHFS / rsync**,
+  零新增依赖。
+- **远端零安装**:只要求 `sh` + `base64`/`find`/`stat`/`tar`;不装 server、不做版本目录。
+- **升级门槛**:watch/增量、千文件级扫描、断线续期/多客户端 —— 任一成立才升 helper
+  (先零安装 `sh` 帧循环,再考虑 node)。
+- **远程 one-shot 便捷工具(哨兵法)不在本 ADR**:留独立决定。
+- **supersede 范围**:仅覆盖 ADR-0013 的「Remote one-shot goes route C」一节。
+
+## D12 (#ADR-0012, 2026-10-16, human 拍板:只保留独立插件注册)【行清单已被 D13 收窄:现挂载面 = `pty` + `terminal`,无 `shell-host`;又被 D14 扩到 4 行】
 
 - **改上游路径全部摒弃,挂载形态 = 自有 id 插件行**:patch 只允许自有 id 的
   insert 行(`shell-host` / `pty` / `terminal`);同 id 接管上游 loader 行、
@@ -233,9 +250,9 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。
 - **Backend Registry(后端注册表)**:全部已注册 backend descriptor 的集合;`backend` config 单选指向其一(运行时可热切)。#23(路B)起 = msys2 / plain / pwsh / wsl / **ssh**(ssh 入册系 #23 授权,ADR-0006 缩小 ADR-0003 决策 2 的边界;持久会话仍不入册)。
 - **WSL 桥(WSL bridge)**:wsl 后端专属的跨 VM 路径映射层,toShell/fromShell 双向(ADR-0003 决策 5)——通用 descriptor 映射与透传都不承担该职责。
-- **远程执行器(Remote executor)**:`dsh-shell-remote` 仓的 one-shot 远程执行世界(ADR-0004)——薄 ssh 传输、契约与 bash-local 字段一致、路径语义全为远端。#23(路B)后该传输合并为 shell-host 的 `ssh` 后端(ADR-0006),原仓归档或留薄壳;**持久会话仍不入册**。
+- **远程工作区(Remote workspace)**:远端目录 = 工作区根;一个工作区持有**多条**持久会话(shell / 构建 / 测试)与一套远端文件面,命令与文件操作都**在远端就地执行**(长驻 `ssh <host> -- sh` 通道 + 帧化请求),不装远端 server、不用 SFTP(ADR-0016)。前身 = `dsh-shell-remote` 仓的 one-shot 远程执行世界(ADR-0004)与被吸收的 `./remote` entry(ADR-0007 吸收,ADR-0013 删除);现在**不要求**该独立插件安装。
 - **持久会话(Persistent session)**:交互式/长生命周期 shell 语义,归 `dsh-pty-session` 仓(本地或 ssh 实例);shell-host 与 shell-remote 都不承载(ADR-0004 决策 5)。ADR-0007 后迁入 shell-host 包的 `./pty` entry,所有权结论不变。
-- **Entry(包入口)**:dsh-shell-host 单包多入口的导出单元(ADR-0007)——`./host` 执行器(现状)、`./pty` 持久会话、`./remote` 远程 one-shot、`./wsl` 插件层桥。executor entries(`./host`/`./pty`/`./remote`)产出执行语义;`./wsl` 是插件层 entry(defineTool + ctx.tools,依赖 @deepseek-ai/dsh-tools),注册工具而非执行后端,与其内嵌的 `src/wsl-bridge.ts` 纯路径映射是两层、不合并。各 entry 独立 settings namespace,共享包不合并配置面。
+- **Entry(包入口)**:dsh-shell-host 单包多入口的导出单元(ADR-0007)。现行 entry 面(ADR-0016):`./pty`(持久 PTY 会话核心)、`./ssh`(ssh 通道能力 + ssh 四工具)、`./terminal`(`shell_open` launcher 预设)、`./remote`(远程工作区 = 多会话编排)、`./remote-files`(远端文件面)、`./wsl`(WSL 桥工具)。全部是插件层 entry(defineTool + ctx.tools),各 entry 独立 settings namespace,共享包不合并配置面;执行器 entry(`./host`)及其执行语义已随 ADR-0013 删除。
 
 ## #52 grill 共识(2026-10-09,进行中)
 
