@@ -152,6 +152,26 @@ and a local tool hitting an anchor path gets an error message that points at the
 remote family. The clean long-term fix — a **workspace-scoped `ctx.fs`** — is a
 DSH upstream capability, not something this package can do today.
 
+**10. Isomorphism with the upstream contract is a hard design constraint.**
+
+If DSH later ships the corresponding capability (a workspace-scoped `ctx.fs`), we
+must be able to **put their implementation in place of ours with almost no
+friction** — measured in edits, not in intent. Therefore:
+
+- `ctx.remoteFs` mirrors the `dsh-fs` contract **name-for-name and
+  shape-for-shape**: `resolve` / `stat` / `readText` / `streamText` /
+  `readBytes` / `listDir` / `watch` / `writeText` / `editText`, the same
+  `FS_*` error codes, and the same optional version guards;
+- our tools mirror the upstream tool semantics (`read` / `write` / `edit`, and
+  the search family) **parameter-for-parameter**, differing only by the `remote_`
+  prefix — so a migration deletes the prefix and re-points at `ctx.fs`;
+- the channel and framing stay strictly **behind the service**: no upstream-visible
+  protocol, no tool that speaks frames, so swapping the backend touches neither
+  tool schemas nor prompts.
+
+This is why the parallel "own coarse-grained tools" option was rejected: it would
+have made the eventual upstream migration a rewrite instead of a swap.
+
 ## Consequences
 
 - Positive: the three pieces a remote workspace needs (channel / session / files)
