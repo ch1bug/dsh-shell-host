@@ -10,6 +10,51 @@
 import { describe, it, expect } from "vitest";
 import { bootPlugin, fakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
 import { DEFAULT_MAX_SESSIONS, defaultSpawnPty } from "../src/pty/session-core.ts";
+import { waitUntil } from "./helpers/wait-until.ts";
+
+/**
+ * 每处固定 sleep 的判据分类（#129）—— 逐处判断，不一律改轮询。
+ *
+ * 本文件此前有 20 处 `await new Promise((r) => setTimeout(r, N))`。按**等什么**分三类
+ * （下面的行号是**本改动之后**的现状，改动前对应 `:46/59/…/225`）：
+ *
+ * 1. **正当的短 sleep（保持原样，11 处）**：`:91/104/112/119/122/127/137/157/178/196/217`
+ *    的 `setTimeout(10)` 等的是"**假 PTY 的 echo 落进缓冲**"—— `helpers/fake-pty.ts:83`
+ *    的实现本身就是 `setTimeout(..., 5)` 后才 `emitData`。这是"给一个**已知的、自己制造的**
+ *    小延迟留时间"，不是"等一个可观测的最终状态"；改成轮询反而要探一个没有判据的中间态。
+ *    （另有 `stillHeldFor` 内部的一处 `setTimeout(ms)` —— 那是下界证明的sleep，见第 3 类。）
+ *
+ * 2. **等"某个事件已发生"（改轮询，5 处：`:203/221/238/250/289`）**：形状是
+ *    `emitExit()` → 固定 sleep → 断言**已**回收 / **已**关闭。固定时长是**猜测**：
+ *    实测（`.scratch/t129-measure.log`，真 core、1ms 步进探针、n=20）本文件 `:62` 的
+ *    `FAST` 档回收 min46/p50 62/max64ms，而 `:275` 的回归档（`settleQuietMs:60`）
+ *    是 min78/p50 93/**max97**ms —— 对 100ms 的固定预算，最坏余量只剩 **3ms**。
+ *    ⇒ 改为 `waitUntil(条件, { timeoutMs: 秒级 })`，超时**响亮失败**并附实测状态。
+ *
+ * 3. **证明"尚未发生"（**不能**改轮询，4 处：`:201/265/281/286`）**：形状是"到此刻**仍然** active /
+ *    仍然可读"。这是**下界**证明 —— 轮询到"条件成立"在这里是**真空通过**（回收真出问题、
+ *    或干脆立刻回收，探针都会绿），判据会失效。故改用 {@link stillHeldFor} 保住它的语义：
+ *    睡满下界 + 断言此刻**确实**仍持有。
+ *
+ * ⚠️ 第 3 类是本票**最容易误判**的地方：票面 `:155`（改前行号）的说明已点出"等的是**不发生的**
+ * 事件，可能需要改的是**下界证明方式**，不是轮询"—— 此处照此办理，并把该判断留档在
+ * `.scratch/129-landing.md`。
+ */
+
+/**
+ * **下界**证明：至少等满 `ms`，然后把此刻的实测值交给 `expected` 去断言。
+ *
+ * 为什么不能写成 `waitUntil(() => !held)` 的反面：那种"等一个**不发生**的事件"没有可轮询的
+ * 成立条件 —— 轮询到它成立就绿，说明该发生的事**还没**发生，恰恰是失败；轮询不到则要睡满
+ * 上界才能判，与固定 sleep 同样脆。下界证明的正确形态就是"睡满 + 断言仍持有"。
+ *
+ * `observed` 在**通过**时也会被算一次（与 `waitUntil` 的惰性 `describeObserved` 不同）：
+ * 这里的读数本身是断言对象，必须在断言时取。
+ */
+async function stillHeldFor<T>(ms: number, observed: () => T): Promise<T> {
+  await new Promise((r) => setTimeout(r, ms));
+  return observed();
+}
 
 /** Fast settle tuning: the core polls for output quiescence; these values
  * keep every await in the spec under ~100ms without weakening the
@@ -152,11 +197,13 @@ describe("self-managed session core (#61 ADR-0010)", () => {
     handles[0].emitData("hi\r\n");
     const opened = await openedPromise;
     // Output inside the window refreshes the clock — still alive past 80ms.
-    await new Promise((r) => setTimeout(r, 80));
-    expect(core.active(agent)).toContain(opened.sessionId);
-    // Now truly idle: the watcher closes it.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(core.active(agent)).not.toContain(opened.sessionId);
+    // 下界证明（见头注第 3 类）：睡满 80ms 再断言**此刻仍然**持有，不是轮询。
+    expect(await stillHeldFor(80, () => core.active(agent))).toContain(opened.sessionId);
+    // Now truly idle: the watcher closes it. 等"关闭已发生"这个事件成立 —— 不是等一个时长。
+    await waitUntil(() => !core.active(agent).includes(opened.sessionId), {
+      timeoutMs: 5_000,
+      describeObserved: () => `active(agent) = ${JSON.stringify(core.active(agent))}（期望不含 ${opened.sessionId}）`,
+    });
     core.dispose().catch(() => {});
   });
 });
@@ -170,8 +217,12 @@ describe("autoClose one-shot mode (#64)", () => {
     await new Promise((r) => setTimeout(r, 10));
     h.spawned[0].emitExit({ exitCode: 0 });
     // Settle window first (output lands), then the single close path reclaims.
-    await new Promise((r) => setTimeout(r, 100));
-    expect(h.core.active(agent)).not.toContain(opened.sessionId);
+    // 等"回收已发生"这个条件成立，不是等一个时长（头注第 2 类）。
+    await waitUntil(() => !h.core.active(agent).includes(opened.sessionId), {
+      timeoutMs: 5_000,
+      describeObserved: () => `active(agent) = ${JSON.stringify(h.core.active(agent))}`
+        + `（期望不含 ${opened.sessionId}）；killed=${h.spawned[0].killed}`,
+    });
     expect(h.spawned[0].killed).toBe(0); // already exited — no kill needed
   });
 
@@ -181,7 +232,13 @@ describe("autoClose one-shot mode (#64)", () => {
     // Cap is full while the session lives.
     await expect(h.tool("pty_open").execute({ command: "second" }, { agent })).rejects.toThrow(/limit/);
     h.spawned[0].emitExit({ exitCode: 0 });
-    await new Promise((r) => setTimeout(r, 100));
+    // 等"槽位已释放"的**前置条件**（回收已发生）成立，而不是猜一个时长。
+    // 判据取"该 owner 已无任何持有"（本档 maxSessions=1 ⇒ 注册表应清空），
+    // 不写死 `pty-1`：id 由 core 的计数器生成，写死会把判据绑在编号上。
+    await waitUntil(() => h.core.active(agent).length === 0, {
+      timeoutMs: 5_000,
+      describeObserved: () => `active(agent) = ${JSON.stringify(h.core.active(agent))}（期望为空：单会话档，回收后应清空）`,
+    });
     await expect(h.tool("pty_open").execute({ command: "fits-now" }, { agent })).resolves.toBeTruthy();
   });
 
@@ -189,7 +246,11 @@ describe("autoClose one-shot mode (#64)", () => {
     const h = bootFast();
     const opened = await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
     h.spawned[0].emitExit({ exitCode: 0 });
-    await new Promise((r) => setTimeout(r, 100));
+    // 等"回收已发生"成立后再断言 tail 的死会话语义 —— 不是等一个时长。
+    await waitUntil(() => !h.core.active(agent).includes(opened.sessionId), {
+      timeoutMs: 5_000,
+      describeObserved: () => `active(agent) = ${JSON.stringify(h.core.active(agent))}（期望不含 ${opened.sessionId}）`,
+    });
     await expect(h.tool("pty_tail").execute({ id: opened.sessionId }, { agent })).rejects.toMatchObject({ code: "NO_SESSION" });
   });
 
@@ -198,9 +259,10 @@ describe("autoClose one-shot mode (#64)", () => {
     const opened = await h.tool("pty_open").execute({ command: "persist" }, { agent });
     h.spawned[0].emitData("before\r\n");
     h.spawned[0].emitExit({ exitCode: 3 });
-    await new Promise((r) => setTimeout(r, 100));
     // Still registered, tail still readable, no kill, status carries the code.
-    expect(h.core.active(agent)).toContain(opened.sessionId);
+    // 下界证明（头注第 3 类）：持久档**在退出后仍应被持有** —— 这里要证的是"没被回收"，
+    // 轮询到某个条件成立在此会真空通过，故睡满下界后断言此刻仍然持有。
+    expect(await stillHeldFor(100, () => h.core.active(agent))).toContain(opened.sessionId);
     const page = await h.tool("pty_tail").execute({ id: opened.sessionId }, { agent });
     expect(page.text).toContain("before");
     expect(h.spawned[0].killed).toBe(0);
@@ -213,17 +275,22 @@ describe("autoClose one-shot mode (#64)", () => {
     const h = bootFast({ config: { settleQuietMs: 60, settleTickMs: 5, settleTimeoutMs: 2000 } });
     const opened = await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
     h.spawned[0].emitExit({ exitCode: 0 });
-    await new Promise((r) => setTimeout(r, 20));
     // Still inside the quiet window: not yet reclaimed.
-    expect(h.core.active(agent)).toContain(opened.sessionId);
+    // ⚠️ 下界证明（头注第 3 类）：本行要证"**尚未**回收"，不是"回收已发生" ——
+    // 轮询在此会**真空通过**（回收真出问题也绿），故睡满下界 + 断言此刻仍然持有。
+    expect(await stillHeldFor(20, () => h.core.active(agent))).toContain(opened.sessionId);
     // Post-exit flush (buffered output racing the exit event) lands and
     // resets the settle clock.
     h.spawned[0].emitData("final flush\r\n");
-    await new Promise((r) => setTimeout(r, 45));
-    // 65ms since exit but only ~45ms of quiet: still held.
-    expect(h.core.active(agent)).toContain(opened.sessionId);
-    await new Promise((r) => setTimeout(r, 80));
-    expect(h.core.active(agent)).not.toContain(opened.sessionId);
+    // 65ms since exit but only ~45ms of quiet: still held (同一条下界判据)。
+    expect(await stillHeldFor(45, () => h.core.active(agent))).toContain(opened.sessionId);
+    // 等"回收已发生"—— 这一次是**正面**事件，改轮询 + 秒级上界（这正是本票的主诉形状：
+    // 该档实测回收 min78/p50 93/max97ms，对旧的 80ms 固定预算最坏余量只剩 3ms）。
+    await waitUntil(() => !h.core.active(agent).includes(opened.sessionId), {
+      timeoutMs: 5_000,
+      describeObserved: () => `active(agent) = ${JSON.stringify(h.core.active(agent))}`
+        + `（期望不含 ${opened.sessionId}；本档 settleQuietMs=60，实测回收 min78/p50 93/max97ms）`,
+    });
   });
 
   it("rejects a non-boolean autoClose loudly", async () => {
