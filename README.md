@@ -192,6 +192,54 @@ no longer resolves post-absorption. Plugin-LAYER entry (ADR-0007 "Entry form
 differences"): built on `defineTool` + `ctx.tools`, registers model tools —
 never an execution backend.
 
+## Division of labor with the official optional bundles
+
+DSH's optional-bundle list (`OPTIONAL_BUNDLES`) holds several bundles a person
+switches on from the Plugins page; two of them bear on this package. Both are
+offered switched **OFF** and are selected by no shipped template:
+
+- `@deepseek-ai/dsh-experimental-terminal-bundle` — the official persistent
+  terminal: `@deepseek-ai/dsh-terminal` + `@deepseek-ai/dsh-terminal-bash` (the
+  Windows row reuses the same backend package with `shellDialect: pwsh`) +
+  `@deepseek-ai/dsh-tool-terminal`, i.e. six tools (`terminal_open` /
+  `terminal_send` / `terminal_read` / `terminal_signal` / `terminal_close` /
+  `terminal_list`). While it is on it is a **global tool layer**: every agent
+  in every preset sees those tools.
+- `@deepseek-ai/dsh-experimental-ralph-bundle` — the `ralph` tool (a fixed
+  script plus one fresh structured-output child per round). It injects
+  `tools` / `workflowEngine` / `subagents` / `systemPrompt`, but registers no
+  tool this package also registers: enabling it only adds the one global
+  `ralph` tool.
+
+Tool names and loader row ids do not collide, so the official bundles and this
+one can coexist in a single profile. The recommended posture is nonetheless
+**do not enable the official terminal bundle together with this package's
+`./pty` / `./terminal`**: two session registries (`terminal_*` over the
+official `terminals` service, `pty_*` over this package's own node-pty core)
+plus the official bundle's own `tool:pty` system-prompt section — this package
+registers no prompt section at all, so the model gets one mental model
+described twice, and reading both it has no way to tell which registry a given
+session id belongs to. Keep one of them: this package's `pty_*` / `shell_open`
+(seam-free, ADR-0010) or the official six tools.
+
+Two claims that must stay separate (merging them is the drift this section
+exists to prevent):
+
+- **Default inside the `minimal` preset** — the shipped `minimal` **agent
+  preset** carries a `persistent-shell` group (`@deepseek-ai/dsh-terminal` +
+  `@deepseek-ai/dsh-terminal-bash` + `dsh-tool-bash-persistent` /
+  `dsh-tool-pwsh-persistent`), which surfaces a `bash` / `pwsh` tool whenever
+  that preset is selected. It is part of the `minimal` preset; it is **not**
+  the terminal bundle.
+- **Optional and off by default** — the
+  `dsh-experimental-terminal-bundle` described above. The default `standard`
+  preset has no persistent-terminal row at all, so the `terminal_*` tools do
+  not exist until a person turns the bundle on in the Plugins page.
+
+"Officially provided" therefore does not mean "on by default". Upstream source
+paths, patch excerpts and reproducible commands:
+`docs/research/research-official-terminal-ralph-bundles.md`.
+
 ## Build & verify
 
 `node --run install` / `node --run build` need no `deepseek-harness` checkout:

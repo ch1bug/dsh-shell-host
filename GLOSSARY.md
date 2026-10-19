@@ -264,6 +264,37 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **后续修复上游行为的唯一合法通道**:上游 PR,或新的自有 id 行/entry——
   永不再走同 id 接管。
 
+## #109 与官方可选 bundle 的分工（2026-10-19 落地；评估全文见 `docs/research/research-official-terminal-ralph-bundles.md`）
+
+上游当前（`0.2.1-rc.1` 锚）的 `OPTIONAL_BUNDLES` 里有若干个可选 bundle；其中**两个与本仓有关**。
+它们**默认关**、由**插件页**开启，不被任何随附模板选中。
+
+- `dsh-experimental-terminal-bundle`（组行 `optional-persistent-terminals`）= 官方**持久终端**：
+  `@deepseek-ai/dsh-terminal` + `@deepseek-ai/dsh-terminal-bash`（Windows 侧同一后端配
+  `shellDialect: pwsh`）+ `@deepseek-ai/dsh-tool-terminal` 六个工具
+  （`terminal_open/send/read/signal/close/list`）。开启后是**全局工具层** —— 所有 preset
+  的所有智能体都看得见。
+- `dsh-experimental-ralph-bundle`（组行 `optional-ralph`）= `ralph` 工具（固定脚本 + 每轮一个
+  fresh 结构化输出子智能体）。inject `tools/workflowEngine/subagents/systemPrompt`，
+  **不注册本仓已有的任何工具**（只多一个全局 `ralph` 工具）。
+
+**分工建议（本票落地口径，非 D 系列决策）**：工具名与 loader 行 id **都零冲突**，可同
+profile 并存；但**不宜同时开**官方持久终端与本仓 `pty_*` / `shell_open` —— 两套会话注册表
+（`terminal_*` 走官方 `terminals` 服务，`pty_*` 走本仓自管 node-pty 核心）＋官方 bundle 自带的
+`tool:pty` system prompt 段（**本仓一个 system prompt 段都不注册**），同一件事被描述两遍，
+模型无法判断某个 session id 属于哪一套。二选一：本仓 seam-free 面（ADR-0010），或官方六工具。
+操作层写法见 README 的「Division of labor with the official optional bundles」一节。
+
+**两条必须分开写的事实**（不得混成「官方已默认提供」）：
+
+- **默认就在跑（选中 `minimal` 时）**：随附的 `minimal` **agent preset** 里的
+  `persistent-shell` 组（`@deepseek-ai/dsh-terminal` + `@deepseek-ai/dsh-terminal-bash` +
+  `dsh-tool-bash-persistent`/`dsh-tool-pwsh-persistent`），呈现为 `bash` / `pwsh` 工具
+  —— 那是 **preset 的一部分**，不是上面那个 bundle。默认 preset 是 `standard`，其中
+  没有该组。
+- **可选、默认关**：`dsh-experimental-terminal-bundle`。默认 preset（`standard`）
+  **没有任何持久终端行** ⇒ 插件页开启之前，`terminal_*` 六工具**不存在**。
+
 ## 术语表(惰性)
 
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。
@@ -274,6 +305,14 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **Entry(包入口)**:dsh-shell-host 单包多入口的导出单元(ADR-0007)。现行 entry 面(ADR-0016):`./pty`(持久 PTY 会话核心)、`./ssh`(ssh 通道能力 + ssh 四工具)、`./terminal`(`shell_open` launcher 预设)、`./remote`(远程工作区 = 多会话编排 + 连接池)、`./remote-fs`(加性 `ctx.remoteFs` 后端 + `remote_*` 工具)、`./wsl`(WSL 桥工具)。全部是插件层 entry(defineTool + ctx.tools),各 entry 独立 settings namespace,共享包不合并配置面;执行器 entry(`./host`)及其执行语义已随 ADR-0013 删除。
 
 ## #52 grill 共识(2026-10-09,进行中)
+
+> **2026-10-19 `#109` 更正（原文保留作历史）**:本节后三条成文于 #61/ADR-0010 **之前**,
+> 其中三处关于 `terminals` 缝的表述**已被 ADR-0010 取代**:「env 经 terminals seam spawn spec
+> 传递」→ env 由本仓 PTY 核心在 spawn 时合并;「sessionId 即缝会话 id」→ sessionId 是本仓
+> 自管 PTY 核心的会话 id;「`shell_open` 走 terminals 缝」→ `shell_open` 跑在本仓自管核心上,
+> 不 inject `terminals`。另:同一批表述里的「D8 的单例执行器替换实现保留」也已被推翻
+> (ADR-0013 删掉了整个执行器 world,该实现不再存在)。`shell_open` 的当前契约以 README 与
+> ADR-0010 为准。
 
 - **启动器预设(Launcher preset)**:`(transport × shell-env)` 的声明式启动单元——本机预设 = local transport × shell 环境;ssh 是下层传输维度(配 host + 远端 shell 环境,复用 ssh 组合器语义,不另起 ssh 工具面孔)。预设表是 descriptor 的复用视图 + detect 常见位置运行时扫描,非独立硬编码表;自定义预设持久在 config(settings 页可增删改查,UI 归后续票)。
 - **env 注入 = VS Code profile 语义**:env 属于 preset(profile 字段),spawn 时进程级注入(terminals seam spawn spec 加性扩 env 传递),不做 shell export 行渲染;缝的对外契约不变。

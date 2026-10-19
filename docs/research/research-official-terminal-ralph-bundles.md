@@ -307,8 +307,8 @@ const key = this.ctx[symbols.isolate][name]
 1. `README.md` / `GLOSSARY.md` 增一节「与官方可选 bundle 的分工」：点名两个 bundle、
    说明官方持久终端是**全局工具层 + 默认关 + 插件页开启**，与本仓 `pty_*`/`shell_open`
    **别同时开**（两套会话注册表、两套 system prompt 提示、`terminal_*` 与 `pty_*` 并存会误导模型）。
-2. 顺手修既有 stale 文档：`GLOSSARY.md:216-218` 仍写「`shell_open` 走 terminals 缝」「sessionId 即缝会话 id」，
-   与 `README.md:40-45`（“seam-free since #61, ADR-0010”）和 ADR-0010 冲突。
+2. 顺手修既有 stale 文档：`GLOSSARY.md` 的「#52 grill 共识」节后三条（评估当时记为 `:216-218`）当时仍写「`shell_open` 走 terminals 缝」「sessionId 即缝会话 id」，
+   与 `README.md:40-45`（“seam-free since #61, ADR-0010”）和 ADR-0010 冲突 —— **`#109`（2026-10-19）已加更正块（原文保留作历史）**。
 
 ### 4.2 ADR 级（必须，属于结论依据更正）
 3. 新开/修订 ADR（或在 ADR-0009 加「2026-10-17 rc.1 复核」小节），记明：
@@ -374,8 +374,8 @@ const key = this.ctx[symbols.isolate][name]
 - `docs/adr/0008-launcher-layer.md:39`：`- \`terminal_*\` 三工具家族：Middle Man → 弃。`
 - `tests/terminal.spec.ts:189-190`：`expect(() => tool("terminal_send")).toThrow(/not registered/)`（同理 `terminal_tail`）
 
-另（非本次要求但相关）：`GLOSSARY.md:216-218` 仍以 terminals 缝描述 `shell_open`
-（「`shell_open` 走 terminals 缝」），与 `README.md:40-45` 的 “seam-free since #61, ADR-0010” 及 ADR-0010 冲突。
+另（非本次要求但相关）：`GLOSSARY.md` 的「#52 grill 共识」节后三条（评估当时记为 `:216-218`）当时仍以 terminals 缝描述 `shell_open`
+（「`shell_open` 走 terminals 缝」），与 `README.md:40-45` 的 “seam-free since #61, ADR-0010” 及 ADR-0010 冲突 —— **`#109` 已加更正块（原文保留作历史）**。
 
 ## 附录 B：关键上游路径清单（可复现）
 

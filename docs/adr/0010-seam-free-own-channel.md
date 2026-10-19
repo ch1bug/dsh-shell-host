@@ -18,10 +18,20 @@ ADR-0009 拍板的后续路线是「甲：补缝 provide entry」（root 组合 
   池保活滚动缓冲，输出流走自建 `webServer` stream API。
 - **weisiren000/dsh-remote-ssh-ops**：同款架构，依赖仅 `ssh2`。
 
-上游源码（本地检出 dsh-v0.2.0-rc.2 tag）佐证必然性：`subprocess` 同样是
-agent 执行世界级服务，官方 `api-terminal-controller` 都只能
-`agent.ctx.get('subprocess')` 按 agent 解析。世界级服务（`terminals` /
-`subprocess`）对 root 组合插件行不可见——自带通道是社区事实标准。
+上游源码（本地检出 dsh-v0.2.0-rc.2 tag）当时佐证了这条必然性：官方
+`api-terminal-controller` 也只是 `agent.ctx.get('subprocess')` 按 agent 解析。
+**【2026-10-17 `0.2.1-rc.1` 复核：措辞更正，决策不变】** 原文那句「世界级服务
+（`terminals` / `subprocess`）对 root 组合插件行不可见」如今**只对 `terminals`
+成立** —— rc.1 的 `subprocess` 是 `dsh-base` 的 root 行
+（`packages/bundle/base/cordis.patch.yml` 顶层 `insert`、无 `isolate`），root 组合
+插件行看得见它；`terminals` 不可见的真实原因是各挂载点用
+`isolate: { terminals: true }` 把它关进 entry 私有 realm，**不是「世界级服务」这个
+属性本身**。⇒ 下面的决策照旧成立，只是必要性论证要换：不可见的**原因**不是「世界级服务」这个
+属性，而是「官方实例被各挂载点的 `isolate` 私有化」—— 后果（root 行拿不到那个实例）
+不变。自带通道仍是社区事实标准（上面两个插件即此）。判据（上游树的
+`vendor/loader/src/config/isolate.ts` 的 `LocalRealm` 私有符号 +
+`vendor/cordis/src/reflect.ts` 的 realm 比对，本仓无 `vendor/` 树）与上游原文片段见
+`docs/research/research-official-terminal-ralph-bundles.md` §3.1–§3.3。
 
 ## 决策
 
