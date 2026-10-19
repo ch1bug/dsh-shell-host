@@ -19,9 +19,11 @@ import { apply as applyPty } from "../src/pty/index.ts";
 import { apply as applyTerminal } from "../src/terminal/index.ts";
 import { resolveLaunchers } from "../src/launchers.ts";
 import {
+  CMD_PROBE,
+  MSYS2_PROBE,
+  PWSH_PROBE,
+  WSL_PROBE,
   matchesNeedle,
-  PWSH_PROBE_COMMAND,
-  PWSH_PROBE_NEEDLE,
   type ProbeNeedle,
 } from "./helpers/probe-needle.ts";
 
@@ -79,28 +81,25 @@ describe("terminal entry machine lane (#55 AC)", () => {
     const opened = await tool("shell_open").execute({ preset: "msys2-ucrt" }, { agent: AGENT });
     onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent: AGENT }).catch(() => {}));
     expect(opened.transport).toBe("local");
-    await tool("pty_send").execute({ id: opened.sessionId, data: "echo PROBE-$MSYSTEM && uname -a" }, { agent: AGENT });
-    // One combined needle: the EXPANDED echo (the literal command contains
-    // "PROBE-$MSYSTEM", so the bare prefix would hit the echo) followed by
-    // the uname OUTPUT line — proves the probe landed in an MSYS-family
-    // environment rather than the echo alone.
-    const text = await waitFor(tool, opened.sessionId, /PROBE-UCRT64[\s\S]*\b(MSYS|MINGW|UCRT)/i);
-    expect(text).toContain("PROBE-UCRT64");
-    expect(/\b(?:MSYS|MINGW|UCRT)/i.test(text)).toBe(true);
+    await tool("pty_send").execute({ id: opened.sessionId, data: MSYS2_PROBE.command }, { agent: AGENT });
+    // 到达判据即本用例的断言：needle 同时要求展开后的 `PROBE-UCRT64` 与 `uname -a` 的输出行，
+    // 回声帧（字面命令里 `$MSYSTEM` 未展开）满足不了它 ⇒ waitFor 返回即证明探针落在 MSYS 家族
+    // 环境里。needle 形状与成因只在 tests/helpers/probe-needle.ts —— 本档不再把它拆成字面片段
+    // 重写一遍（`#103` AC3；拆开写的话 needle 一改，这里就悄悄钉着旧形状）。
+    await waitFor(tool, opened.sessionId, MSYS2_PROBE.needle);
   });
 
   it.skipIf(!hasPwsh)("shell_open('pwsh'): the probe reports a PowerShell version table", { timeout: 120_000 }, async () => {
     const { tool } = boot();
     const opened = await tool("shell_open").execute({ preset: "pwsh" }, { agent: AGENT });
     onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent: AGENT }).catch(() => {}));
-    await tool("pty_send").execute({ id: opened.sessionId, data: PWSH_PROBE_COMMAND }, { agent: AGENT });
-    // Echo-safe needle (#99): the literal command carries `PSV-$(` — no digit
-    // follows `PSV-` — so the echoed command line alone can never satisfy the
-    // version pattern; only PowerShell's EXPANDED output can. Constant + offline
-    // pin (成因、判据与层级见那里，不在本档复述):
+    await tool("pty_send").execute({ id: opened.sessionId, data: PWSH_PROBE.command }, { agent: AGENT });
+    // Echo-safe needle (#99): the literal command carries `PSV-$(`, so the echoed
+    // command line alone can never satisfy the version pattern; only the EXPANDED
+    // output can. 常量 + 离线钉（成因、判据与层级见那里，不在本档复述，也不在这里把同一枚
+    // 正则重写一遍 —— `#103` AC3）:
     // tests/helpers/probe-needle.ts / tests/probe-needle.spec.ts.
-    const text = await waitFor(tool, opened.sessionId, PWSH_PROBE_NEEDLE);
-    expect(text).toMatch(/PSV-\d+\.\d+/);
+    await waitFor(tool, opened.sessionId, PWSH_PROBE.needle);
   });
 
   it.skipIf(!hasCmd)("shell_open('cmd'): the probe reports the Windows version banner (ver)", { timeout: 120_000 }, async () => {
@@ -111,15 +110,14 @@ describe("terminal entry machine lane (#55 AC)", () => {
     // console's startup input handling (observed flake) — retry the probe
     // until the banner version line lands.
     for (let attempt = 0; ; attempt++) {
-      await tool("pty_send").execute({ id: opened.sessionId, data: "ver" }, { agent: AGENT });
-      const matched = await waitFor(tool, opened.sessionId, /\[Version|版本/, 10_000).then(
+      await tool("pty_send").execute({ id: opened.sessionId, data: CMD_PROBE.command }, { agent: AGENT });
+      // needle 要求 `Microsoft` 横幅前缀（旧用例里那条更强的横幅断言已并进 needle）⇒ 用例内
+      // 不再重写一遍字面正则（`#103` AC3）。
+      const matched = await waitFor(tool, opened.sessionId, CMD_PROBE.needle, 10_000).then(
         (text) => text,
         () => null,
       );
-      if (matched !== null) {
-        expect(matched).toMatch(/Microsoft \[Version|Microsoft Windows|Microsoft \[版本/);
-        break;
-      }
+      if (matched !== null) break;
       if (attempt >= 4) throw new Error("ver banner never landed after 5 probe attempts");
     }
   });
@@ -128,10 +126,10 @@ describe("terminal entry machine lane (#55 AC)", () => {
     const { tool } = boot();
     const opened = await tool("shell_open").execute({ preset: "wsl" }, { agent: AGENT });
     onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent: AGENT }).catch(() => {}));
-    await tool("pty_send").execute({ id: opened.sessionId, data: "echo WSLPROBE-$(uname -sr)" }, { agent: AGENT });
-    // Expanded-value needle: the literal echo contains "WSLPROBE-$..." only.
-    const text = await waitFor(tool, opened.sessionId, "WSLPROBE-Linux");
-    expect(text).toContain("Linux");
+    await tool("pty_send").execute({ id: opened.sessionId, data: WSL_PROBE.command }, { agent: AGENT });
+    // 展开值子串 needle（字面命令里是 `WSLPROBE-$(uname -sr)`，只有展开后才出现 `-Linux`）：
+    // 形状与判据只在 tests/helpers/probe-needle.ts，本档只引用常量（#103）。
+    await waitFor(tool, opened.sessionId, WSL_PROBE.needle);
   });
 
   it.skipIf(!(hasMsys2 && hasPwsh && hasCmd && hasWsl))(

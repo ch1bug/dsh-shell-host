@@ -309,7 +309,10 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
      `echo PROBE-$MSYSTEM && uname -a`：回声里 `$MSYSTEM` 未展开、没有 `PROBE-UCRT64`，
      `uname -a` 的输出行是它的另一半）；
    - **展开值子串**：needle 是只可能由展开产生的裸子串 —— wsl 的 `WSLPROBE-Linux`
-     （字面命令里是 `WSLPROBE-$(uname -sr)`）。
+     （字面命令里是 `WSLPROBE-$(uname -sr)`）；
+   - **命令输出横幅**（严格说不是变量展开，但同属「回声单独满足不了」的类，`#103` 收在同一
+     表里）：cmd 的 `ver`，needle 要求 `Microsoft` 前缀（`/Microsoft (?:\[Version|Windows|\[版本)/`），
+     回声帧里只有裸命令名 `ver`。
    **例外**：**marker / 往返探针**的 needle 本来**就该**被回声满足 —— coexistence 的四个
    `MARK-*`（`echo MARK-MSYS` 一类）与 ssh 往返的 `SSHOPEN-42` 就是拿「自己敲的字面量」证明
    「没串到别的会话 / 往返通了」，它们断言的是隔离与到达、不是展开值。故本规则**只对展开值
@@ -318,6 +321,11 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
    后的分帧到达在集成层是时序相关的，离线层才是确定性形态）；变异口径 = 把 needle 改回裸前缀
    → 离线档**必红**。判据本体与成因**只在** `tests/helpers/probe-needle.ts` 里讲（单一来源），
    离线实例断言见 `tests/probe-needle.spec.ts`，活体用例见 `tests/terminal-machine.spec.ts`。
+   **表驱动**（`#103`）：展开值探针的 command + needle **成对**收在该模块的 `EXPANDED_PROBES`
+   表里（一条 `ExpandedProbe` 记录 = command + needle + 回声可满足形态 + 展开帧样本），machine
+   用例只引用常量；**新增一条展开值探针 = 表里加一行**，离线档自动对它断言「回声帧不命中
+   （且命中它的回声可满足形态）+ 展开帧命中 + 行尾 LF/CRLF 都不影响命中」，不用改用例。
+   marker / 往返探针不进表。
 
 ## 本仓现有验证入口
 
