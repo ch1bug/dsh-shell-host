@@ -406,7 +406,7 @@ abort（`--ignore-scripts` 也一样）。绕行 = `--package-import-method=copy
 **且用 Windows node 装**。（本插件包几乎纯 JS，但**构建面**仍卡在 rolldown 的绑定上 —— 见 §4.2；
 结论不可类推。）
 
-### 4.2 构建期原生件缺口（ucrt64 node 下 rolldown 拿不到绑定）—— **#81 结论：不承诺 msys2 侧构建**
+### 4.2 构建期原生件缺口（ucrt64 node 下 rolldown 拿不到绑定）—— **#81 结论（#80 复核后不变）：不承诺 msys2 侧构建**
 
 **判别不是 `platform`**：ucrt64 node 实测上报的仍是标准 `win32 x64`（node v24.21.0、ABI 137）。
 rolldown 看的是 **`process.config.variables`** 里的两个值 —— 本机实测两个 node 各有一组：
@@ -449,21 +449,78 @@ $entry = Join-Path $PWD 'node_modules/.pnpm/rolldown@1.2.11/node_modules/rolldow
 
 1. rolldown 的 gnu 目标在上游**没有产物**（上面那条事实），本仓无法提供；
 2. 声明 wasm 回退（`@rolldown/binding-wasm32-wasi`）只解决**打包器**这一层：版本必须与 tsdown 带的
-   rolldown **锁死同步**（tsdown 一升级就得跟着改 pin，漂移即再失败），且 #80（tsdown 在 msys node
-   下的 tsconfig 路径翻倍）还挡在后面 —— 两层串起来才可能"能跑"；
+   rolldown **锁死同步**（tsdown 一升级就得跟着改 pin，漂移即再失败）；而本仓的 msys 路线根本不在
+   这条链上 —— 它缺的只有绑定这一层（`tsc` 与 tsconfig 解析都正常，见下「#80 的结论」）；
 3. 它换不到本仓实际使用的流程：msys 侧引导脚本（`scripts/msys-env.sh`）做的就是**把 Windows node
-   前置**，而 `scripts/msys-lane.sh:106-108` 对生效 node 是 ucrt64 的情形**响亮失败**并提示设
+   前置**，而 `scripts/msys-lane.sh:107-109` 对生效 node 是 ucrt64 的情形**响亮失败**并提示设
    `DSH_MSYS_WIN_NODE_DIR` —— 没有流程会从那条链上拿产物；
 4. **AC2 同样不做**：`vitest run` 的启动也经 vite/rolldown 的绑定解析，缺的是同一个 gnu 产物；
    本仓的构建与套件入口都把 Windows node 前置（`scripts/msys-env.sh`），生效 node 是 ucrt64 时
    车道直接**响亮失败**（见上条）。
 
-B1 分工（结论不变；`tsc` 那一行沿用 #80 的取证读数，本会话未重跑）：
+B1 分工（结论不变；`tsc` 那一行是 2026-10-19 的复核实测读数，`tsdown` 那一行的机制见上）：
 
 | 环节 | 环境 |
 |---|---|
 | `tsc` typecheck / 声明产出（纯 JS） | msys2 ucrt64 node 可 |
 | `tsdown` 打包（rolldown） | **必须 Windows node**（机制见上） |
+
+#### #80 的结论：双拼发生在原生绑定层，本仓无可修面
+
+票面报告的失败发生在**另一层**：ucrt64 node 下 tsdown 报
+`[TSCONFIG_ERROR] Failed to load tsconfig '<cwd>/<cwd>\tsconfig.json'`（Windows 形式 cwd 与绝对
+路径二次拼接）。2026-10-19 复核（tsdown 0.22.14 / rolldown 1.2.11 / ucrt64 node v24.21.0）的三条
+读数把落点定在**原生绑定层**：
+
+1. **今天这条错误不可达**：同一 node 跑 `node --run build`，崩在**绑定加载**
+   （`Cannot find native binding`，即上面那条链），tsconfig 解析根本没被调用 —— 报告的
+   `TSCONFIG_ERROR` 只可能出现在「绑定能加载」的机器上。
+2. **绑定一旦可加载，ucrt64 node 的构建就成立**：把 gnu 包名用 `NODE_PATH` 别名到本机已装的
+   msvc 绑定（下面「夹具」，不改 `node_modules`、不装包）后，tsdown 打出 `tsconfig: tsconfig.json`
+   与三个入口四个产物、总大小 84.52 kB、exit 0 —— 与 Windows node 那一跑**文件集合、`tsconfig`
+   行与总大小相同**（个别 gzip 列差 0.03 kB 量级；两个 node 的补丁版本本就不同：
+   ucrt64 v24.21.0 / Windows v24.18.0）⇒ **双拼不来自 node 风味，也不来自本仓传入的任何输入**。
+3. **显式 `tsconfig` 不是可验证的修法**：临时写成 `tsconfig: './tsconfig.json'` 后，三组读数
+   （ucrt64+夹具 / ucrt64 无夹具 / Windows）与不写该项时**逐行相同**（两种设法打出的
+   `tsconfig:` 行都是 `path.relative(cwd, …)` 的 `tsconfig.json`）⇒ 它连「绕开症状」都无法取证
+   （症状不可达），更不是「修掉成因」，故**不入仓**（票面 Out of scope：不做路径 hack）。
+
+机制面：`TSCONFIG_ERROR` / `Failed to load tsconfig` / `Tsconfig not found` 三个串**就在原生绑定
+二进制里**（已装的 msvc 绑定 `.node` 可搜到，rolldown/tsdown 的 JS 产物零命中）；而 tsdown 交给
+rolldown 之前已经把 `tsconfig` 解成**绝对路径**（自动发现走 `empathic/find` 的 `up()`，实测返回
+`D:\<repo>\tsconfig.json`、`path.isAbsolute` = true）⇒ 拼接发生在这个值进入原生绑定**之后**。
+本仓能调的只有「传哪个 `tsconfig` 值」（以及 `cwd`），影响不了拼接本身。
+
+报告里被转写的双拼形态（末级目录名重复，且 `/` 与 `\` 混用恰是 guest 与宿主两套分隔符）
+指向 **WASI 适配层的宿主↔guest 路径映射**：ucrt64 node 的绑定选择器只会走 gnu 分支（gnu 产物
+未发布，见上「上游事实」），故报告者当时能加载的绑定只可能是 wasm 回退 —— 这条是**推断**
+（本机无该产物，未复跑），不影响上面三条读数。
+
+**可复现命令**（msys2 UCRT64 shell；`<repo>` = 本仓检出根）：
+
+```bash
+export MSYSTEM=UCRT64 PATH="/ucrt64/bin:$PATH"
+cd <repo>
+node -p "process.version + ' | ' + process.execPath"          # v24.21.0 | <msys>/ucrt64/bin/node.exe
+node node_modules/typescript/bin/tsc -p tsconfig.build.json   # exit 0，声明产出到 lib/types/（B1 的 tsc 行）
+node --run build                                              # exit 1，但崩在 binding，不是 TSCONFIG_ERROR
+```
+
+**夹具**（只为把「绑定层」与「tsconfig 层」切开；**不是**构建处方 —— 换绑定不改任何路径逻辑，
+gnu 产物缺失仍在，且 wasm 回退的锁步代价见上面理由 2）：
+
+```bash
+REPO="$(pwd -W)"                                   # 仓的 Windows 形态绝对路径（别用相对路径）
+BASE="$(mktemp -d)"; SHIM="$BASE/node_modules/@rolldown/binding-win32-x64-gnu"
+mkdir -p "$SHIM"
+printf '%s' '{"name":"@rolldown/binding-win32-x64-gnu","version":"1.2.11","main":"index.cjs"}' > "$SHIM/package.json"
+BINDING="$(ls -d "$REPO"/node_modules/.pnpm/@rolldown+binding-win32-x64-msvc@*/node_modules/@rolldown/binding-win32-x64-msvc/*.node | head -1)"
+printf "module.exports = require('%s')" "${BINDING//\\//}" > "$SHIM/index.cjs"   # \ → /：JS 单引号里反斜杠是转义
+NODE_PATH="$(cygpath -w "$BASE/node_modules")" node node_modules/tsdown/dist/run.mjs   # exit 0
+```
+
+结论：**本仓无可修面，B1 分工不变**；msys2 ucrt64 侧构建不可用的原因收敛为**唯一一条** ——
+该 node 的绑定选择器指向未发布的 gnu 产物（上面那条链）。
 
 ### 4.3 构建产物必须清理（切 tag / 发布）
 
