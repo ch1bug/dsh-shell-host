@@ -595,7 +595,7 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
 端口占用报 `EADDRINUSE 127.0.0.1:<port>` 时，用 `netstat -ano` 找 pid +
 `Stop-Process -Id <pid> -Force`。
 
-### 4.6 DSH 沙箱下的执行口径（agent 会话，2026-10-18 实测）
+### 4.6 DSH 沙箱下的执行口径（agent 会话，2026-10-18 起实测）
 
 - **跑测试、写 git 走 PTY 会话**（`pty_open` 开 `cmd`）：`pwsh` 工具下 vitest 在**加载配置**
   阶段就炸 —— `spawn EPERM`（vite `optimizeSafeRealPathSync` → `exec("net use")` 需要管道）；
@@ -624,8 +624,27 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
     语义不同，`#103` 实测踩过一次 `exit 1`）。
 - **判断后台套件在不在跑，看日志文件的 size/mtime**：沙箱下 `tasklist` / `Get-Process node`
   返回 Access denied。
-- **PTY 会话不跨轮存活**（下一个 tool call 里即报 `no pty session … for this agent`）：
-  多条命令用 `&&` 串成一次做完，读数重定向进 `.scratch/*.log` 再读文件。
+- **PTY 会话的跨轮存活取决于文件沙箱是否生效**（#147；两种环境都实测过 —— 这是一条**带条件**的
+  结论，别再当无条件规则读）：
+  - **沙箱生效时：不跨轮**（本节 2026-10-18 的原始场景）—— 下一个 tool call 里即报
+    `no pty session … for this agent`；此时把多条命令用 `&&` 串成一次做完，读数重定向进
+    `.scratch/*.log` 再读文件。
+  - **无沙箱时：跨轮存活** —— 2026-10-19 见 `#147` 票面（采集环境：文件沙箱 = `danger-full-access`、
+    无审批提示）；2026-10-20 在本机同一策略下复跑：`pty_open` 开一次，后续 tool call 里 `pty_tail` /
+    `pty_send` / `pty_close` 都正常；`shell_open` 开的 launcher 会话同样如此，`cd` 过的 cwd **跨 call**
+    保持（读数：会话开在 `<repo>`，下个 call 里 `cd /d/`，再下个 call 里 `pwd` 仍 `/d` —— 与会话
+    打开时的 cwd 不同，排除"复位成同一个值"的巧合）。
+    **成本含义**：常驻会话下一条命令 = 一次 `pty_send`（与平台 shell 工具同价），**不必**把所有
+    命令 `&&` 串成一条；中途要读数就 `pty_tail`，也不必落日志再读文件。
+  - **可复跑的读数（**最少**三次 tool call；必须在不同 call 里做，同一个 call 里做完测的正是「跨轮」；
+    中间可插更多 `pty_send` / `pty_tail`，本机转录那一轮是五次）**：
+    ① `pty_open { command: 'node -e "setInterval(() => {}, 1000)"' }` → 记下返回的 session id；
+    ② **另一次** tool call 里 `pty_tail { id }` → 不报 `no pty session … for this agent`
+    （无输出的子进程读到空增量也算正常返回）；③ 第三次 tool call 里 `pty_close { id }` →
+    `{"closed":true}`。驱动性用 launcher 会话复跑：`shell_open` 开一个，下个 call 里
+    `pty_send` 发 `pwd`（cwd 会保持）。**采集环境必须一并记**（文件沙箱策略 + 是否走审批）——
+    换个策略读数可能就反过来。本机 2026-10-20 读数（转录）：
+    `.scratch/t147-pty-crosscall.md`。
 - **临时产物（驱动脚本 / 生成的 config / 探针）一律放 `.scratch/` 下，别落仓库根**
   （#123 retro C6）：
   - **为什么**：本机**多个会话共用一个检出**，而**复核者看到的永远是一个瞬间快照**

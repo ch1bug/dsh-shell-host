@@ -59,8 +59,8 @@ Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See
 - **脱敏 / 历史重写流程**：`docs/agents/privacy.md`（何时重写、枚举-一遍跑齐、飞行前后检查、
   tracker 口径、回滚退路）。
 - **环境事实唯一来源 / 隔离契约 / 源码部署 / 构建坑**：`docs/dev-environment.md`
-- **DSH 沙箱下的执行口径**（测试与 git 写操作走 PTY；验收读数 `NO_COLOR=1`；PTY 不跨轮）：
-  `docs/dev-environment.md` §4.6
+- **DSH 沙箱下的执行口径**（测试与 git 写操作走 PTY；验收读数 `NO_COLOR=1`；PTY 会话跨轮存活的
+  **适用条件**——沙箱生效 vs 无沙箱——见该节，勿在此复述）：`docs/dev-environment.md` §4.6
 - **插件安装与注册**（官方两步 CLI；手工 symlink 不算安装）：`docs/agents/profile-install.md`
 
 ## Project context
