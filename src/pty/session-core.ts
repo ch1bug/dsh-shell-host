@@ -138,6 +138,10 @@ interface Session {
   pending: string
   exited: boolean
   exitCode?: number
+  /** #146 one-shot: callbacks waiting for the REAL exit before the open result
+   * is built. Notified (and drained) from the onExit tap; an aborted call
+   * leaves its callback behind, which the exit then no-ops. */
+  exitWaiters: Array<() => void>
   idleTimeoutMs?: number
   /** One-shot mode (#64) — semantics have a single source of truth:
    * `AUTO_CLOSE_SEMANTICS` (OpenSpec doc). Reclaim rides the settle
@@ -246,12 +250,40 @@ export interface OpenSpec {
  * parameter description both quote this constant verbatim, so the wording
  * cannot drift between the agent-facing surfaces and the core's contract.
  * Doc comments elsewhere reference this constant instead of restating it.
+ *
+ * #146: "one-shot" is an EXEC contract — the call waits for the real exit, so
+ * the result's status can carry the real exit code and the final output. The
+ * wording states the waiting (and its abort escape) because both are agent-
+ * visible behavior, not implementation detail.
  */
 export const AUTO_CLOSE_SEMANTICS =
-  'One-shot mode (#64): when true, the session is reclaimed automatically once the process exits — ' +
-  'settle window first (so the final output lands), then the single close path; no pty_close needed, ' +
-  'the soft-cap slot frees itself. Final output must be read before reclamation (tail in the live ' +
-  'window, or the returned deltas). Default false: persistent, unchanged.'
+  'One-shot mode (#64): when true, the call WAITS for the process to actually exit before it returns — ' +
+  'the settle window still runs after the exit, so buffered output lands in initialOutput, and the status ' +
+  'is then { kind: "exited", exitCode } carrying the REAL exit code (the same shape pty_list / pty_send report). ' +
+  'The session is reclaimed through the single close path afterwards — no pty_close needed, the soft-cap slot ' +
+  'frees itself. An aborted call stops waiting and returns without the exit code; the process itself is untouched. ' +
+  'A declared shell session (shellCommand / the configured defaultShellCommand) is PERSISTENT, not a one-shot: ' +
+  'autoClose plus a shell declaration is refused loudly instead of waiting on a process that by design never ends. ' +
+  'Default false: persistent, unchanged.'
+
+/**
+ * The two explicit-shell spellings, authored ONCE (#146): the agent-facing
+ * {@link PTY_COMMAND_SEMANTICS} and the failure-facing {@link SPAWN_FAILURE_HINT}
+ * both build on this constant, so "what the description tells you" and "what
+ * the failure tells you" cannot name different fixes.
+ */
+const SHELL_SPELLINGS = 'cmd.exe /d /c "…" or bash -lc "…"'
+
+/**
+ * The command-spawn semantics, stated ONCE (#146; the #66/#119 precedent): the
+ * pty_open tool description and its `command` parameter description both quote
+ * this constant verbatim, and the spec pins them to it — the agent-facing
+ * contract cannot drift from what {@link defaultSpawnPty} actually does.
+ */
+export const PTY_COMMAND_SEMANTICS =
+  'Command semantics, stated not glossed over: win32 — the command line is tokenized with the OS argv rules and spawned DIRECTLY ' +
+  '(argv[0] is the executable), so &&, pipes, redirection and shell built-ins are NOT interpreted: name the shell explicitly ' +
+  '(' + SHELL_SPELLINGS + '). POSIX — the command runs under `/bin/sh -c` (real shell semantics).'
 
 export interface OpenResult {
   sessionId: string
@@ -352,14 +384,46 @@ export interface DefaultSpawnDeps {
   platform?: NodeJS.Platform
 }
 
+/**
+ * The reminder every win32 spawn-failure diagnostic ends with (#146). ONE
+ * authored copy: the failure specs assert this exact text, and it shares
+ * {@link SHELL_SPELLINGS} with {@link PTY_COMMAND_SEMANTICS}, so the fix the
+ * failure names is the fix the tool description names. It is phrased as a
+ * COMMON CAUSE, not a verdict: the same wrapper also catches access-denied and
+ * ConPTY-allocation failures, where the raw message is the real diagnosis.
+ */
+export const SPAWN_FAILURE_HINT =
+  'a common cause: the win32 spawn is DIRECT (no shell interpretation) — shell built-ins (echo, cd, …) and shell syntax ' +
+  '(&&, pipes, redirection) need an explicit shell: ' + SHELL_SPELLINGS
+
+/** Wrap a spawn failure into the agent-usable diagnostic (#146 AC3): the
+ * program it tried, the path argv[0] was rewritten to, the machine's own words,
+ * and the explicit-shell hint. The original error rides along as `cause`. */
+function spawnFailed(requested: string, resolved: string, error: unknown): Error {
+  const raw = (error instanceof Error ? error.message : String(error)).trim()
+  // `File not found: ` ends in a colon with nothing after it — do not leave a
+  // dangling separator in the composed sentence.
+  const detail = raw.replace(/[:：]\s*$/u, '') || 'File not found'
+  const target = resolved === requested
+    ? `could not start ${JSON.stringify(requested)}`
+    : `could not start ${JSON.stringify(requested)} (resolved to ${JSON.stringify(resolved)})`
+  return Object.assign(new Error(`pty: ${detail} — ${target}; ${SPAWN_FAILURE_HINT}`), {
+    code: 'SPAWN_FAILED',
+    cause: error,
+  })
+}
+
 /** The default spawner. Windows: the command line is tokenized with the
  * OS argv rules (parseCommandLine above) and spawned DIRECTLY — argv[0] is
  * the executable, so quoted paths with spaces ride the spawn's argv, not
  * shell quoting. Consequence: the command IS the spawned process (#61
  * semantic, ADR-0010) — shell metacharacters and cmd builtins are NOT
- * interpreted; a shell (`cmd.exe /d /c ...`) must be named explicitly.
+ * interpreted; a shell (`cmd.exe /d /c ...`) must be named explicitly. The
+ * agent-facing wording has ONE source: {@link PTY_COMMAND_SEMANTICS}.
  * argv[0] is resolved through {@link resolveExecutable} first (#67): ConPTY
  * CreateProcess needs the `.exe` extension on a bare name like `ssh`.
+ * A failure is re-raised through {@link spawnFailed} so it names argv[0]
+ * instead of the bare `File not found: ` ConPTY produces (#146).
  * POSIX keeps the `/bin/sh -c` wrapper (real shell semantics). */
 export function defaultSpawnPty(spec: CoreSpawnSpec, deps: DefaultSpawnDeps = {}): PtyLike {
   const spawn = deps.spawn ?? nodePtySpawn
@@ -368,13 +432,18 @@ export function defaultSpawnPty(spec: CoreSpawnSpec, deps: DefaultSpawnDeps = {}
   if (win32) {
     const argv = parseCommandLine(spec.command)
     if (argv.length === 0) throw new Error('pty: empty command line')
-    return spawn(resolve(argv[0]), argv.slice(1), {
-      name: 'xterm-256color',
-      cols: 120,
-      rows: 40,
-      cwd: spec.cwd,
-      ...(spec.env === undefined ? {} : { env: { ...(process.env as Record<string, string>), ...spec.env } }),
-    })
+    const program = resolve(argv[0])
+    try {
+      return spawn(program, argv.slice(1), {
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 40,
+        cwd: spec.cwd,
+        ...(spec.env === undefined ? {} : { env: { ...(process.env as Record<string, string>), ...spec.env } }),
+      })
+    } catch (error) {
+      throw spawnFailed(argv[0], program, error)
+    }
   }
   return spawn('/bin/sh', ['-c', spec.command], {
     name: 'xterm-256color',
@@ -493,6 +562,27 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       }, config.settleTickMs)
     })
 
+  /** Wait for the process's REAL exit (#146 one-shot). The onExit tap is the
+   * single exit source, so the waiter list settles with the status; an aborted
+   * signal stops the WAIT only (the process keeps running and the exit tap
+   * still runs the auto-reclaim path). No polling: exit events are pushed. */
+  const waitForExit = (s: Session, signal?: AbortSignal): Promise<void> =>
+    new Promise((resolve) => {
+      if (s.exited || signal?.aborted) {
+        resolve()
+        return
+      }
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        signal?.removeEventListener('abort', finish)
+        resolve()
+      }
+      s.exitWaiters.push(finish)
+      signal?.addEventListener('abort', finish, { once: true })
+    })
+
   /** The idle watcher: one interval for every watched session; an
    * idle-expired session closes through the single close path. Output
    * activity (line-count movement) refreshes the clock — PTY input without
@@ -589,6 +679,20 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       if (spec.idleTimeoutMs !== undefined && (!Number.isInteger(spec.idleTimeoutMs) || spec.idleTimeoutMs <= 0)) {
         throw new Error(`idleTimeoutMs must be a positive integer (ms), got: ${JSON.stringify(spec.idleTimeoutMs)}`)
       }
+      // #146 × #149: a DECLARED shell session is persistent by design (its close
+      // path is pty_close), so waiting for its exit would pin this call to a
+      // process that may never end. Refuse loudly BEFORE a spawn instead of
+      // hanging, and name both workable fixes.
+      if (spec.autoClose === true && spec.shell === true) {
+        throw Object.assign(
+          new Error(
+            'pty_open: autoClose is one-shot exec semantics, but this call declares a shell session ' +
+              '(shellCommand / the configured defaultShellCommand) — a shell is persistent, so close it with pty_close. ' +
+              'For a one-shot that needs shell semantics, pass the LINE as `command`, e.g. ' + SHELL_SPELLINGS + '.',
+          ),
+          { code: 'INVALID_ARGS' },
+        )
+      }
       // Soft cap over the owner's OWN held sessions (#56 migrated onto the
       // core — the #62 fix: remount-proof, the registry is the fact source).
       const held = byOwner(owner)
@@ -613,6 +717,7 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         absBase: 0,
         pending: '',
         exited: false,
+        exitWaiters: [],
         ...extractSpec({
           idleTimeoutMs: spec.idleTimeoutMs,
           autoClose: spec.autoClose,
@@ -626,6 +731,9 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       pty.onExit(({ exitCode }) => {
         s.exited = true
         s.exitCode = exitCode
+        // #146: the one-shot open call is waiting on THIS event — release it
+        // before anything else so a fast exit cannot be missed.
+        for (const notify of s.exitWaiters.splice(0)) notify()
         // One-shot mode (#64): let the settle window drain the final output,
         // then reclaim through the single close path — already-exited
         // sessions skip the kill, the registry row drops, the slot frees.
@@ -637,6 +745,15 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       // initialOutput; the tail cursor starts from what exists now.
       await settleFor(s, signal)
       cursors.set(s, totalLines(s))
+      if (spec.autoClose === true) {
+        // #146: a one-shot is an EXEC — wait for the real exit, then drain the
+        // output that raced the exit event (the #64 quiet-window rule) BEFORE
+        // the result is built, so `status` carries the real code and
+        // `initialOutput` carries the final output. Reclaim stays on the exit
+        // tap above, so an aborted call still gets its slot back later.
+        await waitForExit(s, signal)
+        if (s.exited) await settleFor(s, undefined, { ignoreExit: true })
+      }
       if (spec.idleTimeoutMs !== undefined) ensureWatcher()
       const initialOutput = readNewest(s, totalLines(s), config.scrollbackLines).text
       return {

@@ -11,7 +11,10 @@
  *
  *   pty_open({ command | shellCommand, cwd?, env?, autoClose? }) → { sessionId, ... }
  *       spawn the command on a ConPTY with process-level env injection;
- *       survives turns. #149: `shellCommand` declares a SESSION-LEVEL SHELL
+ *       survives turns. #146: with autoClose: true the call is an EXEC — it
+ *       waits for the real exit and the result's status is
+ *       `{ kind: "exited", exitCode }` (the real code), so "run one command,
+ *       give me output + exit code" holds. #149: `shellCommand` declares a SESSION-LEVEL SHELL
  *       (bare command line, e.g. a resolved bash with `--login -i`) — the two
  *       are mutually exclusive, the argument-less call shape falls back to the
  *       `defaultShellCommand` setting, and a shell session is a SHELL TARGET
@@ -46,7 +49,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { posixQuote } from '../posix-quote.ts'
-import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike, type SendResult } from './session-core.ts'
+import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike, type SendResult } from './session-core.ts'
 import {
   ENVIRONMENT_CONTEXT_NAME,
   ENVIRONMENT_CONTEXT_ORDER,
@@ -379,6 +382,10 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       'Open a PTY session: spawn the command on a ConPTY, optionally set env vars (process-level injection). ' +
       'The session stays alive across turns until pty_close or owner disposal. Byte-stream only — no protocol parsing. ' +
       'For a run-once-and-done command pass autoClose: true. ' +
+      // #146: the command-spawn semantics, stated once and quoted by the
+      // `command` parameter too — the agent must learn win32's direct spawn
+      // from the face it reads, not from a failure.
+      PTY_COMMAND_SEMANTICS + ' ' +
       // #149: the session-level shell, stated as the surface contract.
       'Declare a SESSION-LEVEL SHELL with shellCommand — one bare command line (executable plus its interactive argv): ' +
       'subsequent pty_send writes are then interpreted by that shell, so a plain `cd … && … | …` works across sends with no per-command wrapper ' +
@@ -390,9 +397,9 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       command: {
         type: 'string',
         description:
-          'Plain command to run on the PTY (Windows: tokenized and spawned directly — no shell interpretation; ' +
-          'POSIX: /bin/sh -c). Mutually exclusive with shellCommand; omit both to use the configured defaultShellCommand. ' +
-          'Shell builtins and shell metacharacters are NOT interpreted here — name a shell explicitly (or use shellCommand).',
+          'Plain command to run on the PTY. ' + PTY_COMMAND_SEMANTICS + ' ' +
+          'Mutually exclusive with shellCommand; omit both to use the configured defaultShellCommand. ' +
+          'For a PERSISTENT shell session use shellCommand instead.',
       },
       shellCommand: {
         type: 'string',
@@ -425,7 +432,17 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         properties: {
           sessionId: { type: 'string', required: true, description: 'Opaque session id for send/tail/close.' },
           pid: { type: 'number', description: 'Top-level process id when the backend exposes one.' },
-          status: { type: 'object', additionalProperties: true, description: 'Top-level process status at publication.' },
+          status: {
+            type: 'object',
+            additionalProperties: true,
+            description:
+              'Top-level process status: { kind: "running" } while the process lives, or { kind: "exited", exitCode } once it ended — ' +
+              'the same shape pty_list / pty_send report (the autoClose parameter states when a one-shot result is the exited form).',
+            properties: {
+              kind: { type: 'string', description: '"running" while the process lives; "exited" after its exit event.' },
+              exitCode: { type: 'number', description: 'The process exit code on the exited form, when the backend reported one.' },
+            },
+          },
           initialOutput: { type: 'string', description: 'Output captured during spawn/command start.' },
           shellCommand: {
             type: 'string',

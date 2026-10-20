@@ -82,3 +82,28 @@ export async function waitUntil(
     `waitUntil: 条件在 ${timeoutMs}ms 内未成立（实际等了 ${elapsedMs}ms）${detail}`,
   );
 }
+
+/**
+ * 证明 `pending` 在 `windowMs` 内**没有**完成（#146）：{@link waitUntil} 的镜像。
+ *
+ * 什么时候用它：判据是「**还在跑**」而不是「跑完了」。`waitUntil` 在这里会**真空通过** ——
+ * "尚未发生"没有可轮询的成立条件，一个"立刻返回"的坏实现也能让"条件成立"的探针绿。
+ *
+ * ⚠️ 窗口必须**大于被测实现自己的静默窗/上界**，否则旧形状（提前返回）也能通过。
+ * 调用方在注释里写明所对的窗口：#146 用 120ms 对 FAST 的 20ms、400ms 对 harness 的 150ms。
+ *
+ * @throws `pending` 在窗口内完成（判据为假）或 reject（拒绝永远不算"仍在等待"）。
+ */
+export async function stillPending<T>(
+  pending: Promise<T>,
+  { windowMs, what }: { windowMs: number; what: string },
+): Promise<void> {
+  const STILL_PENDING = Symbol('still-pending');
+  const raced = await Promise.race([
+    pending as Promise<unknown>,
+    new Promise((resolve) => { setTimeout(() => resolve(STILL_PENDING), windowMs); }),
+  ]);
+  if (raced !== STILL_PENDING) {
+    throw new Error(`stillPending: ${what} 在 ${windowMs}ms 内就完成了（期望它此刻仍在等待）`);
+  }
+}

@@ -8,9 +8,9 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { apply } from "../src/pty/index.ts";
-import { AUTO_CLOSE_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS } from "../src/pty/session-core.ts";
+import { AUTO_CLOSE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS } from "../src/pty/session-core.ts";
 import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
-import { waitUntil } from "./helpers/wait-until.ts";
+import { waitUntil, stillPending } from "./helpers/wait-until.ts";
 
 // ---------------------------------------------------------------------------
 // Echo spawner: every write is echoed back as a complete line — the fake
@@ -233,12 +233,24 @@ describe("pty_open options", () => {
    * ⚠️ 不要退回"加长 sleep"（那只是把窗口挪到更慢的机器上），也不要为此调小
    * `settleQuietMs` / `settleTickMs` —— 那是**产品默认值**，属别的面（本票 Out of scope）。
    */
-  it("autoClose: true rides the tool surface — the session self-reclaims on exit (#64)", async () => {
+  it("autoClose: true rides the tool surface — the call waits for the exit, returns the code, then self-reclaims (#64, #146)", async () => {
     const a = makeAgent("a");
-    const opened = await tool("pty_open").execute({ command: "one-shot", autoClose: true }, exec(a));
-    expect(pty().active(a)).toContain(opened.sessionId);
-    const handle = handles.find((h) => h.pty.pid === opened.pid)!;
+    const pending = tool("pty_open").execute({ command: "one-shot", autoClose: true }, exec(a));
+    // #146: the open call WAITS for the real exit, so the exit is driven while
+    // the call is in flight (the #64 shape — emit after the open resolved —
+    // would now wait forever by design).
+    await waitUntil(() => handles.length === 1, {
+      timeoutMs: 2_000,
+      describeObserved: () => `handles=${handles.length}`,
+    });
+    const handle = handles[0];
+    // #146: the call waits for the real exit — it must NOT resolve while the
+    // process is alive (the harness settle window is 150ms; 400ms is well past
+    // it, so the pre-#146 shape would have returned `running` here).
+    await stillPending(pending, { windowMs: 400, what: "tool-surface one-shot open while the process lives" });
     handle.emitExit({ exitCode: 0 });
+    const opened = await pending;
+    expect(opened.status).toEqual({ kind: "exited", exitCode: 0 });
     // 等"回收已发生"这个条件成立，不是等一个时长。超时会响亮失败并给出实测状态。
     await waitUntil(() => !pty().active(a).includes(opened.sessionId), {
       timeoutMs: 5_000,
@@ -253,6 +265,42 @@ describe("pty_open options", () => {
     // The tool description quotes it too (self-contained agent-facing text,
     // zero independent rephrasing).
     expect(open.description).toContain(AUTO_CLOSE_SEMANTICS);
+  });
+
+  // #146 AC1/AC2 — the two agent-facing facts this ticket adds:
+  // (a) the one-shot result carries a REAL exit code (declared in the output
+  //     schema, not just implemented), and (b) the command-spawn semantics have
+  //     ONE source: the tool description and its `command` parameter both quote
+  //     PTY_COMMAND_SEMANTICS verbatim (#66's AUTO_CLOSE precedent).
+  it("#146: the output schema DECLARES the one-shot exited status shape (kind + exitCode)", () => {
+    const status = tool("pty_open").output.schema.properties.status;
+    // The shape is DECLARED, not merely described in prose: a caller/codegen can
+    // read the two fields, and a shape change fails here instead of drifting
+    // silently past a substring check.
+    expect(status.properties.kind).toMatchObject({ type: "string" });
+    expect(status.properties.exitCode).toMatchObject({ type: "number" });
+    expect(status.description).toContain("exited");
+    expect(status.description).toContain("exitCode");
+  });
+
+  it("#146 × #149: autoClose + shellCommand is refused loudly (a shell is persistent)", async () => {
+    const a = makeAgent("a");
+    await expect(tool("pty_open").execute({ shellCommand: "bash --login -i", autoClose: true }, exec(a)))
+      .rejects.toMatchObject({ code: "INVALID_ARGS" });
+    // Refused before any spawn — no process left running behind a rejected call.
+    expect(specs).toHaveLength(0);
+  });
+
+  it("#146: command semantics have one source — the tool description and its `command` parameter quote the constant", () => {
+    const open = tool("pty_open");
+    expect(open.description).toContain(PTY_COMMAND_SEMANTICS);
+    expect(open.parameters.properties.command.description).toContain(PTY_COMMAND_SEMANTICS);
+    // Both explicit-shell spellings ride the SAME constant (AC2's two forms),
+    // so the description cannot drift into a different pair.
+    expect(PTY_COMMAND_SEMANTICS).toContain("cmd.exe /d /c");
+    expect(PTY_COMMAND_SEMANTICS).toContain("bash -lc");
+    // The POSIX half is stated too, not only the win32 half.
+    expect(PTY_COMMAND_SEMANTICS).toContain("/bin/sh -c");
   });
 });
 

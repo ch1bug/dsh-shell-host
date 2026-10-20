@@ -171,6 +171,29 @@ agent 自己持有的会话**（数据源就是核心的 owner 注册表，与 `
 - **不自己造 controller、不复制 `job_*` 工具**：那是宿主的能力，本包只接线
   （依赖面的例外记账见 `docs/dev-environment.md` §4.4 与 ADR-0005 决策 7）。
 
+### 一次性命令（#146）：`autoClose` 等真退出、给真退出码；Windows 无 shell 解释
+
+`./pty` 当 **exec 面**用时缺的两块，本票补齐：
+
+- **退出码**：`pty_open({ command, autoClose: true })` 现在**等进程真正退出**才返回 —— 退出后再走
+  一次静默窗（缓冲输出落进 `initialOutput`），然后结果的 `status` 是
+  `{ kind: 'exited', exitCode }`（就是 `pty_list` / `pty_send` 用的同一形状，输出 schema 里两个字段
+  都声明了）。会话随后照旧经单条关闭路径回收（不用 `pty_close`，软上限槽位自动释放）。**中止**（abort）只停止
+  **等待**，不杀进程，此时结果没有退出码。
+- **`shellCommand` 不是 one-shot**：会话级 shell 按设计是长命的（关闭路径 = `pty_close`），所以
+  `autoClose: true` 与 shell 声明（`shellCommand` / 配置的 `defaultShellCommand`）同时给会**响亮拒绝**
+  （`INVALID_ARGS`）—— 否则这条调用会等一个永不退出的进程。要"一次性 + shell 语义"就把整条行写进
+  `command`（`cmd.exe /d /c "…"` 或 `bash -lc "…"`）。
+- **命令语义（agent 面单源）**：`pty_open` 工具描述与 `command` 参数描述**逐字引用**同一条常量
+  `PTY_COMMAND_SEMANTICS` —— win32 是**按 argv 分词后直接 spawn**（argv[0] 就是可执行文件），
+  `&&` / 管道 / 重定向 / 内建命令**都不解释**，要 shell 就显式写 `cmd.exe /d /c "…"` 或
+  `bash -lc "…"`；POSIX 仍走 `/bin/sh -c`。
+- **可读诊断**：win32 启动失败（`File not found: ` 这条**不点名的** ConPTY 原文）现在会重抛成
+  点名 argv[0]（以及 `resolveExecutable` 改写后的路径）+ 直达修法的提示（`code: 'SPAWN_FAILED'`，
+  原文留在 `cause`）。落点在 `defaultSpawnPty` 的包装层，不在工具层（`#67` 的路径）。
+
+真实 ConPTY 读数载体：`tests/pty-oneshot-machine.spec.ts`（0 / 非零退出码各一条 + 内建命令诊断）。
+
 ### ssh 四工具（issue #24，承接 dsh-pty-session#3）
 
 The `./pty` entry additionally registers `ssh_start` / `ssh_tail` /

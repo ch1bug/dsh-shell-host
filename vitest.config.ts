@@ -40,11 +40,15 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // pty-shell-machine (#149) opens real msys2/git-bash sessions (a declared
 // `shellCommand`), measures output bytes, and switches interpreters inside one
 // session: real processes with wall-clock cost, so it is serial too.
+// pty-oneshot-machine (#146) must observe a REAL ConPTY exit event (one-shot
+// exit code) and a REAL CreateProcess failure (the readable diagnostic) — a
+// fake spawner cannot produce either, so the suite is serial like its peers.
 const machineLane = [
   'tests/ssh-pty-live.spec.ts',
   'tests/terminal-machine.spec.ts',
   'tests/pty-signal-machine.spec.ts',
   'tests/pty-shell-machine.spec.ts',
+  'tests/pty-oneshot-machine.spec.ts',
   'tests/e2e-tool-call-machine.spec.ts',
   'tests/e2e-real-llm-machine.spec.ts',
   'tests/e2e-tarball-machine.spec.ts',

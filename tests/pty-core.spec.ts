@@ -9,8 +9,8 @@
 
 import { describe, it, expect } from "vitest";
 import { bootPlugin, fakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
-import { DEFAULT_MAX_SESSIONS, PTY_SIGNALS, createSessionCore, defaultSpawnPty, type SessionCoreConfig } from "../src/pty/session-core.ts";
-import { waitUntil } from "./helpers/wait-until.ts";
+import { DEFAULT_MAX_SESSIONS, PTY_SIGNALS, SPAWN_FAILURE_HINT, createSessionCore, defaultSpawnPty, type SessionCoreConfig } from "../src/pty/session-core.ts";
+import { waitUntil, stillPending } from "./helpers/wait-until.ts";
 
 /**
  * 每处固定 sleep 的判据分类（#129）—— 逐处判断，不一律改轮询。
@@ -54,6 +54,15 @@ import { waitUntil } from "./helpers/wait-until.ts";
 async function stillHeldFor<T>(ms: number, observed: () => T): Promise<T> {
   await new Promise((r) => setTimeout(r, ms));
   return observed();
+}
+
+/** Wait until `bootFast` has actually spawned (the #146 one-shot tests drive the
+ * process WHILE the open call is in flight, so they need the handle first). */
+async function waitForOneSpawn(h: { spawned: unknown[] }): Promise<void> {
+  await waitUntil(() => h.spawned.length === 1, {
+    timeoutMs: 2_000,
+    describeObserved: () => `spawned=${h.spawned.length}（期望 1：pty_open 已 spawn）`,
+  });
 }
 
 /** Fast settle tuning: the core polls for output quiescence; these values
@@ -208,14 +217,26 @@ describe("self-managed session core (#61 ADR-0010)", () => {
   });
 });
 
-describe("autoClose one-shot mode (#64)", () => {
-  it("reclaims an autoClose session automatically after the process exits", async () => {
+describe("autoClose one-shot mode (#64, #146)", () => {
+  it("reclaims an autoClose session automatically after the process exits, and returns its exit code (#146 AC1)", async () => {
     const h = bootFast();
-    const opened = await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
-    expect(h.core.active(agent)).toContain(opened.sessionId);
+    const pending = h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    // #146: the call WAITS for the real exit before it returns, so the process
+    // must be driven while the call is in flight. The #64-era shape (emit the
+    // exit only AFTER the open resolved) no longer exists — an autoClose open
+    // on a process nobody ends would wait forever by design.
+    await waitForOneSpawn(h);
     h.spawned[0].emitData("work output\r\n");
-    await new Promise((r) => setTimeout(r, 10));
+    // #146: the call must NOT resolve while the process is still alive (120ms is
+    // well past FAST's 20ms settle window, so the OLD code resolved here with the
+    // old `{ kind: "running" }` shape — output but no exit code, and the
+    // auto-reclaim then makes the code unreachable).
+    await stillPending(pending, { windowMs: 120, what: "one-shot open while the process lives" });
     h.spawned[0].emitExit({ exitCode: 0 });
+    const opened = await pending;
+    // The result carries the REAL code (the ticket's AC1) and the final output.
+    expect(opened.status).toEqual({ kind: "exited", exitCode: 0 });
+    expect(opened.initialOutput).toContain("work output");
     // Settle window first (output lands), then the single close path reclaims.
     // 等"回收已发生"这个条件成立，不是等一个时长（头注第 2 类）。
     await waitUntil(() => !h.core.active(agent).includes(opened.sessionId), {
@@ -226,12 +247,59 @@ describe("autoClose one-shot mode (#64)", () => {
     expect(h.spawned[0].killed).toBe(0); // already exited — no kill needed
   });
 
+  it("a non-zero one-shot carries the real code through the status, not a bare `running` (#146 AC1)", async () => {
+    const h = bootFast();
+    const pending = h.tool("pty_open").execute({ command: "failing-one-shot", autoClose: true }, { agent });
+    await waitForOneSpawn(h);
+    h.spawned[0].emitData("boom\r\n");
+    // Same "must not resolve before the exit" pin as the case above.
+    await stillPending(pending, { windowMs: 120, what: "non-zero one-shot open while the process lives" });
+    h.spawned[0].emitExit({ exitCode: 3 });
+    const opened = await pending;
+    expect(opened.status).toEqual({ kind: "exited", exitCode: 3 });
+    expect(opened.initialOutput).toContain("boom");
+  });
+
+  it("an aborted one-shot returns early (no exit code) instead of pinning the call (#146)", async () => {
+    const h = bootFast();
+    const controller = new AbortController();
+    const pending = h.tool("pty_open").execute(
+      { command: "never-ends", autoClose: true },
+      { agent, signal: controller.signal },
+    );
+    await waitForOneSpawn(h);
+    controller.abort();
+    const opened = await pending;
+    // An abort stops the WAIT, not the process: the status is still running and
+    // no code is invented. (The exit later still runs the auto-reclaim path.)
+    expect(opened.status).toEqual({ kind: "running" });
+    h.spawned[0].emitExit({ exitCode: 0 });
+  });
+
+  it("refuses autoClose on a declared shell target loudly, before any spawn (#146 × #149)", async () => {
+    const h = bootFast();
+    // #146 × #149: "wait for the real exit" and "a persistent shell session" are
+    // contradictory declarations — refuse loudly instead of pinning the call to
+    // a process that by design never ends.
+    await expect(h.core.open(agent, { command: "bash --login -i", autoClose: true, shell: true }))
+      .rejects.toMatchObject({ code: "INVALID_ARGS" });
+    // Refused BEFORE a spawn: no process to leak, no cap slot consumed.
+    expect(h.spawned).toHaveLength(0);
+    expect(h.core.active(agent)).toHaveLength(0);
+  });
+
   it("frees the soft-cap slot: a new open succeeds immediately after auto-reclaim", async () => {
     const h = bootFast({ config: { maxSessions: 1 } });
-    await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    const pending = h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    await waitUntil(() => h.core.active(agent).length === 1, {
+      timeoutMs: 2_000,
+      describeObserved: () => `active(agent) = ${JSON.stringify(h.core.active(agent))}（期望恰好 1 个：open 已登记）`,
+    });
     // Cap is full while the session lives.
     await expect(h.tool("pty_open").execute({ command: "second" }, { agent })).rejects.toThrow(/limit/);
     h.spawned[0].emitExit({ exitCode: 0 });
+    const opened = await pending;
+    expect(opened.status).toEqual({ kind: "exited", exitCode: 0 });
     // 等"槽位已释放"的**前置条件**（回收已发生）成立，而不是猜一个时长。
     // 判据取"该 owner 已无任何持有"（本档 maxSessions=1 ⇒ 注册表应清空），
     // 不写死 `pty-1`：id 由 core 的计数器生成，写死会把判据绑在编号上。
@@ -244,8 +312,10 @@ describe("autoClose one-shot mode (#64)", () => {
 
   it("tail after auto-reclaim reports NO_SESSION (same dead-session semantics as pty_close)", async () => {
     const h = bootFast();
-    const opened = await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    const pending = h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    await waitForOneSpawn(h);
     h.spawned[0].emitExit({ exitCode: 0 });
+    const opened = await pending;
     // 等"回收已发生"成立后再断言 tail 的死会话语义 —— 不是等一个时长。
     await waitUntil(() => !h.core.active(agent).includes(opened.sessionId), {
       timeoutMs: 5_000,
@@ -273,23 +343,34 @@ describe("autoClose one-shot mode (#64)", () => {
     // tick after exit (settleFor short-circuits on s.exited); the fixed
     // core holds the session until output has been quiet for the window.
     const h = bootFast({ config: { settleQuietMs: 60, settleTickMs: 5, settleTimeoutMs: 2000 } });
-    const opened = await h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    const pending = h.tool("pty_open").execute({ command: "one-shot", autoClose: true }, { agent });
+    await waitUntil(() => h.core.active(agent).length === 1, {
+      timeoutMs: 2_000,
+      describeObserved: () => `active(agent) = ${JSON.stringify(h.core.active(agent))}（期望恰好 1 个：open 已登记）`,
+    });
+    // The id is known while the open call is still in flight (#146 waits for
+    // the exit), so the lower-bound assertions can address the session.
+    const id = h.core.active(agent)[0]!;
     h.spawned[0].emitExit({ exitCode: 0 });
     // Still inside the quiet window: not yet reclaimed.
     // ⚠️ 下界证明（头注第 3 类）：本行要证"**尚未**回收"，不是"回收已发生" ——
     // 轮询在此会**真空通过**（回收真出问题也绿），故睡满下界 + 断言此刻仍然持有。
-    expect(await stillHeldFor(20, () => h.core.active(agent))).toContain(opened.sessionId);
+    expect(await stillHeldFor(20, () => h.core.active(agent))).toContain(id);
     // Post-exit flush (buffered output racing the exit event) lands and
     // resets the settle clock.
     h.spawned[0].emitData("final flush\r\n");
     // 65ms since exit but only ~45ms of quiet: still held (同一条下界判据)。
-    expect(await stillHeldFor(45, () => h.core.active(agent))).toContain(opened.sessionId);
+    expect(await stillHeldFor(45, () => h.core.active(agent))).toContain(id);
+    // The open call returns after the same quiet window, with the flush landed.
+    const opened = await pending;
+    expect(opened.status).toEqual({ kind: "exited", exitCode: 0 });
+    expect(opened.initialOutput).toContain("final flush");
     // 等"回收已发生"—— 这一次是**正面**事件，改轮询 + 秒级上界（这正是本票的主诉形状：
     // 该档实测回收 min78/p50 93/max97ms，对旧的 80ms 固定预算最坏余量只剩 3ms）。
-    await waitUntil(() => !h.core.active(agent).includes(opened.sessionId), {
+    await waitUntil(() => !h.core.active(agent).includes(id), {
       timeoutMs: 5_000,
       describeObserved: () => `active(agent) = ${JSON.stringify(h.core.active(agent))}`
-        + `（期望不含 ${opened.sessionId}；本档 settleQuietMs=60，实测回收 min78/p50 93/max97ms）`,
+        + `（期望不含 ${id}；本档 settleQuietMs=60，实测回收 min78/p50 93/max97ms）`,
     });
   });
 
@@ -338,6 +419,64 @@ describe("defaultSpawnPty argv[0] resolution (#67)", () => {
     );
     expect(calls[0]![0]).toBe("/bin/sh");
     expect(calls[0]![1]).toBe("-c");
+  });
+});
+
+// #146 AC3: the raw ConPTY failure is `File not found: ` — the program it tried
+// is NOT in the message, so an agent writing a shell built-in (`echo`) or `&&`
+// learns nothing. The wrapper must name argv[0] and teach the fix. Its own
+// describe: these cases are about the FAILURE face, not argv[0] resolution.
+describe("defaultSpawnPty spawn diagnostics (#146 AC3)", () => {
+  it("names argv[0] and the explicit-shell hint when the win32 spawn fails (#146 AC3)", () => {
+    let thrown: unknown;
+    try {
+      defaultSpawnPty(
+        { command: "echo hi && echo bye" },
+        {
+          platform: "win32",
+          resolveExecutable: (name: string) => name,
+          spawn: (() => {
+            // The exact ConPTY failure shape from the ticket.
+            throw new Error("File not found: ");
+          }) as never,
+        },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toContain('could not start "echo"');
+    // The original reading survives (it is the machine's own words)…
+    expect(message).toContain("File not found");
+    // …and the hint is the SAME authored text the tool description draws its
+    // spellings from (no second copy in the test: it asserts the constant).
+    expect(message).toContain(SPAWN_FAILURE_HINT);
+    expect(SPAWN_FAILURE_HINT).toContain("cmd.exe /d /c");
+    expect(SPAWN_FAILURE_HINT).toContain("bash -lc");
+    expect((thrown as { code?: string }).code).toBe("SPAWN_FAILED");
+  });
+
+  it("shows the resolved path when argv[0] was rewritten by resolveExecutable (#146 AC3)", () => {
+    let thrown: unknown;
+    try {
+      defaultSpawnPty(
+        { command: "ssh example.com" },
+        {
+          platform: "win32",
+          resolveExecutable: () => "C:\\tools\\ssh.exe",
+          spawn: (() => {
+            throw new Error("File not found: ");
+          }) as never,
+        },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    const message = (thrown as Error).message;
+    expect(message).toContain('could not start "ssh"');
+    // The rewritten path is named too — otherwise a PATH problem is invisible.
+    expect(message).toContain('resolved to "C:\\\\tools\\\\ssh.exe"');
   });
 });
 
