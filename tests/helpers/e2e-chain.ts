@@ -37,8 +37,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { HOST_DIR, NODE, hostEnv } from "./e2e-install.ts";
 
 /** The bundle's own loader rows (ADR-0007/0012): a failure must never blame
- * these — they are the rows this repo adds (TESTING.md failure attribution). */
-export const MY_ROWS = ["pty", "terminal"];
+ * these — they are the rows this repo adds (TESTING.md failure attribution).
+ * #136 added the `ssh` row (the ssh family left `./pty`). */
+export const MY_ROWS = ["pty", "ssh", "terminal"];
 
 /** Anthropic-style SSE frames — the shape the host's Messages client parses. */
 export function sseFrames(content: Record<string, unknown>, stopReason: string): string {

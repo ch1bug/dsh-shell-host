@@ -7,7 +7,7 @@
  * executable candidates from `src/detect.ts` runtime scans — plus pure-data
  * rows for shells with no probe (git-bash/cmd/python-repl).
  * ssh is the transport dimension, not a preset: `composeSshLaunch` rides the
- * pty entry's `composeSshCommand` (keepalive defaults + suppression inherit,
+ * ssh entry's `composeSshCommand` (`src/ssh/compose.ts`; keepalive defaults + suppression inherit,
  * ADR-0008 decision 1).
  *
  * Postures (#54 AC): an environment that is not installed is ABSENT from the
@@ -32,7 +32,7 @@ import {
   spawnableExists,
   wslProbedLocations,
 } from './detect.ts'
-import { composeSshCommand, type SshLaunchArgs, type SshOptionInput } from './pty/index.ts'
+import { composeSshCommand, type SshLaunchArgs, type SshOptionInput } from './ssh/compose.ts'
 
 // Launcher argv/prefix constants (ADR-0013: formerly in the removed
 // backends.ts — this module is their single home now). Single source
@@ -122,7 +122,7 @@ export interface CustomLauncherConfig {
   pathPrefix?: readonly string[]
   cwd?: string
   // ssh transport fields (ADR-0008 decision 1 — the composition semantics
-  // are the pty entry's, not redeclared here).
+  // are the ssh entry's, not redeclared here).
   host?: string
   jump?: string
   port?: number
@@ -378,7 +378,7 @@ function resolveCustom(entry: CustomLauncherConfig, resolved: ResolvedLauncher[]
     return {
       id: entry.id,
       transport: 'ssh',
-      // The pty entry's composition is the single source (ADR-0008
+      // The ssh entry's composition (`src/ssh/compose.ts`) is the single source (ADR-0008
       // decision 1) — keepalive defaults and -o semantics inherit.
       command: composeSshCommand({
         host: entry.host,

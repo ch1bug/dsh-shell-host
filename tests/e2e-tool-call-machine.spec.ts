@@ -99,6 +99,8 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
     const dumped = await runHost(dshHome, ["--profile", PROFILE, "--dump-config"]);
     const dumpOut = dumped.out;
     expect(dumpOut, "composed tree carries dsh-shell-host/pty").toContain("dsh-shell-host/pty");
+    // #136: the ssh family is its own row now (it left `./pty`).
+    expect(dumpOut, "composed tree carries dsh-shell-host/ssh").toContain("dsh-shell-host/ssh");
     expect(dumpOut, "composed tree carries dsh-shell-host/terminal").toContain("dsh-shell-host/terminal");
     expect(dumpOut, "no row is left pending on a missing service").not.toMatch(/waiting for service|Missing services/u);
 
@@ -173,6 +175,9 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
       expect(names.length, "the instance declares a tool surface").toBeGreaterThan(0);
       expect(names, "pty_open is in the instance's tool surface").toContain("pty_open");
       expect(names, "shell_open (./terminal row) is in the tool surface").toContain("shell_open");
+      // #136: the ssh row is mounted by the bundle patch and must register its
+      // four tools; the split would otherwise be invisible to this tier.
+      expect(names, "ssh_start (./ssh row) is in the tool surface").toContain("ssh_start");
 
       // The loop closes only when the instance EXECUTED the tool and fed the
       // result back into a subsequent request.

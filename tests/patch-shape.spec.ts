@@ -18,7 +18,7 @@
  * 三条形状口径（loader patch 语义 = `{id, insert, name, ...overrides}`，GLOSSARY
  * 『已验证事实』的 "loader patch 语义" 条）：
  *   1. 每个 op 都是 `- insert:` 形状，且**不带任何顶层兄弟字段**（顶层 `id` 即接管）；
- *   2. insert 行 id 集合恰好 `{pty, terminal}`（棘轮：现状已合规，改挂载面必须显式改这里）；
+ *   2. insert 行 id 集合恰好 `{pty, ssh, terminal}`（棘轮：现状已合规，改挂载面必须显式改这里）；
  *   3. 每行的 `name` 以 `dsh-shell-host/` 开头（挂载的是本包自有 entry：README 装配段
  *      写的就是 `name: 'dsh-shell-host/pty'`）。
  *
@@ -35,8 +35,8 @@ import YAML from "yaml";
 /** patch 文件位置（package.json 的 `dsh.bundle.patch` 指它）。 */
 const PATCH_URL = new URL("../cordis.patch.yml", import.meta.url);
 
-/** 允许挂载的行 id（ADR-0013 收窄后本 bundle 的挂载面恰好是这两行）。 */
-const OWN_ROW_IDS = ["pty", "terminal"];
+/** 允许挂载的行 id（ADR-0013 收窄后本 bundle 的挂载面恰好是这三行）。 */
+const OWN_ROW_IDS = ["pty", "ssh", "terminal"];
 
 /** 自有行的 `name` 前缀（挂载的是本包自有 entry）。 */
 const OWN_NAME_PREFIX = "dsh-shell-host/";
@@ -132,7 +132,7 @@ function patchShapeFindings(text: string): string[] {
 }
 
 /**
- * 合规 fixture 的 YAML 行：两行自有 `insert`，其中 `terminal` 行的 `config` 内容由参数给
+ * 合规 fixture 的 YAML 行：三行自有 `insert`，其中 `terminal` 行的 `config` 内容由参数给
  * （默认 `custom: []`）。换 config 的用例因此只需给那几行，不必复制整份 fixture
  * —— 复制会让 fixture 一改就静默漂移。
  */
@@ -142,6 +142,9 @@ function ownRows(terminalConfig: string[] = ["        custom: []"]): string[] {
     "    - id: pty",
     "      name: dsh-shell-host/pty",
     "- insert:",
+    "    - id: ssh",
+    "      name: dsh-shell-host/ssh",
+    "- insert:",
     "    - id: terminal",
     "      name: dsh-shell-host/terminal",
     "      config:",
@@ -149,11 +152,11 @@ function ownRows(terminalConfig: string[] = ["        custom: []"]): string[] {
   ];
 }
 
-/** 合规的两行自有 insert（负例都拿它当对照面拼）。 */
+/** 合规的三行自有 insert（负例都拿它当对照面拼）。 */
 const OWN_ROWS = ownRows();
 
 describe("形状检查器自身的边界（合成文本）", () => {
-  it("合规形状（两行自有 insert、config 随行）返回空", () => {
+  it("合规形状（三行自有 insert、config 随行）返回空", () => {
     expect(patchShapeFindings(OWN_ROWS.join("\n"))).toEqual([]);
   });
 
@@ -164,7 +167,8 @@ describe("形状检查器自身的边界（合成文本）", () => {
       "          existsSync('C:\\\\msys64')",
     ]).join("\n");
     const doc = parsePatch(withJs) as Array<{ insert: Array<{ config?: { shell?: unknown } }> }>;
-    expect(doc[1].insert[0].config?.shell).toBe("existsSync('C:\\\\msys64')");
+    // The terminal row is the LAST of the three (#136 inserted `ssh` in between).
+    expect(doc[2].insert[0].config?.shell).toBe("existsSync('C:\\\\msys64')");
     expect(patchShapeFindings(withJs)).toEqual([]);
   });
 
@@ -204,7 +208,7 @@ describe("形状检查器自身的边界（合成文本）", () => {
     ].join("\n");
     const findings = patchShapeFindings(sameIdTakeover).join("\n");
     expect(findings).toContain("行 id 集合");
-    expect(findings).toContain("= {permission, pty, terminal}");
+    expect(findings).toContain("= {permission, pty, ssh, terminal}");
   });
 
   it("非 `- insert` 形状的 op 被拒（缺 insert / 只有兄弟字段）", () => {
@@ -241,13 +245,13 @@ describe("形状检查器自身的边界（合成文本）", () => {
     ].join("\n");
     const extraText = patchShapeFindings(extra).join("\n");
     expect(extraText).toContain("行 id 集合");
-    expect(extraText).toContain("= {extra, pty, terminal}");
+    expect(extraText).toContain("= {extra, pty, ssh, terminal}");
 
     const missing = ["- insert:", "    - id: pty", "      name: dsh-shell-host/pty"].join("\n");
     const missingText = patchShapeFindings(missing).join("\n");
     expect(missingText).toContain("行 id 集合");
     expect(missingText).toContain("= {pty}");
-    expect(missingText).toContain("期望恰好 {pty, terminal}");
+    expect(missingText).toContain("期望恰好 {pty, ssh, terminal}");
   });
 
   it("重复行 id 被拒（集合相等而非计数相等）", () => {

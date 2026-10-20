@@ -129,7 +129,10 @@ function fakeJobs(opts: { controller?: boolean } = {}) {
 /** Boot the pty entry over the echo fake and hand it a job registry (the
  * registry is mounted the way the host mounts it: a service on the context). */
 function boot(opts: { jobs?: ReturnType<typeof fakeJobs>; config?: unknown } = {}) {
-  const h = bootPlugin({ spawnPty: () => echoFakePty(), config: opts.config });
+  // #136: the ssh send path lives in the `./ssh` entry now; mount it too so the
+  // "one gate, both tools" cases keep exercising the SAME shared branch. Its
+  // `enableRunInBackground` reads the same probe config object.
+  const h = bootPlugin({ ssh: true, spawnPty: () => echoFakePty(), config: opts.config });
   if (opts.jobs !== undefined) h.provided.set("jobs", opts.jobs);
   return h;
 }

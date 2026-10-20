@@ -1,10 +1,11 @@
 # dsh-shell-host
 
 DSH bundle: **a tools-only plugin (ADR-0012/0013)** — persistent PTY sessions
-(`./pty`), launcher-preset terminals (`shell_open`, `./terminal`), and WSL
-bridge tools (`./wsl`). No shell executor, no `ctx.shell` provider, no
-upstream loader-row takeover: every row in `cordis.patch.yml` is an own-id
-insert, and the shell seam belongs to the platform shell executors alone.
+(`./pty`), interactive ssh sessions (`./ssh`), launcher-preset terminals
+(`shell_open`, `./terminal`), and WSL bridge tools (`./wsl`). No shell executor,
+no `ctx.shell` provider, no upstream loader-row takeover: every row in
+`cordis.patch.yml` is an own-id insert, and the shell seam belongs to the
+platform shell executors alone.
 
 > History: this package was formerly a shell executor (MSYS2-first, VS Code
 > terminal-profile modeled, routed backends incl. `ssh`) with host-only forks
@@ -16,10 +17,12 @@ insert, and the shell seam belongs to the platform shell executors alone.
 
 ## The bundle patch
 
-`cordis.patch.yml` mounts exactly two own-id rows and touches nothing else:
+`cordis.patch.yml` mounts exactly three own-id rows and touches nothing else:
 
 1. `pty` (`dsh-shell-host/pty`) — the persistent session core.
-2. `terminal` (`dsh-shell-host/terminal`) — the `shell_open` launcher surface.
+2. `ssh` (`dsh-shell-host/ssh`) — the interactive ssh instance (`ssh_start` /
+   `ssh_tail` / `ssh_send` / `ssh_close`), over the `pty` core (#136).
+3. `terminal` (`dsh-shell-host/terminal`) — the `shell_open` launcher surface.
 
 The platform executors (`pwsh-sandbox` / `bash-sandbox`) keep their DSH-native
 posture untouched; the one-shot `bash`/`pwsh` tool faces are the platform's own
@@ -64,7 +67,7 @@ shell seam 执行命令。**#102 之前**它们既不读 `ctx.sandboxPolicy` 也
 允许目标清单）—— 这一处是**有意的分叉**，写在这里而不是声称逐字。
 
 **缺服务 = fail closed**：`ctx.get('sandboxPolicy')` / `ctx.get('approval')` 任一为空时**拒绝执行**，
-错误点名缺的服务并给出挂载指引（**不静默放行**）；三个 entry 也把这两个服务写进 `inject`，所以缺服务的
+错误点名缺的服务并给出挂载指引（**不静默放行**）；四个 entry 也把这两个服务写进 `inject`，所以缺服务的
 部署里这些行**不会激活**。⇒ 没挂 `dsh-sandbox-policy` + `dsh-user-approval` 的部署里
 `pty_*` / `shell_open` / `ssh_start` / `win_*` **直接不可用** —— 这是**有意**的取舍（宁响亮失败，
 不绕过）。官方 **base** bundle（`web` / `headless` 档）默认挂这两行（模式 `DSH_PERMISSION_MODE ??
@@ -105,8 +108,8 @@ import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
 ```
 
 Mount it via the bundle layer with `name: 'dsh-shell-host/pty'` — no
-dependency on any platform seam (the bundle patch mounts the pty + terminal
-rows unconditionally).
+dependency on any platform seam (the bundle patch mounts the pty + ssh +
+terminal rows unconditionally).
 
 ### 会话默认 shell（#149）：打开时声明一次，之后裸命令直通
 
@@ -238,14 +241,52 @@ agent 自己持有的会话**（数据源就是核心的 owner 注册表，与 `
 
 真实 ConPTY 读数载体：`tests/pty-oneshot-machine.spec.ts`（0 / 非零退出码各一条 + 内建命令诊断）。
 
-### ssh 四工具（issue #24，承接 dsh-pty-session#3）
+## The `./ssh` entry (issue #136, ADR-0016 Q1)
 
-The `./pty` entry additionally registers `ssh_start` / `ssh_tail` /
-`ssh_send` / `ssh_close` — the INTERACTIVE full-duplex ssh instance over the
-same core. `ssh_start({ host, jump?, shell? })` composes the ssh command
-line (`host`/`jump` are argv atoms — no whitespace/shell metacharacters) and
-opens it on the core PTY; the three passthroughs reuse the core's cursors
-and reads verbatim.
+`src/ssh/` is the INTERACTIVE full-duplex ssh instance as its own component
+(#136 split it out of `./pty`): `ssh_start` / `ssh_tail` / `ssh_send` /
+`ssh_close`, opened on the `./pty` entry's session core — the returned
+sessionId IS a core session id, so `pty_send` / `pty_tail` / `pty_close` /
+`pty_signal` still operate it (one registry, unchanged).
+
+```js
+import * as ssh from 'dsh-shell-host/ssh'   // { name, inject, Config, apply }
+```
+
+Independent settings namespace (`ssh`) with the ssh family's own
+`enableRunInBackground` (the background-send section below describes the shared
+path).
+
+**迁移（只挂 `pty` 的老 profile 会失去 ssh 工具）**：`#136` 之前四个 `ssh_*` 工具是
+`./pty` 行的一部分；现在只有挂 `ssh` 行才有它们。只挂 `pty` 的老 profile 升级后
+**`ssh_*` 全部消失**（`pty_*` 不变）—— 在自己的 profile patch 里补一行
+（迁移总说明统一在 T7 —— 见父票 `#135` 的 tickets 拆分；本票只写必须知道的这一句）：
+
+```yaml
+- insert:
+    - id: ssh
+      name: dsh-shell-host/ssh
+```
+
+同一条迁移还包含两处**面收窄**（都写在这里，免得踩到）：
+
+1. `./pty` 模块**不再导出** ssh 合成符号（`composeSshCommand` / `SSH_KEEPALIVE_*` /
+   `SshOption*`）—— 它们随组件搬到 `src/ssh/compose.ts`；从 `dsh-shell-host/pty` 具名 import
+   这些符号的代码会变成 `undefined`，改指新模块。
+2. `pty` 命名空间的 `enableRunInBackground` **只再管 `pty_send`**；要关 ssh 的后台发送
+   得在 `ssh` 行配置（默认 true，未配置的部署零变化）。
+
+```yaml
+- insert:
+    - id: ssh
+      name: dsh-shell-host/ssh
+```
+
+`ssh_start({ host, jump?, shell? })` composes the ssh command line
+(`host`/`jump` are argv atoms — no whitespace/shell metacharacters) and opens it
+on the core PTY; the three passthroughs reuse the core's cursors and reads
+verbatim. **合成逻辑单一来源**：`src/ssh/compose.ts`（keepalive 默认值 / `port` /
+`-o` 透传 / argv 合成）——`./terminal` 的 ssh transport 维度也吃同一份，行为与 #136 之前逐字一致。
 
 Division of labor (README-documented): ONE-SHOT remote commands belong to the
 standalone `dsh-shell-remote` plugin (ADR-0013, route C — formerly this
@@ -261,7 +302,7 @@ Long-session hardening (#21 phase 1):
   ServerAliveCountMax=4` — without them, NAT/firewall idle drops kill
   sessions silently. (Single source #49: exported as
   `SSH_KEEPALIVE_INTERVAL_DEFAULT` / `SSH_KEEPALIVE_COUNT_DEFAULT` from
-  `src/pty/index.ts` — code, tool description, and tests derive from there.)
+  `src/ssh/compose.ts` — code, tool description, and tests derive from there.)
 - `ssh_start({ ..., options })` — free `-o` passthrough for remote-workspace
   capabilities building on this surface (#50, additive dual shape per entry:
   an atomic string — `"Key=value"` or a valueless `"Key"`, no whitespace —
@@ -269,6 +310,18 @@ Long-session hardening (#21 phase 1):
   POSIX-quoted into one shell word, e.g. `ProxyCommand`). An option whose
   key is `ServerAliveInterval` / `ServerAliveCountMax` suppresses its
   default (exact key match).
+
+**传输形态（ADR-0017，接口在 `src/ssh/transport.ts`）**：v1 在**所有**客户端都是
+「每会话一条独立连接」——`ssh_start` 结果带 `transport` 结构化事实
+（`shape: "per-session-connection"` + `controlMasterUsable`），远程工作区用它回答
+「这条会话走的是哪种形态」。**Windows 客户端不能用 ControlMaster**（实测 socket 与 fd 两处都失败）
+⇒ 那里**永不**去"先试 master 再回退"（那会在每次会话多打一条失败日志）。POSIX 客户端按
+ADR-0017 **决策 2** 才是 master+channel 形态 —— 那条路径随远程工作区（#137）落地；本票是
+**重构票**、不改开会话路径，所以结果里如实报的永远是**实际形态**（今天 = 每会话一条连接），
+不虚报"可能形态"。
+**远端登录 shell 必须是 POSIX 系**（会话打开时探测 `uname` / `$SHELL`，非 POSIX 响亮拒绝、
+点名原因）；**Windows 远端 v1 明确不支持**。这两件的探测/拒绝随远程会话的打开路径（#137+）
+落地，本票只承载接口与契约。
 
 Reconnect semantics: **RECONNECT-NO, explicit** — a dropped session (network
 cut, remote drop) surfaces `status.kind = "exited"` on the next send/tail;
@@ -347,8 +400,9 @@ import * as wsl from 'dsh-shell-host/wsl'   // { name, inject, apply }
 ```
 
 `./wsl` is **exported but deliberately NOT bundle-mounted** (ADR-0013): the
-bundle patch mounts only two rows (`pty`, `terminal` — see *The bundle patch*
-above), so installing the bundle does NOT give you the `win_*` tools. That is
+bundle patch mounts only three rows (`pty`, `ssh`, `terminal` — see *The bundle
+patch* above), so installing the bundle does NOT give you the `win_*` tools.
+That is
 by design — the row was never in the patch, so its absence is not a regression.
 The tools exist for an agent hosted **inside WSL** reaching the Windows side;
 with DSH running natively on Windows the semantics do not hold (path
@@ -468,5 +522,6 @@ source deployment and build gotchas.
   `@lydell/node-pty`; tooling
   (typescript/vitest/tsdown) comes from npm.
 
-Status: v0.2.1-rc.2-r1, tools-only (ADR-0012/0013): `./pty` + `./terminal` +
-`./wsl`; remote one-shot via the standalone `dsh-shell-remote` plugin.
+Status: v0.2.1-rc.2-r1, tools-only (ADR-0012/0013): `./pty` + `./ssh` +
+`./terminal` + `./wsl`; remote one-shot via the standalone `dsh-shell-remote`
+plugin.

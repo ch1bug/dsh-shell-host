@@ -38,6 +38,12 @@
  * disposes. The plugin additionally installs a dispose effect that closes
  * every session it opened.
  *
+ * #136: the ssh family (`ssh_start` / `ssh_tail` / `ssh_send` / `ssh_close`)
+ * moved to its own `./ssh` entry — this entry is the SESSION CORE only. It
+ * still provides the `pty` service, so ssh sessions share this registry
+ * (`pty_list` / `pty_signal` see them exactly as before); the two families'
+ * model-facing helpers live in `src/tool-support.ts`.
+ *
  * Explicitly OUT of scope (see the source repo README's instance matrix):
  * protocol parsing (gdb/MI, line framing — consumer-layer), non-PTY
  * long-running processes (probe servers, RTT, serial — use jobs + tail), no
@@ -48,8 +54,7 @@
 
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { posixQuote } from '../posix-quote.ts'
-import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike, type SendResult } from './session-core.ts'
+import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
 import {
   ENVIRONMENT_CONTEXT_NAME,
   ENVIRONMENT_CONTEXT_ORDER,
@@ -57,11 +62,6 @@ import {
   detectEnvironmentRows,
   type EnvironmentRow,
 } from './environment-context.ts'
-import {
-  BACKGROUND_DISABLED_MESSAGE,
-  startBackgroundSend,
-  type BackgroundJobRegistry,
-} from './background-send.ts'
 import {
   SANDBOX_EXECUTION_SEMANTICS,
   createPermissionGate,
@@ -71,8 +71,19 @@ import {
   type PermissionGate,
   type SandboxMode,
 } from '../permission-gate.ts'
-import type { SessionId } from '@deepseek-ai/dsh-session'
-import type { JobToolCall } from '@deepseek-ai/dsh-jobs'
+import {
+  BACKGROUND_RESULT_PROPERTIES,
+  RUN_IN_BACKGROUND_PARAM,
+  RUN_IN_BACKGROUND_SUFFIX,
+  createBackgroundStarter,
+  jsonRender,
+  presentSendCall,
+  renderSend,
+  requireAgent,
+  type BackgroundStarter,
+  type Owner,
+  type SendExec,
+} from '../tool-support.ts'
 
 const name = 'dsh-pty-session'
 // #149 contributes a prompt context, but the TOOLS must never wait on the
@@ -93,10 +104,11 @@ export interface PtyConfig extends SessionCoreConfig {
    * `pty_open()` call shape — it never overrides an explicit `command` or
    * `shellCommand`. No default value = no global default. */
   defaultShellCommand?: string
-  /** Background sends (#120): expose `run_in_background` on `pty_send` /
-   * `ssh_send` and accept it. Default true — the official `terminal_send`
-   * posture; false makes every background request fail loudly instead of
-   * silently degrading to a foreground settle. */
+  /** Background sends (#120): expose `run_in_background` on `pty_send` and
+   * accept it. Default true — the official `terminal_send` posture; false makes
+   * every background request fail loudly instead of silently degrading to a
+   * foreground settle. #136: the ssh family moved to `./ssh` and carries its own
+   * copy of this setting in ITS namespace (`ssh.enableRunInBackground`). */
   enableRunInBackground?: boolean
 }
 
@@ -190,54 +202,6 @@ export function resolveShellDeclaration(
   )
 }
 
-/** Shared render for structured tool output: one JSON text block. */
-const jsonRender = (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }]
-
-// ---------------------------------------------------------------------------
-// #120 — the model-facing faces of a background send
-//
-// ONE definition, shared by `pty_send` and `ssh_send`: the parameter, the
-// description tail, the two extra result properties, the render and the call
-// card. The executor is already a single branch (`background-send.ts`); copying
-// these four would leave the drift surface wide open — the exact failure the
-// one-facade split exists to prevent.
-// ---------------------------------------------------------------------------
-
-/** The `run_in_background` parameter, advertised only while the path is open
- * (official posture: a disabled deployment does not offer a parameter it will
- * refuse). */
-const RUN_IN_BACKGROUND_PARAM = {
-  type: 'boolean',
-  description: 'Return a job id immediately; collect with job_output or stop with job_kill.',
-} as const
-
-/** Description tail of both send tools while the background path is open. */
-const RUN_IN_BACKGROUND_SUFFIX =
-  ' With run_in_background: true the call returns a job id immediately instead of awaiting the settle — ' +
-  'collect it with job_output, stop it with job_kill (that path needs the host job stack mounted).'
-
-/** The two result properties a BACKGROUND call adds. The foreground result
- * keeps its shape (`{ delta, status }`), so both stay absent there. */
-const BACKGROUND_RESULT_PROPERTIES = {
-  kind: { type: 'string', description: 'Present exactly when the send ran in the background: "background".' },
-  jobId: { type: 'string', description: 'Registry-issued job id (background calls only) — pass it to job_output / job_kill.' },
-} as const
-
-/** A background call renders ONLY its job id; every other outcome keeps the
- * structured JSON block. */
-const renderSend = (_args: unknown, value: { kind?: string; jobId?: string }) =>
-  value.kind === 'background'
-    ? [{ type: 'text' as const, text: `started background job ${value.jobId ?? '(unknown id)'}` }]
-    : jsonRender(_args, value)
-
-/** Call card: the background form swaps to the generic card and carries the
- * text as raw input (the official `terminal_send` posture); the foreground
- * keeps the terminal card. */
-const presentSendCall = (args: { id: string; data: string; run_in_background?: boolean }) =>
-  args.run_in_background === true
-    ? { card: 'generic' as const, title: `Send to session ${args.id} in background`, kind: 'execute' as const, rawInput: args.data }
-    : { card: 'terminal' as const, title: args.data }
-
 /** The tool-execution context slice the plugin consumes (duck-typed seam). */
 interface PtyCtx {
   provide: (name: string, value: unknown) => void
@@ -255,43 +219,6 @@ interface PtyCtx {
 /** The prompt-registry slice this entry contributes to (duck-typed seam). */
 interface SystemPromptCtx {
   context: (entry: { name: string; order: number; text: () => string; interpolate?: boolean; required?: boolean }) => unknown
-}
-
-/** Owner (Agent) identity passed to every core call. */
-type Owner = unknown
-
-/** The send-tool execution slice the background branch reads (#120): the
- * owning agent, its cancellation, and the two call ids the host's job record
- * carries. The ids are OPAQUE STRINGS at this boundary for the same reason
- * `Owner` is `unknown` — the seam is duck-typed (the unit harnesses pass plain
- * object literals), so the host's branded `ToolCallId` is asserted once, at the
- * job record, the only place that has to speak the host's type. `agent` is
- * optional because a harness may pass `{ agent }` alone. */
-type SendExec = { agent?: Owner; signal?: AbortSignal; callId?: string; rootCallId?: string }
-
-/** How a send tool reaches the background path (#120): the gate, then the job
- * start. One function, so `pty_send` and `ssh_send` cannot drift apart. */
-type BackgroundStarter = (
-  owner: Owner,
-  exec: SendExec,
-  label: string,
-  send: (signal: AbortSignal) => Promise<SendResult>,
-) => { kind: 'background'; jobId: string }
-
-/** The background path as the ssh family sees it: whether it is open, and the
- * starter. A named clump because both fields travel together everywhere. */
-interface BackgroundSendBridge {
-  readonly enabled: boolean
-  readonly start: BackgroundStarter
-}
-
-/** Every pty/ssh tool requires an owning agent session (owner-scoped core). */
-function requireAgent(exec: { agent?: Owner }): Owner {
-  const owner = exec?.agent
-  if (owner === undefined) {
-    throw Object.assign(new Error('pty_* tools require an owning agent session'), { code: 'NO_AGENT' })
-  }
-  return owner
 }
 
 /** Injectable core dependencies (the unit lane's fake-spawn seam). */
@@ -382,29 +309,11 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
   /**
    * Background sends (#120): the ONE branch `pty_send` and `ssh_send` share —
    * they differ only in which core send runs, so the gate, the job record and
-   * the output source all live in `background-send.ts`.
-   *
-   * `ctx.get('jobs')` is read PER CALL, never at apply time: a host that
-   * mounts the job stack after this row still serves the tool, and a host
-   * without one gets the loud two-package error on the first background
-   * request instead of a tool that quietly never offers the path.
+   * the output source all live in `background-send.ts`, and the bridge itself in
+   * `src/tool-support.ts` (#136: the ssh family has its own entry and its own
+   * `enableRunInBackground`, but uses this same builder).
    */
-  const background: BackgroundStarter = (owner, exec, label, send) => {
-    if (!enableRunInBackground) throw new Error(BACKGROUND_DISABLED_MESSAGE)
-    const jobs = ctx.get('jobs') as BackgroundJobRegistry | undefined
-    return startBackgroundSend({
-      jobs,
-      // The job contract fences access by the owning agent's SESSION id; this
-      // package treats the Agent as an opaque owner, so the id is read here
-      // and branded at the one boundary that has to name the host type.
-      owner: (owner as { id: SessionId }).id,
-      ...(exec.callId === undefined || exec.rootCallId === undefined
-        ? {}
-        : { toolCall: { callId: exec.callId as JobToolCall['callId'], rootCallId: exec.rootCallId as JobToolCall['rootCallId'] } }),
-      label,
-      send,
-    })
-  }
+  const background: BackgroundStarter = createBackgroundStarter(ctx, enableRunInBackground)
 
   ctx.tools.register(defineTool({
     name: 'pty_open',
@@ -713,328 +622,6 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       return facade.signal(owner, args.id, args.signal)
     },
     presentCall: (args: { id: string; signal: string }) => ({ card: 'terminal', title: `signal ${args.signal} ${args.id}` }),
-  }))
-
-  registerSshTools(ctx, facade, { enabled: enableRunInBackground, start: background }, gate)
-}
-
-/**
- * Keepalive defaults injected on every ssh_start (#21 phase 1) — the SINGLE
- * SOURCE for these literals (#49): composeSshCommand below, the ssh_start
- * tool description, and the spec files all derive from these exports.
- * README cites the values and points here. Changing them changes behavior
- * everywhere at once; each default is individually suppressible via a
- * caller-supplied `options` entry with the same key (#50: exact key match
- * on the normalized {key, value} shape).
- */
-export const SSH_KEEPALIVE_INTERVAL_DEFAULT = 'ServerAliveInterval=15'
-export const SSH_KEEPALIVE_COUNT_DEFAULT = 'ServerAliveCountMax=4'
-
-/** Suppression keys (#50), derived from the #49 atoms so the source stays single. */
-const SSH_KEEPALIVE_INTERVAL_KEY: string = SSH_KEEPALIVE_INTERVAL_DEFAULT.split('=')[0]
-const SSH_KEEPALIVE_COUNT_KEY: string = SSH_KEEPALIVE_COUNT_DEFAULT.split('=')[0]
-
-/**
- * One ssh `-o` option (#50 structured shape). `value` omitted = valueless
- * option. The atomic-string form (`"Key=value"` / `"Key"`) is accepted as
- * sugar and normalized into this shape.
- */
-// A type LITERAL, not an interface: defineTool's schema inference maps an
-// unitems array parameter to JsonValue[], and only object-literal types get
-// the implicit index signature that makes them assignable to JsonValue.
-export type SshOption = {
-  key: string
-  value?: string
-}
-
-/** Tool-parameter shape: either form per entry (#50 additive dual shape). */
-export type SshOptionInput = string | SshOption
-
-/** Chars that force POSIX quoting of a structured value (one shell word). */
-const SHELL_UNSAFE = /[\s'"`$\\;&|<>(){}*?[\]#~!]/
-
-/**
- * Normalize the dual-shape `options` input into `SshOption[]` (#50): the
- * atomic string is split at its FIRST `=` (empty key rejected); a valueless
- * atom becomes `{ key }`. Suppression then matches on the normalized KEY —
- * exact, no prefix heuristics.
- */
-const normalizeSshOptions = (options: SshOptionInput[] | undefined): SshOption[] => {
-  if (options === undefined) return []
-  return options.map((entry, i): SshOption => {
-    const at = `ssh_start options[${i}]`
-    if (typeof entry === 'string') {
-      if (entry === '' || /\s/.test(entry)) {
-        throw new Error(`${at} must be a single -o atom with no whitespace (spaced values: use the structured {key, value} form), got: ${JSON.stringify(entry)}`)
-      }
-      const eq = entry.indexOf('=')
-      if (eq < 0) return { key: entry }
-      if (eq === 0) throw new Error(`${at}: empty option key in ${JSON.stringify(entry)}`)
-      return { key: entry.slice(0, eq), value: entry.slice(eq + 1) }
-    }
-    if (entry === null || typeof entry !== 'object') {
-      throw new Error(`${at} must be a -o atom string or a {key, value} object, got: ${JSON.stringify(entry)}`)
-    }
-    const { key, value } = entry as { key?: unknown; value?: unknown }
-    if (typeof key !== 'string' || key === '' || /\s/.test(key) || key.includes('=')) {
-      throw new Error(`${at}.key must be a non-empty ssh option name with no whitespace or '=', got: ${JSON.stringify(key)}`)
-    }
-    if (value !== undefined && typeof value !== 'string') {
-      throw new Error(`${at}.value must be a string when present, got: ${JSON.stringify(value)}`)
-    }
-    return value === undefined ? { key } : { key, value }
-  })
-}
-
-/**
- * Render one normalized option as the `-o` operand: valueless keys alone;
- * values POSIX-quoted only when they carry whitespace/shell metacharacters
- * (atom-shaped values keep their #21-era verbatim look).
- */
-const renderSshOption = (option: SshOption): string =>
-  option.value === undefined ? option.key : `${option.key}=${SHELL_UNSAFE.test(option.value) ? posixQuote(option.value) : option.value}`
-
-/**
- * ssh 四工具（issue #24，承接 dsh-pty-session#3）: the interactive
- * full-duplex ssh instance over the same core. `ssh_start` composes the ssh
- * command line and opens it on the core PTY (long-lived remote shell, sees
- * intermediate output); tail/send/close are thin passthroughs with their own
- * tool names so agent-facing surfaces read coherently.
- *
- * Division of labor (README-documented): one-shot remote commands belong to
- * the remote one-shot world — the standalone `dsh-shell-remote` plugin since
- * ADR-0013 (route C; formerly this package's ssh backend) — this instance is
- * for sessions a human/agent converses with.
- *
- * Reconnect semantics (issue AC): explicit RECONNECT-NO — a dead session
- * (network cut, remote drop) surfaces `status.kind = "exited"` on the next
- * send/tail; nothing auto-reconnects. Recovery = `ssh_start` again (new
- * session id); the dead id is reclaimed by `ssh_close` (idempotent).
- *
- * Long-session hardening (#21 phase 1): keepalive defaults
- * (ServerAliveInterval=15 / ServerAliveCountMax=4) ride on every start —
- * NAT/firewall idle drops otherwise kill sessions silently — plus `port`
- * (-p) and free `-o` passthrough via `options` (survey decision: remote
- * workspace capabilities build on this surface next).
- */
-/** The ssh launch argument clump, named once (#54) and shared by every caller. */
-export interface SshLaunchArgs {
-  host: string
-  jump?: string
-  port?: number
-  shell?: string
-  options?: SshOptionInput[]
-}
-
-/**
- * The ssh composition, single source (#49/#54): the ssh_start tool and the
- * launcher layer's ssh transport dimension (ADR-0008 decision 1) both derive
- * from this one function — the launcher never re-hardcodes keepalive or -o
- * semantics.
- */
-export function composeSshCommand(args: SshLaunchArgs): string {
-  /** argv ATOMS (host/jump) — never shell text; reject whitespace loudly. */
-  const atom = (kind: string, value: string) => {
-    if (!/^[\w.@:[\]-]+$/.test(value)) {
-      throw new Error(`ssh ${kind} must be a single argv atom (no whitespace/shell metacharacters), got: ${JSON.stringify(value)}`)
-    }
-    return value
-  }
-  // -tt: force remote TTY allocation even when the local side is a pipe —
-  // the interactive full-duplex contract (banner, prompt, echo) depends on
-  // the remote shell being interactive.
-  const parts = ['ssh', '-tt']
-  if (args.jump !== undefined) parts.push('-J', atom('jump', args.jump))
-  if (args.port !== undefined) {
-    if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535) {
-      throw new Error(`ssh port must be an integer in 1..65535, got: ${args.port}`)
-    }
-    parts.push('-p', String(args.port))
-  }
-  const supplied = normalizeSshOptions(args.options)
-  // Keepalive defaults first so an explicit caller option reads as the
-  // override; each default is suppressed when the caller supplies an
-  // option with the same KEY AND a value — exact match on the normalized
-  // shape (#50), never a prefix heuristic. A valueless entry does not
-  // "set" the option (and would compose an invalid bare `Key` anyway),
-  // so it leaves the default in place.
-  const setsKey = (key: string) => supplied.some((option) => option.key === key && option.value !== undefined)
-  if (!setsKey(SSH_KEEPALIVE_INTERVAL_KEY)) {
-    parts.push('-o', SSH_KEEPALIVE_INTERVAL_DEFAULT)
-  }
-  if (!setsKey(SSH_KEEPALIVE_COUNT_KEY)) {
-    parts.push('-o', SSH_KEEPALIVE_COUNT_DEFAULT)
-  }
-  for (const option of supplied) parts.push('-o', renderSshOption(option))
-  parts.push(atom('host', args.host))
-  // `shell` is deliberately NOT an atom: it is remote SHELL TEXT appended
-  // verbatim (e.g. "bash --login"). core.open delivers `command` as shell
-  // text into the PTY (the PTY model has no argv array), so only host/jump
-  // need atom validation — they are the pieces ssh itself parses.
-  if (args.shell !== undefined && args.shell.trim() !== '') parts.push(args.shell.trim())
-  return parts.join(' ')
-}
-
-function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { command: string; cwd?: string; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any>; send(owner: unknown, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>; tail(owner: unknown, id: string, lines?: number): any; close(owner: unknown, id: string): Promise<{ closed: boolean }>; modeOf(owner: unknown, id: string): SandboxMode | undefined }, background: BackgroundSendBridge, gate: PermissionGate) {
-  ctx.tools.register(defineTool({
-    name: 'ssh_start',
-    description:
-      'Open an interactive ssh session on a PTY (full duplex: long-lived remote shell, intermediate output visible). ' +
-      `Keepalive defaults (${SSH_KEEPALIVE_INTERVAL_DEFAULT}/${SSH_KEEPALIVE_COUNT_DEFAULT}) are injected unless overridden via options. ` +
-      'Returns a sessionId for ssh_tail / ssh_send / ssh_close. One-shot remote commands should use the ssh backend instead. ' +
-      'No auto-reconnect: a dropped session reports status exited; recover by calling ssh_start again. ' +
-      // #102: ssh_start is a local PROCESS spawn (and `-o ProxyCommand=…` is
-      // arbitrary local execution), so it takes the same policy gate as
-      // pty_open — otherwise it would be the bypass this ticket removes.
-      SANDBOX_EXECUTION_SEMANTICS,
-    parameters: {
-      host: { type: 'string', required: true, description: 'ssh destination ([user@]host), a single argv atom.' },
-      jump: { type: 'string', description: 'Jump host passed as -J (single argv atom).' },
-      port: { type: 'number', description: 'Remote ssh port passed as -p (integer 1..65535; omit for the default 22).' },
-      options: {
-        type: 'array',
-        description:
-          'Extra ssh -o options (#50, both shapes accepted). Atomic form: a single atom with no whitespace, ' +
-          '"Key=value" or a valueless "Key". Structured form: { key, value? } — value may carry spaces ' +
-          '(POSIX-quoted into one shell word, e.g. ProxyCommand). An option whose key is ServerAliveInterval ' +
-          'or ServerAliveCountMax suppresses its keepalive default (exact key match).',
-      },
-      shell: { type: 'string', description: 'Remote command/shell to run after connect (e.g. "bash --login"); omit for the login shell.' },
-      ...sandboxPermissionParameters('command'),
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: true,
-        properties: {
-          sessionId: { type: 'string', required: true, description: 'Opaque session id for ssh_tail/ssh_send/ssh_close.' },
-          pid: { type: 'number', description: 'Local ssh process id when the backend exposes one.' },
-          status: { type: 'object', additionalProperties: true, description: 'Session status at publication.' },
-          initialOutput: { type: 'string', description: 'Banner/auth output captured during connect.' },
-          sandboxMode: {
-            type: 'string',
-            description: 'The sandbox mode this ssh spawn ran under (the session policy, or the approved one-shot escalation target).',
-          },
-        },
-      },
-      render: jsonRender as any,
-    },
-    async execute(rawArgs: { host: string; jump?: string; port?: number; shell?: string; options?: SshOptionInput[]; sandbox_permissions?: string; justification?: string }, exec: { agent?: Owner; signal?: AbortSignal; callId?: string }) {
-      const owner = requireAgent(exec)
-      const command = composeSshCommand(rawArgs)
-      const authorization = await gate.authorizeSpawn({
-        toolName: 'ssh_start',
-        agent: owner,
-        session: sessionOf(owner),
-        callId: exec.callId,
-        signal: exec.signal,
-        sandboxPermissions: rawArgs.sandbox_permissions,
-        justification: rawArgs.justification,
-        subject: 'command',
-      })
-      const opened = await core.open(owner, {
-        command,
-        ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
-        // The grant actually used is the ssh session's write baseline (one call only).
-        authorizedMode: authorization.grantedMode,
-      }, exec.signal)
-      return { ...opened, sandboxMode: authorization.grantedMode }
-    },
-    presentCall: (args: { host: string }) => ({ card: 'terminal', title: `ssh ${args.host}` }),
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'ssh_send',
-    description:
-      'Write bytes into the live ssh session and return the output read while the write settled. Core passthrough. ' +
-      sandboxSessionWriteSemantics('ssh_close') +
-      (background.enabled ? RUN_IN_BACKGROUND_SUFFIX : ''),
-    parameters: {
-      id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
-      data: { type: 'string', required: true, description: 'Text to write into the session.' },
-      submit: { type: 'boolean', description: 'Whether to write the backend\'s Enter sequence after data (default true).' },
-      ...(background.enabled ? { run_in_background: RUN_IN_BACKGROUND_PARAM } : {}),
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: true,
-        properties: {
-          ...BACKGROUND_RESULT_PROPERTIES,
-          delta: { type: 'string', description: 'Output produced since the previous read (foreground calls).' },
-          status: { type: 'object', additionalProperties: true, description: 'Session status at settlement — kind "exited" means the session dropped (no auto-reconnect).' },
-        },
-      },
-      render: renderSend,
-    },
-    async execute(args: { id: string; data: string; submit?: boolean; run_in_background?: boolean }, exec: SendExec) {
-      const owner = requireAgent(exec)
-      // #102 §5: same re-resolve rule as pty_send (one ambient policy source).
-      gate.assertSessionWritable({
-        toolName: 'ssh_send',
-        agent: owner,
-        session: sessionOf(owner),
-        sessionId: args.id,
-        authorizedMode: core.modeOf(owner, args.id),
-        closeTool: 'ssh_close',
-      })
-      if (args.run_in_background === true) {
-        return background.start(owner, exec, `${args.id}: ${args.data || '(input)'}`,
-          (signal) => core.send(owner, args.id, { data: args.data, submit: args.submit, signal }))
-      }
-      return core.send(owner, args.id, { data: args.data, submit: args.submit, signal: exec.signal })
-    },
-    presentCall: presentSendCall,
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'ssh_tail',
-    description:
-      'Incrementally read the ssh session\'s new output since the last tail (per-session cursor; repeated tails do not resend old lines). Core passthrough.',
-    parameters: {
-      id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
-      lines: { type: 'number', description: 'Max lines to return this call (default from config; excess is marked truncated).' },
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: true,
-        properties: {
-          text: { type: 'string', description: 'New output since the cursor, chronological.' },
-          lines: { type: 'number', description: 'Number of new lines returned.' },
-          truncated: { type: 'boolean', description: 'True when older backlog exceeded the budget and was dropped.' },
-        },
-      },
-      render: (_args: unknown, value: { text?: string }) => [{ type: 'text' as const, text: value.text || '(no new output)' }],
-    },
-    async execute(args: { id: string; lines?: number }, exec: { agent?: Owner }) {
-      const owner = requireAgent(exec)
-      return core.tail(owner, args.id, args.lines)
-    },
-    presentCall: (args: { id: string }) => ({ card: 'terminal', title: `tail ${args.id}` }),
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'ssh_close',
-    description: 'Terminate the ssh session via the seam\'s awaited cleanup and reclaim it. Idempotent per close. Core passthrough.',
-    parameters: {
-      id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: true,
-        properties: {
-          closed: { type: 'boolean', required: true, description: 'Whether this call newly closed the session.' },
-        },
-      },
-      render: jsonRender as any,
-    },
-    async execute(args: { id: string }, exec: { agent?: Owner }) {
-      const owner = requireAgent(exec)
-      return core.close(owner, args.id)
-    },
-    presentCall: (args: { id: string }) => ({ card: 'terminal', title: `close ${args.id}` }),
   }))
 }
 

@@ -20,11 +20,10 @@
  *
  * The launcher table is the presets' single source (ADR-0008) and stays there:
  * this module only picks the RESOLVED executable out of a preset's candidate
- * list and formats it. Note the import direction — `src/launchers.ts` imports
- * `composeSshCommand` from `./index.ts` (ADR-0008 decision 1), so this module
- * closes an import cycle with the pty entry. The cycle is inert by
- * construction: every reference into the launcher module sits inside a
- * function body, so nothing is read while modules are still evaluating.
+ * list and formats it. The ssh composition the launcher layer reuses lives in
+ * `src/ssh/compose.ts` since #136, so the import cycle this comment used to
+ * describe (`launchers.ts` → `pty/index.ts` → this module → `launchers.ts`) is
+ * GONE: the launcher layer no longer imports the pty entry.
  *
  * @module dsh-shell-host/pty/environment-context
  */

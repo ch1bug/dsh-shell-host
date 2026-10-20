@@ -32,7 +32,7 @@ function tempDir(tag: string): string {
   return mkdtempSync(join(tmpdir(), `lib-snapshot-spec-${tag}-`));
 }
 
-/** 在一棵 fixture 仓里铺出 `lib/` 的三个入口文件 + 一个 chunk（快照完整性的最小面）。 */
+/** 在一棵 fixture 仓里铺出 `lib/` 的四个入口文件 + 一个 chunk（快照完整性的最小面）。 */
 function seedLib(root: string): void {
   for (const relative of [...LIB_ENTRY_FILES, "lib/pty-C0_H63de.js"]) {
     const full = join(root, relative);
@@ -213,11 +213,11 @@ describe("waitForTreeReadyBriefly：缺席时提前收手（#123 的成本回退
   it("有动静（有一件出现）⇒ 不提前收手，继续等到齐（那是真重建，该等）", async () => {
     const repo = tempDir("brief-progress");
     try {
-      // 一开始只有 pty 那一件在 ⇒ "有动静"，必须继续等到另两件（模拟重建进行中）。
+      // 一开始只有 pty 那一件在 ⇒ "有动静"，必须继续等到其余三件（模拟重建进行中）。
       mkdirSync(join(repo, "lib", "pty"), { recursive: true });
       writeFileSync(join(repo, "lib", "pty", "index.js"), "// pty\n");
       const timer = setTimeout(() => {
-        for (const rel of ["lib/terminal/index.js", "lib/wsl-plugin/index.js"]) {
+        for (const rel of ["lib/ssh/index.js", "lib/terminal/index.js", "lib/wsl-plugin/index.js"]) {
           mkdirSync(dirname(join(repo, rel)), { recursive: true });
           writeFileSync(join(repo, rel), `// ${rel}\n`);
         }
@@ -287,7 +287,7 @@ describe("pointerMissReport：失败自报判据（AC2）", () => {
 });
 
 describe("libLooksRebuilt：重建完成判据", () => {
-  it("三个入口都在 ⇒ true；缺任一 ⇒ false（不假绿）", () => {
+  it("四个入口都在 ⇒ true；缺任一 ⇒ false（不假绿）", () => {
     const repo = tempDir("rebuilt");
     try {
       seedLib(repo);

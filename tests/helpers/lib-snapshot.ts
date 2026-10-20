@@ -4,7 +4,7 @@
  * ## 为什么需要它（本票实测的根因）
  *
  * `tests/clean-lib.spec.ts` 会**真跑 `node --run build` 两次**，每次先 `clean-lib.mjs` 删掉
- * `lib/` 的三个入口目录与顶层 chunk，再由 tsc/tsdown 重建 —— 即**写 `lib/`**。而本仓另有若干
+ * `lib/` 的四个入口目录与顶层 chunk，再由 tsc/tsdown 重建 —— 即**写 `lib/`**。而本仓另有若干
  * **读者**（`tests/verify-pack.spec.ts` 的副本 fixture `cpSync` 整棵 `lib/`、
  * `tests/built-artifact.spec.ts` 直接 import `lib/pty/index.js`）。写者与读者同池并发时，
  * 读者会读到**窗口内的半棵树**，表现为间歇红。
@@ -235,6 +235,7 @@ export function pointerMissReport(
  */
 export const LIB_ENTRY_FILES = [
   "lib/pty/index.js",
+  "lib/ssh/index.js",
   "lib/terminal/index.js",
   "lib/wsl-plugin/index.js",
 ] as const;
@@ -250,7 +251,7 @@ export const LIB_ENTRY_FILES_WITHIN_LIB = LIB_ENTRY_FILES.map((relative) =>
 );
 
 /**
- * `lib/` 目录是否像"重建完成"：三个入口文件都在。
+ * `lib/` 目录是否像"重建完成"：四个入口文件都在。
  *
  * @param libDir **`lib/` 自己**的绝对路径（不是仓根）—— 入参语义与 {@link LIB_ENTRY_FILES}
  *   的仓根相对写法不同，见那里的说明。

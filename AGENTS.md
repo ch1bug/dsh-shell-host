@@ -13,7 +13,8 @@ to-spec → to-tickets → implement).
 
 **Package posture (ADR-0012/0013, 2026-10-16): tools-only plugin.** The shell
 executor world is gone — no `ctx.shell` provider, no backends, no upstream
-loader-row takeover. Entries: `./pty` (persistent PTY sessions), `./terminal`
+loader-row takeover. Entries: `./pty` (persistent PTY sessions), `./ssh`
+(interactive ssh sessions — split out of `./pty` by #136), `./terminal`
 (`shell_open` launcher presets), `./wsl` (WSL bridge tools). Remote one-shot
 belongs to the standalone `dsh-shell-remote` plugin (route C).
 

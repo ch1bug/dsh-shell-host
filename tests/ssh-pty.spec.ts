@@ -6,10 +6,19 @@
  * TOOL semantics (command composition onto the spawn spec, cursor
  * passthrough, death reporting, cleanup) without a network. The live
  * full-duplex round-trip is the machine lane's job (ssh-pty-live.spec.ts).
+ *
+ * #136: the four tools are registered by the `./ssh` ENTRY now; the boot mounts
+ * both entries (`./pty` provides the core, `./ssh` consumes it). The pre-existing
+ * assertions are unchanged on purpose — this ticket is a pure move — and the
+ * `entry split` / `transport-shape` blocks at the end ADD the AC1 direction
+ * ("`./pty` alone no longer registers the ssh family") and the ADR-0017 shape
+ * fact.
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { SSH_KEEPALIVE_INTERVAL_DEFAULT, SSH_KEEPALIVE_COUNT_DEFAULT } from "../src/pty/index.ts";
+import { SSH_KEEPALIVE_INTERVAL_DEFAULT, SSH_KEEPALIVE_COUNT_DEFAULT } from "../src/ssh/compose.ts";
+import { controlMasterUsable, sessionTransport } from "../src/ssh/transport.ts";
+import * as sshEntry from "../src/ssh/index.ts";
 import { bootPlugin, echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
 
 // #49: the keepalive defaults are single-sourced from the pty entry — the
@@ -39,7 +48,10 @@ function echoRemoteSpawner(spec: CoreSpawnSpec) {
 function boot() {
   handles.length = 0;
   specs.length = 0;
-  return bootPlugin({ spawnPty: echoRemoteSpawner });
+  // #136: the ssh family is its own entry now — mount `./ssh` (it consumes the
+  // pty service this boot provides). The assertions below are unchanged: this
+  // suite pins the TOOL semantics, not which entry registered them.
+  return bootPlugin({ ssh: true, spawnPty: echoRemoteSpawner });
 }
 
 /** The composed command of the most recent ssh_start. */
@@ -285,5 +297,55 @@ describe("ssh_tail / ssh_send / ssh_close (#24 passthrough semantics)", () => {
     await h.tool("ssh_close").execute({ id: opened.sessionId }, { agent });
     const again = await h.tool("ssh_close").execute({ id: opened.sessionId }, { agent });
     expect(again.closed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #136 — the component split itself. AC1 has TWO directions: the tools ARE
+// registered by `./ssh`, and they are NOT registered by `./pty` any more.
+// ---------------------------------------------------------------------------
+
+describe("entry split (#136): the ssh family's ONLY home is ./ssh", () => {
+  it("a pty-only boot registers no ssh_* tool (the 'moved out' direction)", () => {
+    // No `ssh: true` → ONLY the pty entry is applied, which is exactly what an
+    // old profile (pty row only) gets after #136. If someone registers the ssh
+    // family back inside ./pty, this case goes red.
+    const ptyOnly = bootPlugin({ spawnPty: echoRemoteSpawner });
+    const names = ptyOnly.registered.map((t: any) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["pty_open", "pty_send", "pty_tail", "pty_close", "pty_list", "pty_signal"]));
+    for (const name of ["ssh_start", "ssh_tail", "ssh_send", "ssh_close"]) {
+      expect(names, `${name} must NOT be registered by ./pty since #136`).not.toContain(name);
+    }
+  });
+
+  it("the ./ssh entry carries its own name / inject / Config / apply", () => {
+    expect(sshEntry.name).toBe("dsh-shell-host-ssh");
+    expect(sshEntry.inject).toEqual(["tools", "pty", "sandboxPolicy", "approval"]);
+    expect(typeof sshEntry.apply).toBe("function");
+    expect(sshEntry.Config).toBeDefined();
+  });
+
+  it("ssh_start reports the transport it ACTUALLY opened in (ADR-0017 decision 5)", async () => {
+    const agent = makeAgent("a");
+    const opened = await boot().tool("ssh_start").execute({ host: "box" }, { agent });
+    expect(opened.transport).toEqual({
+      shape: "per-session-connection",
+      controlMasterUsable: controlMasterUsable(),
+    });
+  });
+});
+
+describe("transport-shape interface (ADR-0017, #136)", () => {
+  it("ControlMaster capability is a platform fact — never on win32", () => {
+    // ADR-0017 facts 2/4: the Windows client fails at the socket stage, and a
+    // POSIX-build client ON Windows fails one stage later (fd passing).
+    expect(controlMasterUsable("win32")).toBe(false);
+    expect(controlMasterUsable("linux")).toBe(true);
+    expect(controlMasterUsable("darwin")).toBe(true);
+  });
+
+  it("v1's shape is one independent connection per session on every client", () => {
+    expect(sessionTransport("win32")).toEqual({ shape: "per-session-connection", controlMasterUsable: false });
+    expect(sessionTransport("linux")).toEqual({ shape: "per-session-connection", controlMasterUsable: true });
   });
 });

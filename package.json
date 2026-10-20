@@ -2,7 +2,7 @@
   "name": "dsh-shell-host",
   "version": "0.2.1-rc.2-r1",
   "private": true,
-  "description": "dsh-shell-host: tools-only DSH plugin (ADR-0013) — persistent PTY sessions (./pty), launcher-preset terminals (shell_open, ./terminal), and WSL bridge tools (./wsl). No shell executor, no upstream loader-row takeover.",
+  "description": "dsh-shell-host: tools-only DSH plugin (ADR-0013) — persistent PTY sessions (./pty), interactive ssh sessions (./ssh), launcher-preset terminals (shell_open, ./terminal), and WSL bridge tools (./wsl). No shell executor, no upstream loader-row takeover.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -35,6 +35,10 @@
       "types": "./lib/types/pty/index.d.ts",
       "default": "./lib/pty/index.js"
     },
+    "./ssh": {
+      "types": "./lib/types/ssh/index.d.ts",
+      "default": "./lib/ssh/index.js"
+    },
     "./wsl": {
       "types": "./lib/types/wsl-plugin/index.d.ts",
       "default": "./lib/wsl-plugin/index.js"
@@ -48,12 +52,15 @@
     "lib/types/**/*.d.ts",
     "lib/pty/index.js",
     "lib/pty-*.js",
+    "lib/ssh/index.js",
     "lib/wsl-plugin/index.js",
     "lib/terminal/index.js",
     "lib/permission-gate-*.js",
     "lib/posix-quote-*.js",
     "lib/detect-*.js",
     "lib/launchers-*.js",
+    "lib/tool-support-*.js",
+    "lib/compose-*.js",
     "lib/src-*.js",
     "cordis.patch.yml"
   ],

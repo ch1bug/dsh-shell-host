@@ -50,8 +50,9 @@ import { isAbsolute, relative as relativePath, resolve as resolvePath, sep } fro
 
 export type { SandboxMode }
 
-// Re-exported so the three entries import the permission vocabulary from ONE
-// module: the marker/hint lines the model reads stay the official ones.
+// Re-exported so the four entries (pty / ssh / terminal / wsl) import the
+// permission vocabulary from ONE module: the marker/hint lines the model reads
+// stay the official ones.
 export { escalationHintMarker, sandboxDenialMarker }
 
 /** The three file-effect modes, weakest first (`sandboxPolicy.resolve` vocabulary).

@@ -194,7 +194,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 
 ## #68 POSIX launcher 预设行事实(2026-10-11)
 
-- **launcher 预设 lane 传递依赖**:launchers.ts 经 pty/index 引 `composeSshCommand`,容器 lane 装 `@lydell/node-pty` 外还需 `@deepseek-ai/schemastery@~3.18.5` + `@deepseek-ai/dsh-tools@0.2.1-rc.2`(npm range/钉源锚均可)。**【2026-10-16 修订】**原记 `dsh-tools@0.2.1-alpha.1`,与 **ADR-0005** 的 RC 锚不符(当时 `version` = `0.2.0-rc.2-r1`;2026-10-17 起锚 `0.2.1-rc.2-r1`),已改锚 RC;RC 与 alpha 的**接口差异**见上条 #82。
+- **launcher 预设 lane 传递依赖**:launchers.ts 经 `src/ssh/compose.ts` 引 `composeSshCommand`（`#136` 起；此前经 `pty/index`）,容器 lane 装 `@lydell/node-pty` 外还需 `@deepseek-ai/schemastery@~3.18.5` + `@deepseek-ai/dsh-tools@0.2.1-rc.2`(npm range/钉源锚均可)。**【2026-10-16 修订】**原记 `dsh-tools@0.2.1-alpha.1`,与 **ADR-0005** 的 RC 锚不符(当时 `version` = `0.2.0-rc.2-r1`;2026-10-17 起锚 `0.2.1-rc.2-r1`),已改锚 RC;RC 与 alpha 的**接口差异**见上条 #82。**【`#136` 覆盖】**合成逻辑已搬离 `pty/index`，容器 lane 的传递依赖面是否收窄**未重测**。
 - **POSIX 预设行实机绿**:podman node:24-bookworm lane(.scratch/issue68-posix-launcher-verify.mjs,一条命令见脚本头)8 项 ALL GREEN——bash 行 resolved(/etc/shells 匹配行,候选全在盘)、zsh/fish 缺席姿态进 absent(probed 列 /etc/shells 匹配行;bookworm 容器无 fish 行故 probed 空)、win32 门控完全休眠、argv 单一出处、shell_open 同构回环。
 
 ## D13 (ADR-0013, 2026-10-16, human 拍板 B:执行器 world 整体移除)
@@ -203,8 +203,8 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   `src/core/`、`src/backends*`、`src/types|timeout|subprocess-context|wsl-bridge`、
   client 设置卡、`./remote` entry)全部删除;`ctx.shell` 只由平台 shell 执行器
   提供。理由:B 路径(执行器注册/缝组装)已被实证会直接报错。
-- **挂载面 = 两个自有 id 行**:`pty` + `terminal`;entry 面 = `./pty`(持久
-  PTY 会话核心)、`./terminal`(shell_open launcher 预设)、`./wsl`(WSL 桥
+- **挂载面 = 三个自有 id 行**（`#136` 起；原记 `pty` + `terminal` 两行）:`pty` + `ssh` + `terminal`;entry 面 = `./pty`(持久
+  PTY 会话核心)、`./ssh`(ssh 四工具 + 通道合成，`#136` 从 `./pty` 抽出)、`./terminal`(shell_open launcher 预设)、`./wsl`(WSL 桥
   工具)。`launchers.ts` 吸收了原 backends 的 argv/prefix 常量
   (`*_INTERACTIVE_ARGV`、`msys2PathPrefix`、`parseWslDistroList`)。
 - **远程 one-shot = C 路线**【已被 D14 / ADR-0016 覆盖:远程工作区收回本包,

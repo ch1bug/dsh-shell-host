@@ -12,7 +12,7 @@
  *
  * A local preset composes `executable + interactive argv` as the launch
  * command; a custom ssh preset's composed command (keepalive defaults +
- * options semantics, single-sourced from the pty entry's composeSshCommand)
+ * options semantics, single-sourced from `src/ssh/compose.ts`)
  * is the launch command verbatim — the same shape ssh_start opens. Env rides
  * the spawn spec at process birth (#53 VS Code profile semantics); the
  * preset's PATH prefix is prepended ahead of the inherited PATH under the

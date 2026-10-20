@@ -23,7 +23,7 @@
   绿路径读数交给 `node --run test` —— AC 要的本来就是它。#101 会话实测：4 次变异单档共 ~36s、0 token。
 - **验收口径**仍只有 `node --run test`：`--lane` 的输出自带「非验收口径」提示，别把单车道读数当验收。
 
-本仓高危面：**loader 行 / 组合树 / 入口导出（pty·terminal·wsl）/ 原生件路径 /
+本仓高危面：**loader 行 / 组合树 / 入口导出（pty·ssh·terminal·wsl）/ 原生件路径 /
 依赖锚（peer、RC 锚）**。
 
 ## 证据纪律（硬规则）
@@ -272,7 +272,7 @@
 把「环境缺失」与「我的缺陷」机械区分开：
 
 ```js
-const MY_ROWS = ['pty', 'terminal']            // 本仓新增的 loader 行
+const MY_ROWS = ['pty', 'ssh', 'terminal']     // 本仓新增的 loader 行
 const blamed = MY_ROWS.filter(row => message.includes(row))
 if (blamed.length === 0) ok('失败只指向 harness 缺失的服务')
 else bad('失败归咎于本仓新增行', blamed.join(', '))
@@ -430,7 +430,7 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 | `node scripts/posix-signal-lane.mjs` | **真实层（POSIX，容器）** | `pty_signal` 的 POSIX 分支（`#144`）五个场景：真进程组投递（trap 命中、**输入回声不算**）、trap 命中后会话按**命令自身语义**退出（`exitCode` 读数）、投递后 `pty_close` 仍**真终止**（判据是 `/proc` 里组消失，不是 `closed:true`）、组覆盖（前台同组子进程收到 / `set -m` 独立组够不着 / 票面建议的 `child & wait` 形态会假读） | podman + `node:24-bookworm-slim`；node-pty 版本**从 `package.json` 的依赖锚派生**（单一来源）；退出码三态 **0 绿 / 1 判定红 / 2 没跑完**（无 podman、装不上依赖、参数不对、墙钟超时、没有 `RESULT` 行都是 2）；**不进 Windows 默认车道**（住在 `scripts/`，而 unit 车道按位置只收集 `tests/**/*.spec.ts`） |
 | `tests/doc-references.spec.ts` | ①② | 引用腐烂：注释里的仓内路径必须存在；本仓脚本一律写 `node --run`（历史提及在该注释/该行标 `[History: …]`） | 无 |
 | `tests/evidence-citations.spec.ts` | ①（本机） | 证据引用守卫（`#132`）：`.scratch/` 落地文档 / 批次状态 / retro 里的「证据单元格 × 退出码声称」—— 被引载体必须存在，读数不得与声称**矛盾**（「无读数」不算矛盾，一律 `!! SKIP (loud)` 声明不判） | 有 `.scratch/` 才判（干净 clone / 部署副本 / pre-push 车道恒响亮跳过 ⇒ `PASS*`） |
-| `tests/e2e-tool-call-machine.spec.ts` | **mock 层** | 官方安装（`--from-default-profile` + `dsh plugin add` 源目录）→ 配置（组合树含两行、无 pending）→ 启动（真实 `dsh web`，OS 临时端口，stderr 干净）→ `session/create` → `prompt` → mock provider 要求 `pty_open` → 实例执行 → `tool_result` 回灌 | 插件树 + 宿主树 + pnpm shim（缺失则响亮跳过） |
+| `tests/e2e-tool-call-machine.spec.ts` | **mock 层** | 官方安装（`--from-default-profile` + `dsh plugin add` 源目录）→ 配置（组合树含三行、无 pending）→ 启动（真实 `dsh web`，OS 临时端口，stderr 干净）→ `session/create` → `prompt` → mock provider 要求 `pty_open` → 实例执行 → `tool_result` 回灌 | 插件树 + 宿主树 + pnpm shim（缺失则响亮跳过） |
 | `tests/e2e-tarball-machine.spec.ts` | **mock 层（装箱交付，#89）** | **同一条链，起点换成现场 `npm pack` 的 tarball**：环 1 打包并断言**产物**里有 `cordis.patch.yml`（#88 的运行期版本）→ 环 2 官方安装且注册记录指向 `.tgz`（不是源目录）→ 环 3–5 同上；目录安装不经过 `files`，所以这条链是唯一能看到打包漏项的那条 | 上述 + 插件树有 `cordis.patch.yml` + 本机有可用打包器（缺失则响亮跳过） |
 | `tests/e2e-real-llm-machine.spec.ts` | **真实层**（opt-in） | 同一链路打**真实端点**：供应商接受（计费 usage）、真实模型行为、真实凭据路径；环级报告含 `Z cleanup` 两条读数（实例停 + 临时树删，**失败路径同样出读数**，#97） | 上述 + `DEEPSEEK_API_KEY` 或含 `deepseek-account-platform/*` 的凭据源（缺失则响亮跳过） |
 

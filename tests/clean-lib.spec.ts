@@ -3,12 +3,12 @@
  *
  * 票面（ch1bug/dsh-shell-host#111）要两条面：
  *
- * 1. **纯函数面**：「该删 vs 该留」的判定是 `planLibCleanup()`，「删 lib/*.js + 删三个入口目录、
+ * 1. **纯函数面**：「该删 vs 该留」的判定是 `planLibCleanup()`，「删 lib/*.js + 删四个入口目录、
  *    留 `lib/types/**`」逐条覆盖；**边界**两条必须锁住 ——
  *    （a）`lib/types/` 下的同名 `.js` **不得**被误删（声明面目录不是 tsdown 的产物面）；
  *    （b）`lib/` 完全不存在时（首次构建 / `git clean -fxd` 之后）**不得抛错**。
  * 2. **端到端面**（AC 第一条）：连续两次构建、中间制造一次 chunk 名变化后，
- *    `lib/` 里**没有**上一代的 `lib/pty-*.js`。这条用真 `node --run build` 跑
+ *    `lib/` 里**没有**上一代的 `lib/tool-support-*.js`（#136 起 pty 入口自成一体、不再产 chunk，故探针族取仍产 chunk 的 `tool-support`）。这条用真 `node --run build` 跑
  *    （**碰真实环境**，故本用例只在能跑构建时执行；见下方 skip 口径）。
  *
  * 为什么 AC 第一条必须在**离线单测里也有一条真构建**：#111 的病根是"残留进了 tarball"，
@@ -65,7 +65,7 @@ function makeLib(root: string, entries: string[]): void {
   }
 }
 
-/** 一棵"上一代产物已铺满"的 fixture：chunk + 三个入口目录 + 声明面（含声明面里的 `.js`）。 */
+/** 一棵"上一代产物已铺满"的 fixture：chunk + 四个入口目录 + 声明面（含声明面里的 `.js`）。 */
 const RESIDUE_LIB = [
   // 上一代 chunk（哈希名形态，与真产物同形）
   "lib/pty-C0_H63de.js",
@@ -74,8 +74,9 @@ const RESIDUE_LIB = [
   "lib/detect-def456.js",
   "lib/launchers-ghi789.js",
   "lib/src-jkl012.js",
-  // 三个入口目录（含其子文件）
+  // 四个入口目录（含其子文件）
   "lib/pty/index.js",
+  "lib/ssh/index.js",
   "lib/terminal/index.js",
   "lib/wsl-plugin/index.js",
   // 声明面 —— 必须整棵保留（含 `.d.ts.map`：tsc 的真实产出，虽不在 `files` 面上）
@@ -97,7 +98,7 @@ const RESIDUE_LIB = [
 ];
 
 describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
-  it("deletes the top-level tsdown chunks and the three entry directories", () => {
+  it("deletes the top-level tsdown chunks and the four entry directories", () => {
     // 判据吃的是 `listLibEntries()` 的顶层条目形态：目录条目不带尾斜杠。
     const doomed = planLibCleanup(RESIDUE_LIB.map((p) => p.replace(/\/index\.js$/u, "")));
     expect(doomed).toEqual([
@@ -108,6 +109,7 @@ describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
       "lib/launchers-ghi789.js",
       "lib/src-jkl012.js",
       "lib/pty",
+      "lib/ssh",
       "lib/terminal",
       "lib/wsl-plugin",
     ]);
@@ -171,7 +173,7 @@ describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
 
   it("treats all four separator spellings of an entry directory identically", () => {
     // 分隔符两形态 × 是否带尾斜杠 = 四种写法，都是"同一个目录"。漏任何一种的后果都是
-    // **三个入口目录整棵留下**（尾斜杠那条本轮真踩过）。
+    // **四个入口目录整棵留下**（尾斜杠那条本轮真踩过）。
     for (const spelling of ["lib/pty", "lib/pty/", "lib\\pty", "lib\\pty\\"]) {
       expect(planLibCleanup([spelling]), `${JSON.stringify(spelling)} 应命中入口目录`).toEqual([
         "lib/pty",
@@ -196,14 +198,14 @@ describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
     expect(planLibCleanup([])).toEqual([]);
     expect(planLibCleanup(undefined)).toEqual([]);
     expect(normalizeLibPath(".\\lib\\pty\\index.js")).toBe("lib/pty/index.js");
-    // 末尾分隔符：`readdirSync` 的目录条目形态与手工写法必须等价 —— 否则三个入口目录
+    // 末尾分隔符：`readdirSync` 的目录条目形态与手工写法必须等价 —— 否则四个入口目录
     // 会整棵留下（`TSDOWN_ENTRY_DIRS.includes()` 逐字比较）。
     expect(normalizeLibPath("lib/pty/")).toBe("lib/pty");
     expect(planLibCleanup(["lib/pty/", "lib/terminal/"])).toEqual(["lib/pty", "lib/terminal"]);
   });
 
   it("deletes by tsdown product SHAPE, never by a negative 'everything but .d.ts' rule", () => {
-    // 否定式判据（"`lib/` 下非 `.d.ts` 全删"）会当场把三个入口 `lib/*/index.js` 删掉 ——
+    // 否定式判据（"`lib/` 下非 `.d.ts` 全删"）会当场把四个入口 `lib/*/index.js` 删掉 ——
     // 它们在 `package.json` 的 `files` 里是**显式声明**的，`verify-pack` 判据 3 立刻红。
     // 本用例锁住**肯定式**删除面：只删顶层 chunk + 三个已知入口目录。
     const survivors = [
@@ -217,7 +219,7 @@ describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
     // 注意判据吃的是 `listLibEntries()` 的**顶层条目名**：目录以 `lib/pty` 形态出现
     // （不带尾斜杠，见 `normalizeLibPath`），代表整棵子树。
     expect(planLibCleanup(["lib/pty", "lib/wsl-plugin"])).toEqual(["lib/pty", "lib/wsl-plugin"]);
-    // 尾斜杠是同一件事的等价写法，必须同样命中（本轮真踩过：漏判 ⇒ 三个入口目录整棵留下）。
+    // 尾斜杠是同一件事的等价写法，必须同样命中（本轮真踩过：漏判 ⇒ 四个入口目录整棵留下）。
     expect(planLibCleanup(["lib/pty/", "lib/terminal/"])).toEqual(["lib/pty", "lib/terminal"]);
     // 但**深层文件路径**不是目录条目 —— 不据此删（判不准不删）。
     expect(planLibCleanup(["lib/pty/index.js"])).toEqual([]);
@@ -250,11 +252,12 @@ describe("listLibEntries / applyLibCleanup（薄 I/O 层）", () => {
 
       const doomed = applyLibCleanup(join(root, LIB_DIR));
 
-      // chunk 与三个入口目录**整棵**没了
+      // chunk 与四个入口目录**整棵**没了
       expect(doomed).toContain("lib/pty-C0_H63de.js");
       expect(doomed).toContain("lib/pty");
       expect(existsSync(join(root, "lib/pty-C0_H63de.js"))).toBe(false);
       expect(existsSync(join(root, "lib/pty"))).toBe(false);
+      expect(existsSync(join(root, "lib/ssh"))).toBe(false);
       expect(existsSync(join(root, "lib/terminal"))).toBe(false);
       expect(existsSync(join(root, "lib/wsl-plugin"))).toBe(false);
       // 声明面**整棵**还在（含边界（a）那个 `.js`）
@@ -355,39 +358,42 @@ describe("端到端：连续两次构建不留上一代 chunk（#111 AC 第一�
     return { status: run.status, out: `${run.stdout ?? ""}${run.stderr ?? ""}` };
   }
 
-  /** `lib/` 里顶层 `lib/pty-*.js` 的**名字集合**（排序稳定，便于逐字读数）。 */
-  function ptyChunkNames(): string[] {
+  /** `lib/` 里顶层 `lib/tool-support-*.js` 的**名字集合**（排序稳定，便于逐字读数）。
+   * #136: the pty entry is self-contained now (no `lib/pty-*.js` chunk), so the
+   * residue probe uses the `tool-support` chunk — a shared chunk that still gets
+   * a content hash on every build. */
+  function toolSupportChunkNames(): string[] {
     const dir = join(repoRoot, LIB_DIR);
     if (!existsSync(dir)) return [];
     return readdirSync(dir)
-      .filter((name) => /^pty-.*\.js$/u.test(name))
+      .filter((name) => /^tool-support-.*\.js$/u.test(name))
       .sort();
   }
 
-  const ptySource = join(repoRoot, "src", "pty", "index.ts");
+  const chunkSource = join(repoRoot, "src", "tool-support.ts");
 
-  it.skipIf(!livable)("a rebuilt tree carries no previous-generation pty chunk", () => {
-    const original = readFileSync(ptySource, "utf8");
-    const before = ptyChunkNames();
+  it.skipIf(!livable)("a rebuilt tree carries no previous-generation tool-support chunk", () => {
+    const original = readFileSync(chunkSource, "utf8");
+    const before = toolSupportChunkNames();
     try {
       // 第一次构建：拿到当次 chunk 名基线。
       const first = runScript("build");
       expect(first.status, `node --run build 应为绿：\n${first.out}`).toBe(0);
-      const firstChunks = ptyChunkNames();
-      expect(firstChunks.length, "构建后应至少有一个 lib/pty-*.js chunk").toBeGreaterThan(0);
+      const firstChunks = toolSupportChunkNames();
+      expect(firstChunks.length, "构建后应至少有一个 lib/tool-support-*.js chunk").toBeGreaterThan(0);
 
       // 制造一次 **chunk 名变化**：改一行再改回（源码逐字还原）。
       // 只加一字符注释 → 内容变 → 哈希名变；随后立即还原。
-      writeFileSync(ptySource, `${original}\n// clean-lib spec: chunk-name churn probe\n`);
+      writeFileSync(chunkSource, `${original}\n// clean-lib spec: chunk-name churn probe\n`);
       const second = runScript("build");
       expect(second.status, `第二次 node --run build 应为绿：\n${second.out}`).toBe(0);
-      const secondChunks = ptyChunkNames();
+      const secondChunks = toolSupportChunkNames();
 
       // AC 第一条：上一代的 chunk **不在**（本票的核心读数）。
       const stale = firstChunks.filter((name) => !secondChunks.includes(name));
       expect(
         stale,
-        `lib/ 里仍有上一代 pty chunk（残留会随 files glob 进 tarball）：${stale.join(", ")}`,
+        `lib/ 里仍有上一代 tool-support chunk（残留会随 files glob 进 tarball）：${stale.join(", ")}`,
       ).toEqual([]);
       expect(secondChunks.length, "上一代未清时会 >1：每代一个哈希名").toBe(1);
 
@@ -399,7 +405,7 @@ describe("端到端：连续两次构建不留上一代 chunk（#111 AC 第一�
       expect(dts.length, "lib/types/**/*.d.ts 应仍在").toBeGreaterThan(0);
     } finally {
       // 源码逐字还原（工作树必须干净——本用例只借用构建，不改交付面）。
-      writeFileSync(ptySource, original);
+      writeFileSync(chunkSource, original);
       // 清掉探针那代产物，避免把"残留"留给下一个消费者（诱饵：`build` 本会自己清，
       // 但此刻源码已还原、产物名与还原后的源码不再对应）。
       runScript("build");
@@ -409,9 +415,9 @@ describe("端到端：连续两次构建不留上一代 chunk（#111 AC 第一�
   it.skipIf(!livable)("appends reading lines for the unique check entry (build residue count)", () => {
     // 读数口径：环表宣告行 + 紧随的读数行由 `verify-all.mjs` 的 `readingBlocks()` 收集
     // （#89/#97 立的约定：绿路径的读数也必须在**唯一验收入口**里看得见）。
-    const chunks = ptyChunkNames();
+    const chunks = toolSupportChunkNames();
     console.log("=== clean-lib rings（#111 AC1：构建自带清理）===");
-    console.log(`  ✓ lib/ 顶层 pty chunk 数 = ${chunks.length}（上一代未清时会 >1）`);
+    console.log(`  ✓ lib/ 顶层 tool-support chunk 数 = ${chunks.length}（上一代未清时会 >1）`);
     console.log(`  – 当前 chunk：${chunks.join(" ") || "<无>"}`);
     console.log(`  ✓ lib/types/ 存在 = ${existsSync(join(repoRoot, LIB_DIR, "types"))}`);
     expect(chunks.length).toBeLessThanOrEqual(1);

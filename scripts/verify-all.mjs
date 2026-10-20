@@ -35,7 +35,7 @@ const VITEST = join(REPO, 'node_modules', 'vitest', 'vitest.mjs')
  * 车道 → 说明。**顺序即调度**（`main` 里逐个 `&&` 式串跑，不并发）。
  *
  * `writers` 必须**最后**：它是 `lib/` 的**写者**（`clean-lib.spec.ts` 真跑 `node --run build`，
- * 而 build 的第一步就是删 `lib/` 的三个入口目录与顶层 chunk）。读者车道（unit 里的
+ * 而 build 的第一步就是删 `lib/` 的四个入口目录与顶层 chunk）。读者车道（unit 里的
  * `verify-pack.spec.ts` / `built-artifact.spec.ts`）跑在**它之前**，窗口才不会与它们重叠；
  * 反过来排就是本票 #123 要修的那种间歇红。见 `vitest.config.ts` 的 `writersLane` 说明。
  */

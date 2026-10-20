@@ -102,6 +102,9 @@ function bootPty(opts: {
   );
   const booted = bootPlugin({
     config: FAST,
+    // #136: the ssh family moved to its own entry; the AC1/AC3 rings below
+    // exercise `ssh_start`, so mount it on the same context (same pty core).
+    ssh: true,
     spawnPty: (spec) => {
       spawned.push(spec);
       const handle = echoFakePty();

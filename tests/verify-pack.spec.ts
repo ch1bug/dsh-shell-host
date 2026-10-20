@@ -131,13 +131,15 @@ describe("entryTargets", () => {
     // 在 node 侧必然失败）。
     const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
     expect(Object.keys(pkg.exports)).not.toContain("./client");
-    // 顺带锁住本判据读取的那份真实输入形状：9 个 entry、5 个具名 entry（`./src/*` 被通配过滤掉）。
+    // 顺带锁住本判据读取的那份真实输入形状：11 个 entry、6 个具名 entry（`./src/*` 被通配过滤掉）。
+    // #136: `./ssh` is the fourth own entry (它把 ssh 四工具从 `./pty` 分了出去).
     const entries = entryTargets(pkg.exports).filter(([, target]) => !target.includes("*"));
-    expect(entries).toHaveLength(9);
+    expect(entries).toHaveLength(11);
     expect([...new Set(entries.map(([entry]) => entry))]).toEqual([
       ".",
       "./package.json",
       "./pty",
+      "./ssh",
       "./wsl",
       "./terminal",
     ]);
@@ -193,6 +195,11 @@ describe("chunkFamilyDeclarations", () => {
       "lib/posix-quote-*.js",
       "lib/detect-*.js",
       "lib/launchers-*.js",
+      // #136: the ssh split introduced two more shared chunks — the pty/ssh
+      // tool face (`tool-support`) and the ssh composition (`compose`, shared
+      // by the ssh entry and the launcher layer).
+      "lib/tool-support-*.js",
+      "lib/compose-*.js",
       "lib/src-*.js",
     ]);
     // 具体文件名（`lib/pty/index.js`）与跨段通配（`lib/types/**/*.d.ts`）都不是族：前者点一个文件，
@@ -1376,8 +1383,9 @@ describe("判据 6 的 CLI 通路（#117）：临时副本里真跑，不写产�
       expect(run.stderr, "判据 1/1b 不该早退").not.toContain("pointers to missing files");
       // 判据 6 必须**真的跑过**并给出正常读数（否则"没报"可能只是它压根没执行）。
       expect(run.stdout).toContain("every lib/types/ declaration has a matching src/ file");
-      // 判据 3 的读数顺带证明走到了那一步（`entries` 计数仍是 9 —— #92 的 AC）。
-      expect(run.stdout).toContain("all 9 export entries packed and importable");
+      // 判据 3 的读数顺带证明走到了那一步（`entries` 计数 = 11 —— #92 的 AC，
+      // #136 起多了 `./ssh` 的两个指针）。
+      expect(run.stdout).toContain("all 11 export entries packed and importable");
     } finally {
       rmSync(root, { recursive: true, force: true });
       snapshot.dispose();

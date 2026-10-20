@@ -12,13 +12,15 @@ import { standardDecoratorLoweringPlugin } from './tsdown-plugin.ts'
 const lib = defineConfig({
   plugins: [standardDecoratorLoweringPlugin()],
   // ADR-0013: tools-only plugin — the executor world (src/index.ts, core/,
-  // backends*, client settings card) and the remote entry are gone. Three
+  // backends*, client settings card) and the remote entry are gone. Four
   // plugin-layer entries remain:
   // #28/#55 (ADR-0007/0008): pty session core + terminal launcher presets.
+  // #136: the ssh family is its OWN entry (`./ssh`) — `./pty` is the session
+  // core only; both read the one composition (`src/ssh/compose.ts`).
   // #30 (ADR-0007): the wsl entry — lib/wsl-plugin/index.js behind the
   // dsh-shell-host/wsl export. Plugin-LAYER entry (defineTool + ctx.tools):
   // registers model tools, not execution backends.
-  entry: ['src/pty/index.ts', 'src/wsl-plugin/index.ts', 'src/terminal/index.ts'],
+  entry: ['src/pty/index.ts', 'src/wsl-plugin/index.ts', 'src/terminal/index.ts', 'src/ssh/index.ts'],
   outDir: 'lib',
   format: 'esm',
   platform: 'node',

@@ -181,14 +181,15 @@ describe.skipIf(absent.length > 0)("e2e: pack → install from tarball → confi
         } else {
           // ── ring 3: config — the composed tree carries this bundle's rows ──
           let configured = false;
-          await ring("3 config: both loader rows composed, nothing pending", async () => {
+          await ring("3 config: all three loader rows composed, nothing pending", async () => {
             const dumped = await runHost(dshHome, ["--profile", PROFILE, "--dump-config"]);
             const dumpOut = dumped.out;
             expect(dumpOut, "composed tree carries dsh-shell-host/pty").toContain("dsh-shell-host/pty");
+            expect(dumpOut, "composed tree carries dsh-shell-host/ssh (#136)").toContain("dsh-shell-host/ssh");
             expect(dumpOut, "composed tree carries dsh-shell-host/terminal").toContain("dsh-shell-host/terminal");
             expect(dumpOut, "no row is left pending on a missing service").not.toMatch(/waiting for service|Missing services/u);
             configured = true;
-            return "dsh-shell-host/pty + dsh-shell-host/terminal";
+            return "dsh-shell-host/pty + dsh-shell-host/ssh + dsh-shell-host/terminal";
           });
 
           let launchUrl: string | undefined;
@@ -270,6 +271,9 @@ describe.skipIf(absent.length > 0)("e2e: pack → install from tarball → confi
                 expect(names.length, "the instance declares a tool surface").toBeGreaterThan(0);
                 expect(names, "pty_open is in the instance's tool surface").toContain("pty_open");
                 expect(names, "shell_open (./terminal row) is in the tool surface").toContain("shell_open");
+                // #136: the ssh family is its own row — the split must not have
+                // dropped it from the packed bundle's surface.
+                expect(names, "ssh_start (./ssh row) is in the tool surface").toContain("ssh_start");
 
                 // The loop closes only when the instance EXECUTED the tool and fed
                 // the result back into a subsequent request.

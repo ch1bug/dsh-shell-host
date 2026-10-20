@@ -10,6 +10,7 @@
 
 import type { IPty } from "@lydell/node-pty";
 import { apply } from "../../src/pty/index.ts";
+import { apply as applySsh } from "../../src/ssh/index.ts";
 import type { SessionCore, CoreSpawnSpec } from "../../src/pty/session-core.ts";
 import { fakePermissionServices, permissionServiceLookup, type FakeApproval, type FakeSandboxPolicy } from "./fake-permissions.ts";
 
@@ -127,6 +128,14 @@ export function bootPlugin(opts?: {
    * (`danger-full-access` + `allowed-once`) so unrelated suites keep testing
    * what they were written to test; the #102 spec overrides the mode. */
   permissions?: { sandboxPolicy?: FakeSandboxPolicy; approval?: FakeApproval };
+  /** #136: mount the `./ssh` entry too — it consumes the `pty` service this boot
+   * provides. Default false: the pty suites keep exactly the surface they were
+   * written against (and the "pty alone no longer carries ssh tools" fact stays
+   * observable). */
+  ssh?: boolean;
+  /** #136: the ssh entry's own settings namespace. Defaults to `config` (both
+   * entries read `enableRunInBackground`, the only shared key). */
+  sshConfig?: unknown;
 }) {
   const provided = new Map<string, unknown>();
   const registered: any[] = [];
@@ -171,6 +180,9 @@ export function bootPlugin(opts?: {
         },
       };
   apply(ctx, opts?.config ?? {}, { ...spawnSeam, ...opts?.deps });
+  // #136: the ssh entry builds on the pty service, so it is applied AFTER the
+  // pty entry (the real bundle patch mounts the rows in the same order).
+  if (opts?.ssh === true) applySsh(ctx, opts?.sshConfig ?? opts?.config ?? {});
   const tool = (name: string) => {
     const t = registered.find((x) => x.name === name);
     if (!t) throw new Error(`tool not registered: ${name}`);

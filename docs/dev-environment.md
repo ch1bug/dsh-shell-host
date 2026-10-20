@@ -477,7 +477,7 @@ B1 分工（结论不变；`tsc` 那一行是 2026-10-19 的复核实测读数�
    `TSCONFIG_ERROR` 只可能出现在「绑定能加载」的机器上。
 2. **绑定一旦可加载，ucrt64 node 的构建就成立**：把 gnu 包名用 `NODE_PATH` 别名到本机已装的
    msvc 绑定（下面「夹具」，不改 `node_modules`、不装包）后，tsdown 打出 `tsconfig: tsconfig.json`
-   与三个入口四个产物、总大小 84.52 kB、exit 0 —— 与 Windows node 那一跑**文件集合、`tsconfig`
+   与三个入口四个产物（`#80` 读数；`#136` 起入口为四个、未重测）、总大小 84.52 kB、exit 0 —— 与 Windows node 那一跑**文件集合、`tsconfig`
    行与总大小相同**（个别 gzip 列差 0.03 kB 量级；两个 node 的补丁版本本就不同：
    ucrt64 v24.21.0 / Windows v24.18.0）⇒ **双拼不来自 node 风味，也不来自本仓传入的任何输入**。
 3. **显式 `tsconfig` 不是可验证的修法**：临时写成 `tsconfig: './tsconfig.json'` 后，三组读数
@@ -543,7 +543,7 @@ RC2 构建会报 `MISSING_EXPORT "principalOf"`（该符号只存在于 alpha �
 **清理已做进 `build`，不再是手工处方** ⇒ `node --run test:release`（先 `build` 再 `verify:pack`）
 本身就是发布口径，不需要任何前置命令。实现与确切删除/保留语义的**唯一来源**是
 [`scripts/clean-lib.mjs`](../scripts/clean-lib.mjs)（`build` 的第一步）：清 tsdown 上一代产物
-（`lib/` 顶层 `*.js` chunk + 三个入口目录整棵），**保留 `lib/types/**` 整棵**，其余一切不删
+（`lib/` 顶层 `*.js` chunk + 四个入口目录整棵），**保留 `lib/types/**` 整棵**，其余一切不删
 （判不准就不删）；`lib/` 不存在时也照常通过。tsdown 自己的 `clean` **不能**代劳：`lib/types/` 的
 声明由 tsc 产出、与 tsdown 共享 outDir 根（`tsdown.config.ts`），打开它会把声明面一并清掉。
 

@@ -4,7 +4,7 @@
  * implementation again: every probe is injected (exists / env / PATH /
  * distro discovery), so the absent-vs-loud postures are pinned without any
  * real shell installed. ssh rides the transport dimension — the composition
- * is the pty entry's composeSshCommand (single source), asserted here for
+ * is `src/ssh/compose.ts` (single source), asserted here for
  * the keepalive-default / suppression semantics the launcher must inherit.
  * @module tests/launchers
  */
@@ -21,7 +21,7 @@ import {
   type LocalLauncherPreset,
   type ResolvedLauncher,
 } from "../src/launchers.ts";
-import * as ptyEntry from "../src/pty/index.ts";
+import * as sshCompose from "../src/ssh/compose.ts";
 import { MSYS2_ROOT_CANDIDATES } from "../src/detect.ts";
 
 /** Narrow a resolution result to a local preset by id (tests only). */
@@ -221,9 +221,10 @@ describe("custom presets (#54 config shape)", () => {
 // ---------------------------------------------------------------------------
 
 describe("ssh transport dimension (#54, ADR-0008 decision 1)", () => {
-  // The composition itself is single-sourced in the pty entry and pinned by
-  // ssh-pty.spec.ts; here the launcher layer only proves it inherits it.
-  const { composeSshCommand, SSH_KEEPALIVE_INTERVAL_DEFAULT, SSH_KEEPALIVE_COUNT_DEFAULT } = ptyEntry;
+  // The composition itself is single-sourced in `src/ssh/compose.ts` (#136: it
+  // moved with the ssh family) and pinned by ssh-pty.spec.ts; here the launcher
+  // layer only proves it inherits it.
+  const { composeSshCommand, SSH_KEEPALIVE_INTERVAL_DEFAULT, SSH_KEEPALIVE_COUNT_DEFAULT } = sshCompose;
 
   it("composes host + remote shell over the shared ssh composition (keepalive defaults ride)", () => {
     const launch = composeSshCommand({ host: "example.com", shell: "bash --login" });

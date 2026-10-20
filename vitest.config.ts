@@ -54,14 +54,14 @@ const machineLane = [
   'tests/e2e-tarball-machine.spec.ts',
 ]
 // #123: the WRITER lane. `tests/clean-lib.spec.ts` really runs `node --run build`
-// twice, and each build first DELETES lib/'s three entry directories plus the
+// twice, and each build first DELETES lib/'s four entry directories plus the
 // top-level chunks before tsc/tsdown rebuilds them. So that spec is a WRITER of
 // `lib/`, while `tests/verify-pack.spec.ts` (copies lib/ into a fixture repo) and
 // `tests/built-artifact.spec.ts` (imports lib/pty/index.js) are READERS of the
 // same tree. Sharing one worker pool made the readers observe a half-rebuilt
 // tree — the intermittent red this ticket is about (measured: 1 red in 5
 // single-lane repeats, both failures inside verify-pack.spec.ts, reporting
-// exactly the three entry directories missing while the old prelude gate
+// exactly the entry directories missing while the old prelude gate
 // reported nothing missing — i.e. a check-then-use race, not a "wait for the
 // window to close" one).
 // Two defences, each covering half: THIS lane split keeps the internal writer

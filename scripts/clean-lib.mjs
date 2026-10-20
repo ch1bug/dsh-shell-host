@@ -13,9 +13,9 @@
  * outDir 根**（见 `tsdown.config.ts:10-11`），打开 `clean` 会把 `lib/types/` 一并清掉，
  * 而那是 `exports` 里 `types` 指针的落点 —— 唯一必须保留的面。
  *
- * 清什么（`tsdown.config.ts` 的 `outDir: 'lib'` + `entry: src/{pty,wsl-plugin,terminal}/index.ts`）：
+ * 清什么（`tsdown.config.ts` 的 `outDir: 'lib'` + `entry: src/{pty,wsl-plugin,terminal,ssh}/index.ts`）：
  *   - `lib/*.js`  —— 按源码模块切出的 chunk（`lib/pty-*.js` / `lib/src-*.js` …），**仅顶层**；
- *   - `lib/{pty,terminal,wsl-plugin}/` —— 三个入口目录，整棵删。
+ *   - `lib/{pty,terminal,wsl-plugin,ssh}/` —— 四个入口目录，整棵删。
  * 留什么：
  *   - `lib/types/**` —— tsc 声明面，**整棵保留**（含其中的 `.js`：那是声明面目录，不是 tsdown 产物）；
  *   - `lib/` 下其余一切（如 `lib/README.md`）—— 本模块**只删它确知是 tsdown 产物的东西**，
@@ -51,8 +51,8 @@ export const LIB_DIR = 'lib'
  */
 export const TYPES_DIR = 'lib/types'
 
-/** tsdown 的三个入口目录（`entry: src/{pty,wsl-plugin,terminal}/index.ts`）—— 整棵删。 */
-export const TSDOWN_ENTRY_DIRS = ['lib/pty', 'lib/wsl-plugin', 'lib/terminal']
+/** tsdown 的四个入口目录（`entry: src/{pty,wsl-plugin,terminal,ssh}/index.ts`）—— 整棵删。 */
+export const TSDOWN_ENTRY_DIRS = ['lib/pty', 'lib/wsl-plugin', 'lib/terminal', 'lib/ssh']
 
 /**
  * 归一成仓根相对路径的**正斜杠**形态：`lib\pty\index.js` → `lib/pty/index.js`，
@@ -60,7 +60,7 @@ export const TSDOWN_ENTRY_DIRS = ['lib/pty', 'lib/wsl-plugin', 'lib/terminal']
  *
  * **末尾分隔符也去掉**：`readdirSync` 的目录条目与手工构造的 `lib/pty/` 是同一件事的
  * 等价写法，归一后必须等于 `lib/pty` —— 否则 `TSDOWN_ENTRY_DIRS.includes()` 会漏判，
- * 三个入口目录整棵留下（本模块最初就是这么错的，单测逮住了）。
+ * 四个入口目录整棵留下（本模块最初就是这么错的，单测逮住了）。
  *
  * 只做纯字符串归一（**不碰 I/O**，也不解 `..`）：输入是"lib 下的条目列表"，
  * 由调用方保证是仓根相对形态；纯函数越少猜测越好测。
@@ -91,7 +91,7 @@ export function isUnderTypes(entry) {
  * 判据（顺序无关，但每条都只针对**确知是 tsdown 产物**的形态）：
  *   1. `lib/types/**` → **保留**（整棵；这是 tsc 的面，含其中的 `.js`）—— **先判**，
  *      否则 `lib/types/pty/orphan.js` 会被第 2 条误伤；
- *   2. 三个入口目录 `lib/{pty,terminal,wsl-plugin}` 及其子树 → **删**；
+ *   2. 四个入口目录 `lib/{pty,terminal,wsl-plugin,ssh}` 及其子树 → **删**；
  *   3. `lib/` **顶层**的 `*.js`（chunk）→ **删**；深层其它 `*.js`（如
  *      `lib/zz-fake/index.js` 这种非入口目录）→ **保留**：判不准就不删。
  *
@@ -110,7 +110,7 @@ export function planLibCleanup(entries) {
     seen.add(path)
     // 1. 声明面整棵保留 —— 必须在"顶层 .js"判据**之前**（`lib/types/x.js` 也得留）。
     if (isUnderTypes(path)) continue
-    // 2. 三个入口目录及其子树（`lib/pty` 命中即代表 `lib/pty/**` 整棵）。
+    // 2. 四个入口目录及其子树（`lib/pty` 命中即代表 `lib/pty/**` 整棵）。
     if (TSDOWN_ENTRY_DIRS.includes(path)) {
       doomed.push(path)
       continue

@@ -10,6 +10,7 @@
 import { describe, it, expect, onTestFinished } from "vitest";
 import { spawn as spawnPty } from "@lydell/node-pty";
 import { apply as applyPty } from "../src/pty/index.ts";
+import { apply as applySsh } from "../src/ssh/index.ts";
 import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
 
 // The host value may carry a user@ prefix — the composition passes it to
@@ -38,6 +39,9 @@ function boot() {
     get: permissionServiceLookup(permissions, (name) => provided.get(name)),
   };
   applyPty(ctx as any, {});
+  // #136: the ssh family is the `./ssh` entry now — mounted on the same context
+  // so it consumes the pty service above (one registry: `core.active` sees both).
+  applySsh(ctx as any, {});
   const tool = (name: string) => {
     const t = registered.find((x) => x.name === name);
     if (!t) throw new Error(`tool not registered: ${name}`);

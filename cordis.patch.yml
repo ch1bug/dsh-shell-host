@@ -15,6 +15,9 @@
     - id: pty
       name: dsh-shell-host/pty
 - insert:
+    - id: ssh
+      name: dsh-shell-host/ssh
+- insert:
     - id: terminal
       name: dsh-shell-host/terminal
       config:
