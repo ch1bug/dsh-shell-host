@@ -86,36 +86,76 @@ export function echoFakePty(prefix = "") {
   return h;
 }
 
-/** Boot the pty plugin over an injected fake spawner. Returns the registered
- * tools, the provided `pty` service (the core), and every spawn spec the
- * core handed out — the suite-visible surface the old FakeTerminals booted
- * against. */
+/** Fake prompt registry (#149): records the registered contexts and lets a spec
+ * assemble one the way the host would (a function provider is evaluated per
+ * assembly, which is exactly what the laziness/caching assertions need). */
+export function fakeSystemPrompt() {
+  const contexts: Array<{ name: string; order: number; text: string | (() => string); interpolate?: boolean; required?: boolean }> = [];
+  return {
+    contexts,
+    service: { context: (entry: any) => { contexts.push(entry); return () => {}; } },
+    /** The text this registry contributes for `name` at one assembly
+     * (`undefined` = that context was never registered). */
+    text(name: string): string | undefined {
+      const entry = contexts.find((c) => c.name === name);
+      if (entry === undefined) return undefined;
+      return typeof entry.text === "function" ? entry.text() : entry.text;
+    },
+  };
+}
+
+/**
+ * Boot the pty entry once, with every seam the suites need (#149: the shared
+ * boot so a new service surface is wired in ONE place — before this helper grew
+ * the `inject`/`systemPrompt` seams, five suites hand-rolled near-copies).
+ *
+ *  - `spawnPty` omitted ⇒ the REAL core (the machine lane's default spawner);
+ *  - `spawnPty` given ⇒ an echo/fake core, and every spawn spec is recorded in
+ *    `specs` (the zero-vocabulary assertion reads that list);
+ *  - `deps` reaches the core / prompt seams untouched (platform, procKill,
+ *    detectEnvironments);
+ *  - `ctx.inject` is a synchronous child fiber: the prompt contribution
+ *    registers during `apply`, exactly as cordis would run it once the service
+ *    exists.
+ */
 export function bootPlugin(opts?: {
   spawnPty?: (spec: CoreSpawnSpec) => FakePtyHandle | IPty;
   config?: unknown;
+  deps?: Record<string, unknown>;
 }) {
   const provided = new Map<string, unknown>();
   const registered: any[] = [];
   const effects: Array<{ label: string; dispose: () => Promise<void> }> = [];
-  const ctx = {
+  const systemPrompt = fakeSystemPrompt();
+  const specs: CoreSpawnSpec[] = [];
+  const ctx: any = {
     provide: (name: string, value: unknown) => provided.set(name, value),
     effect: (fn: () => () => Promise<void>, label: string) => effects.push({ label, dispose: fn() }),
     tools: { register: (t: unknown) => registered.push(t) },
+    get: (name: string) => (name === "systemPrompt" ? systemPrompt.service : provided.get(name)),
+    // The child-fiber seam (#149): run the callback now, on the same context.
+    inject: (_deps: string[], callback: (scope: unknown) => void) => {
+      callback(ctx);
+      return {};
+    },
   };
-  apply(ctx as any, opts?.config ?? {}, {
-    // The suites' spawners hand out FakePtyHandles; unwrap to the IPty-like
-    // the core drives (a raw PtyLike passes through untouched).
-    spawnPty: ((spec: CoreSpawnSpec) => {
-      const result = opts?.spawnPty?.(spec)
-      if (result === undefined) throw new Error('bootPlugin: no spawner provided')
-      return 'pty' in result ? result.pty : (result as never)
-    }) as never,
-  });
+  const spawnSeam = opts?.spawnPty === undefined
+    ? {}
+    : {
+        // The suites' spawners hand out FakePtyHandles; unwrap to the IPty-like
+        // the core drives (a raw PtyLike passes through untouched).
+        spawnPty: (spec: CoreSpawnSpec) => {
+          specs.push(spec);
+          const result = opts.spawnPty!(spec);
+          return "pty" in result ? result.pty : (result as never);
+        },
+      };
+  apply(ctx, opts?.config ?? {}, { ...spawnSeam, ...opts?.deps });
   const tool = (name: string) => {
     const t = registered.find((x) => x.name === name);
     if (!t) throw new Error(`tool not registered: ${name}`);
     return t;
   };
   const core = provided.get("pty") as SessionCore;
-  return { registered, tool, core, provided, effects };
+  return { registered, tool, core, provided, effects, systemPrompt, specs, ctx };
 }

@@ -9,8 +9,13 @@
  *
  * Six tools, no protocol knowledge:
  *
- *   pty_open({ command, cwd?, env? }) → { sessionId, ... }  spawn the
- *       command on a ConPTY with process-level env injection; survives turns;
+ *   pty_open({ command | shellCommand, cwd?, env?, autoClose? }) → { sessionId, ... }
+ *       spawn the command on a ConPTY with process-level env injection;
+ *       survives turns. #149: `shellCommand` declares a SESSION-LEVEL SHELL
+ *       (bare command line, e.g. a resolved bash with `--login -i`) — the two
+ *       are mutually exclusive, the argument-less call shape falls back to the
+ *       `defaultShellCommand` setting, and a shell session is a SHELL TARGET
+ *       for `pty_signal` (SIGKILL refused, `pty_close` is the close path);
  *   pty_send({ id, data, submit? })  → write bytes, return the delta read;
  *   pty_tail({ id, lines? })         → incremental read from a per-session
  *       cursor — repeated tails never resend old lines;
@@ -38,18 +43,28 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { posixQuote } from '../posix-quote.ts'
 import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import {
+  ENVIRONMENT_CONTEXT_NAME,
+  ENVIRONMENT_CONTEXT_ORDER,
+  createEnvironmentContextText,
+  detectEnvironmentRows,
+  type EnvironmentRow,
+} from './environment-context.ts'
 
 const name = 'dsh-pty-session'
+// #149 contributes a prompt context, but the TOOLS must never wait on the
+// prompt registry: a tools-only deployment without one still gets the whole pty
+// surface. The contribution rides a child fiber instead (see
+// registerEnvironmentContext), so the entry's required set stays ['tools'].
 const inject = ['tools']
 
 /** Runtime configuration schema — the `./pty` entry's own settings namespace. */
-export interface PtyConfig {
-  /** Default line budget for pty_tail when the caller omits `lines`. */
-  tailLines: number
-  /** Concurrent-session soft cap (#56, migrated onto the self-managed core
-   * in #61): counted per owning agent over the core registry — remount-proof
-   * (the #62 root cause is gone with the seam). */
-  maxSessions: number
+export interface PtyConfig extends SessionCoreConfig {
+  /** Global default session shell (#149 Q3/Q6): a bare command line, the same
+   * shape as `pty_open({ shellCommand })`. Reached ONLY by the argument-less
+   * `pty_open()` call shape — it never overrides an explicit `command` or
+   * `shellCommand`. No default value = no global default. */
+  defaultShellCommand?: string
 }
 
 /**
@@ -61,14 +76,78 @@ const Config = z.object({
   tailLines: z.number().default(DEFAULT_TAIL_LINES),
   /** Concurrent-session soft cap per owning agent (#56/#61). */
   maxSessions: z.number().default(DEFAULT_MAX_SESSIONS),
+  /** Global default session shell (#149): used by the argument-less
+   * `pty_open()` only; unset = no global default. */
+  defaultShellCommand: z.string(),
 })
 
 /** Default-fill a raw config (#64 fix: forward the FULL core config — the
  * settle/idle/scrollback knobs were previously dropped here, so tool-surface
  * config could never tune them; the core's own resolveCoreConfig defaults
- * fill the rest). */
-function resolveConfig(raw: unknown): SessionCoreConfig {
-  return resolveCoreConfig(raw as Partial<SessionCoreConfig>)
+ * fill the rest). `defaultShellCommand` stays tool-surface policy (#149): it is
+ * validated here and never reaches the core. */
+function resolveConfig(raw: unknown): PtyConfig {
+  const c = (raw ?? {}) as Partial<PtyConfig>
+  const defaultShellCommand = c.defaultShellCommand
+  if (defaultShellCommand !== undefined && (typeof defaultShellCommand !== 'string' || defaultShellCommand.trim() === '')) {
+    throw new Error(`pty: defaultShellCommand must be a non-empty command line when configured, got: ${JSON.stringify(defaultShellCommand)}`)
+  }
+  return {
+    ...resolveCoreConfig(c),
+    ...(defaultShellCommand === undefined ? {} : { defaultShellCommand }),
+  }
+}
+
+/** A caller error on the tool surface (a bad declaration pair): stable code so
+ * a consumer can branch without matching prose. */
+const invalidArgs = (message: string) => Object.assign(new Error(message), { code: 'INVALID_ARGS' })
+
+/** One `pty_open` declaration resolved into the launch command (#149). */
+export interface ShellDeclaration {
+  /** The command line the core spawns (the existing channel, unchanged). */
+  command: string
+  /** True for a SHELL TARGET: the session's top-level process is a shell, so
+   * `pty_signal` refuses SIGKILL on it. Declared here, never inferred from the
+   * command text (`pty_open({ command: "bash" })` stays a plain target). */
+  shell: boolean
+  /** Present exactly for shell targets — the resolved command, echoed on the
+   * result so the caller can SEE which interpreter the session got (and which
+   * layer of the priority chain answered). */
+  shellCommand?: string
+}
+
+/**
+ * Resolve the mutually exclusive `command` / `shellCommand` pair (#149 Q5) and
+ * the `defaultShellCommand` fallback (Q6). The priority chain is
+ * explicit `shellCommand` > `command` > `defaultShellCommand` > loud error:
+ * an explicit `command` is a plain process and never picks up the global
+ * default, and a call with neither declaration fails loudly naming all three
+ * alternatives instead of defaulting silently.
+ */
+export function resolveShellDeclaration(
+  args: { command?: string; shellCommand?: string },
+  defaultShellCommand?: string,
+): ShellDeclaration {
+  if (args.command !== undefined && args.shellCommand !== undefined) {
+    throw invalidArgs(
+      'pty_open: `command` and `shellCommand` are mutually exclusive — pass exactly one ' +
+        '(`shellCommand` for a session-level shell, `command` for a plain process)',
+    )
+  }
+  if (args.shellCommand !== undefined) {
+    if (args.shellCommand.trim() === '') {
+      throw invalidArgs('pty_open: `shellCommand` must be a non-empty command line (executable plus interactive argv)')
+    }
+    return { command: args.shellCommand, shell: true, shellCommand: args.shellCommand }
+  }
+  if (args.command !== undefined) return { command: args.command, shell: false }
+  if (defaultShellCommand !== undefined) {
+    return { command: defaultShellCommand, shell: true, shellCommand: defaultShellCommand }
+  }
+  throw invalidArgs(
+    'pty_open: must be given `command` or `shellCommand`, or a configured defaultShellCommand ' +
+      '(the `./pty` settings namespace)',
+  )
 }
 
 /** Shared render for structured tool output: one JSON text block. */
@@ -79,6 +158,18 @@ interface PtyCtx {
   provide: (name: string, value: unknown) => void
   effect: (fn: () => () => Promise<void>, label: string) => void
   tools: { register: (tool: unknown) => void }
+  /** Service lookup (the sibling `./terminal` entry's precedent). */
+  get: (name: string) => unknown
+  /** cordis's child-fiber loader: run `callback` once `deps` are available, and
+   * re-run it if they change. Optional because the duck-typed test harnesses
+   * boot `apply` directly with no service container — they get the tools and no
+   * prompt contribution, which is exactly what a registry-less deployment sees. */
+  inject?: (deps: string[], callback: (scope: PtyCtx) => void) => unknown
+}
+
+/** The prompt-registry slice this entry contributes to (duck-typed seam). */
+interface SystemPromptCtx {
+  context: (entry: { name: string; order: number; text: () => string; interpolate?: boolean; required?: boolean }) => unknown
 }
 
 /** Owner (Agent) identity passed to every core call. */
@@ -99,6 +190,11 @@ interface PtyDeps {
   /** Signal-delivery seam (#119) — see `SessionCoreDeps`. */
   procKill?: (pid: number, signal: string) => void
   platform?: NodeJS.Platform
+  /** Environment-detection seam (#149 AC10): the default is the real launcher
+   * resolution, which shells out on win32. The provider calls it LAZILY (first
+   * assembly, then cached) — never during `apply`. The unit lane injects a
+   * counted fake to prove the single computation. */
+  detectEnvironments?: () => readonly EnvironmentRow[]
 }
 
 /** Register the six pty_* tools over the self-managed session core. */
@@ -156,12 +252,31 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
     description:
       'Open a PTY session: spawn the command on a ConPTY, optionally set env vars (process-level injection). ' +
       'The session stays alive across turns until pty_close or owner disposal. Byte-stream only — no protocol parsing. ' +
-      'For a run-once-and-done command pass autoClose: true. ' + AUTO_CLOSE_SEMANTICS,
+      'For a run-once-and-done command pass autoClose: true. ' +
+      // #149: the session-level shell, stated as the surface contract.
+      'Declare a SESSION-LEVEL SHELL with shellCommand — one bare command line (executable plus its interactive argv): ' +
+      'subsequent pty_send writes are then interpreted by that shell, so a plain `cd … && … | …` works across sends with no per-command wrapper ' +
+      'and no wrapper echo. `command` and `shellCommand` are mutually exclusive; when both are omitted the configured ' +
+      'defaultShellCommand applies, and with no default either the call fails loudly naming all three. ' +
+      'A shell session is a SHELL TARGET: pty_signal refuses SIGKILL on it (killing a shell cannot reclaim the children it owns) — ' +
+      'use pty_close, the single close path. ' + AUTO_CLOSE_SEMANTICS,
     parameters: {
       command: {
         type: 'string',
-        required: true,
-        description: 'Command to run on the PTY after spawn (env vars, if any, are injected into the spawned process).',
+        description:
+          'Plain command to run on the PTY (Windows: tokenized and spawned directly — no shell interpretation; ' +
+          'POSIX: /bin/sh -c). Mutually exclusive with shellCommand; omit both to use the configured defaultShellCommand. ' +
+          'Shell builtins and shell metacharacters are NOT interpreted here — name a shell explicitly (or use shellCommand).',
+      },
+      shellCommand: {
+        type: 'string',
+        description:
+          'Session-level shell: a bare command line (executable plus interactive argv, e.g. a resolved bash/pwsh path with ' +
+          '--login -i, or a plain `pwsh`). Its pty_send text is interpreted by that shell. Mutually exclusive with command. ' +
+          'No preset resolution: the string is spawned literally (a value shaped like a launcher preset id stays a command). ' +
+          'Windows spawns it directly; POSIX still rides /bin/sh -c, so expect one extra `sh` parent — the pid reported is that sh. ' +
+          'Env/PATH are fixed at spawn: a temporary switch (typing another interpreter\'s launch line, then exit) changes the ' +
+          'interpreter only, never the environment.',
       },
       cwd: {
         type: 'string',
@@ -186,15 +301,31 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
           pid: { type: 'number', description: 'Top-level process id when the backend exposes one.' },
           status: { type: 'object', additionalProperties: true, description: 'Top-level process status at publication.' },
           initialOutput: { type: 'string', description: 'Output captured during spawn/command start.' },
+          shellCommand: {
+            type: 'string',
+            description:
+              'Present exactly when the session is a SHELL TARGET: the resolved interpreter command ' +
+              '(the explicit shellCommand, or the configured defaultShellCommand when the call was argument-less).',
+          },
         },
       },
       render: jsonRender as any,
     },
-    async execute(args: { command: string; cwd?: string; env?: Record<string, string>; autoClose?: boolean }, exec: { agent?: Owner; signal?: AbortSignal }) {
+    async execute(args: { command?: string; shellCommand?: string; cwd?: string; env?: Record<string, string>; autoClose?: boolean }, exec: { agent?: Owner; signal?: AbortSignal }) {
       const owner = requireAgent(exec)
-      return facade.open(owner, args, exec.signal)
+      const declaration = resolveShellDeclaration(args, config.defaultShellCommand)
+      const opened = await facade.open(owner, {
+        command: declaration.command,
+        // The shell-target marker rides the core's existing open spec (#119);
+        // no second public boolean is introduced on the tool surface.
+        ...(declaration.shell ? { shell: true } : {}),
+        ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
+        ...(args.env === undefined ? {} : { env: args.env }),
+        ...(args.autoClose === undefined ? {} : { autoClose: args.autoClose }),
+      }, exec.signal)
+      return declaration.shellCommand === undefined ? opened : { ...opened, shellCommand: declaration.shellCommand }
     },
-    presentCall: (args: { command: string }) => ({ card: 'terminal', title: args.command }),
+    presentCall: (args: { command?: string; shellCommand?: string }) => ({ card: 'terminal', title: args.shellCommand ?? args.command ?? 'pty_open' }),
   }))
 
   ctx.tools.register(defineTool({
@@ -635,9 +766,46 @@ function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { comm
   }))
 }
 
-/** Plugin entry: register the pty_* tool surface over the self-managed core. */
+/**
+ * Register the entry's ONE prompt contribution (#149 AC10): the environment
+ * fact listing this machine's resolved launcher environments.
+ *
+ * The registration rides a CHILD FIBER (`ctx.inject`) instead of being a
+ * required service of the entry: the pty TOOLS must load in a tools-only
+ * deployment that mounts no prompt registry (they would otherwise be gated on a
+ * surface they do not use), while a registry mounted AFTER this row still gets
+ * the context — the child fiber waits for it, which an opportunistic
+ * `ctx.get('systemPrompt')` read at apply time would miss.
+ *
+ * Deliberately NOT `required`: a deployment that turns optional runtime context
+ * off keeps its own choice (the pty tools never depend on this line).
+ * `interpolate: false` because the text carries filesystem paths — a path
+ * containing `{{` would otherwise make prompt assembly throw.
+ */
+function registerEnvironmentContext(ctx: PtyCtx, deps: PtyDeps): void {
+  if (ctx.inject === undefined) return
+  ctx.inject(['systemPrompt'], (scope) => {
+    const systemPrompt = scope.get('systemPrompt') as SystemPromptCtx | undefined
+    if (systemPrompt === undefined) {
+      // cordis only runs the child fiber once the service exists; this is the
+      // duck-typed harness's guard, kept loud rather than a silent no-op.
+      throw new Error('dsh-shell-host/pty: the systemPrompt child fiber ran without the service')
+    }
+    const text = createEnvironmentContextText(deps.detectEnvironments ?? (() => detectEnvironmentRows()))
+    systemPrompt.context({
+      name: ENVIRONMENT_CONTEXT_NAME,
+      order: ENVIRONMENT_CONTEXT_ORDER,
+      interpolate: false,
+      text,
+    })
+  })
+}
+
+/** Plugin entry: register the pty_* tool surface over the self-managed core,
+ * plus the environment context (a fact the tool surface benefits from). */
 function apply(ctx: PtyCtx, config: unknown, deps: PtyDeps = {}) {
   registerPtySession(ctx, resolveConfig(config), deps)
+  registerEnvironmentContext(ctx, deps)
 }
 
 export { Config, apply, inject, name }

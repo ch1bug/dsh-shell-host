@@ -192,7 +192,7 @@ export const PTY_SIGNAL_SEMANTICS =
   'for Ctrl-C prefer pty_send with "\\u0003" (0x03), which the terminal driver delivers to the foreground group. ' +
   'Windows/ConPTY — node-pty cannot deliver POSIX signals at all, so only SIGTERM and SIGKILL are accepted and BOTH mean TERMINATE (the ConPTY process tree is torn down); ' +
   'SIGINT / SIGTSTP / SIGHUP are refused loudly instead of being silently mapped. ' +
-  'SIGKILL is refused for shell targets (sessions opened by shell_open) on every platform — on POSIX a hard-killed shell cannot reclaim the children it owns, so use pty_close (the single close path); ' +
+  'SIGKILL is refused for shell targets (a session opened by shell_open, or a pty_open session declared with shellCommand) on every platform — on POSIX a hard-killed shell cannot reclaim the children it owns, so use pty_close (the single close path); ' +
   'on Windows every accepted signal is a process-tree teardown anyway, so SIGTERM is the intended way to end a shell session there. ' +
   'Delivering a signal does not ITSELF close the session — read the aftermath with pty_tail, then pty_close (idempotent); an opted-in idleTimeoutMs can still reclaim it later if the signal stops its output.'
 

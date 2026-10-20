@@ -37,10 +37,14 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // carries that same cost, so it is in the serial lane for the same reason.
 // pty-signal-machine (#119) opens a REAL ConPTY session and kills it through
 // pty_signal, so it spawns/tears down real processes: serial, like its peers.
+// pty-shell-machine (#149) opens real msys2/git-bash sessions (a declared
+// `shellCommand`), measures output bytes, and switches interpreters inside one
+// session: real processes with wall-clock cost, so it is serial too.
 const machineLane = [
   'tests/ssh-pty-live.spec.ts',
   'tests/terminal-machine.spec.ts',
   'tests/pty-signal-machine.spec.ts',
+  'tests/pty-shell-machine.spec.ts',
   'tests/e2e-tool-call-machine.spec.ts',
   'tests/e2e-real-llm-machine.spec.ts',
   'tests/e2e-tarball-machine.spec.ts',

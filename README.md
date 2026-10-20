@@ -53,8 +53,8 @@ root cause is structurally gone) and the opt-in per-session
 programmatic facade (`ctx.provide("pty")`) for consumer plugins. Persistent/
 interactive session ownership (ADR-0004 decision 5) is unchanged, and the
 entry keeps its own settings namespace (`dsh-pty-session` plugin name,
-`maxSessions` + `tailLines` config) — ADR-0007: sharing the package does not
-merge config surfaces.
+`maxSessions` + `tailLines` + `defaultShellCommand` config) — ADR-0007: sharing
+the package does not merge config surfaces.
 
 ```js
 import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
@@ -63,6 +63,53 @@ import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
 Mount it via the bundle layer with `name: 'dsh-shell-host/pty'` — no
 dependency on any platform seam (the bundle patch mounts the pty + terminal
 rows unconditionally).
+
+### 会话默认 shell（#149）：打开时声明一次，之后裸命令直通
+
+`pty_open` 新增 `shellCommand`：一串**裸命令**（可执行 + 它自己的交互 argv，如
+`<msys2>/usr/bin/bash.exe --login -i`）。声明之后 `pty_send` 的文本**直接由它解释** ——
+`cd` 跨调用生效、管道与 `&&` 可用，**不必**每条命令自己套 `bash -lc "…"`。
+
+- **与 `command` 互斥**：两个都填 = 响亮报错（`INVALID_ARGS`）。一个都不给时才轮到 settings 的
+  `defaultShellCommand`；Config 也没配 ⇒ 响亮报错，文案点名三个选项。
+  **优先级链 = 显式 `shellCommand` > 显式 `command` > `defaultShellCommand` > 报错** ——
+  显式 `command` 是普通进程，**永不吃**全局默认（否则全局默认会改写所有既有调用）。
+- **零词汇**：不新增预设 id、不加 `shell: true` 布尔、`shellCommand` **不经** launcher 预设解析
+  —— 取值即使长得像预设 id（`msys2-ucrt`）也按**裸命令** spawn。预设面仍是 `shell_open`
+  （分工见 `./terminal` 一节）。
+- **shell 目标**：这样的会话是 **shell 目标** ⇒ `pty_signal` 拒绝 `SIGKILL`（`SIGNAL_FORBIDDEN`，
+  与 `shell_open` 同源文案），结束时走 `pty_close`。反例不受影响：`pty_open({ command: "bash" })`
+  **不是** shell 目标 —— 核心不从命令行文本猜。
+- **平台差异（如实声明）**：win32 = `parseCommandLine` 分词后**直接** spawn（无 shell 解释）；
+  POSIX = 仍 `/bin/sh -c <shellCommand>`，即**多一层 `sh` 父进程**（`pid` 报的是 `sh`）。
+  不新增 POSIX 分词 / 引号面（那正是本票拒绝的复杂度）。
+- **代价（选显式命令的代价，不掩饰）**：预设环境（`MSYSTEM` / `CHERE_INVOKING` / PATH 前缀）
+  **不由本票代注入**，由 caller 自担；要预设环境就用 `shell_open`。env/PATH 只在 **spawn 时**
+  注入 ⇒ 运行中的会话换不了环境。
+- **临时切换（零工具面）**：在会话里发一行另一解释器的启动命令即进入，`exit` 回默认 ——
+  状态天然在 PTY 进程树里，无状态机、无新参数。**一条命令**形式的一次性调用由 caller 自写方言
+  （`bash -lc` / `pwsh -Command` / `cmd /d /c`），工具**不代拼引号**（每方言引号规则不同）。
+- **环境侦测上下文**：本 entry 注册**一条** `systemPrompt.context`（`shell-host:environments`，
+  order 130，`interpolate: false`），内容 = 「预设 id → 解析出的可执行」，让 agent 知道该把哪个
+  路径写进 `shellCommand`，不必猜。它是**环境事实**、不是指令，**不主动起轮**；
+  **首次装配才懒算**并缓存（win32 的侦测要起 `wsl.exe --list --quiet`，绝不在 `apply` 里同步跑）；
+  没有可用环境时该行**整条不注入**（不写「无」）。注册走**子 fiber**
+  （`ctx.inject(['systemPrompt'], …)`，cordis 的 child-fiber 入口）：`./pty` 的**工具面从不等待**
+  提示词面 —— 没有 prompt registry 的 tools-only 组合照旧拿到六个工具；而**后挂**的 registry
+  仍然会拿到这条上下文（机会式 `ctx.get` 读取会漏掉这种挂载顺序）。
+
+```js
+// 声明一次，之后裸命令直通
+const s = await pty_open({ shellCommand: '<msys2>/usr/bin/bash.exe --login -i' })
+await pty_send({ id: s.sessionId, data: 'cd /c/work && ls | head -3' })   // 无包装、无包装回显
+```
+
+**噪音读数（#149 AC2，真实 ConPTY / win32，N=3；载体 `pty-shell-machine.spec.ts`）**：
+同一 payload ——「每条命令一次 `pty_open`」= 3 个会话 / 9 个初始化转义序列 / **126 字节**；
+「一个常驻 shell 会话」= 1 个会话 / 20 个序列 / **566 字节**；调用方每命令要写的字节
+**55（包装串）→ 22（裸命令）**。**如实说**：常驻**交互** shell 的字节读数**更大** ——
+提示符与命令回显是终端语义，不是本票要消的噪音；本票消掉的是「每命令一次会话 + 一次 PTY 初始化
++ 一次 shell 启动」以及**回显里再没有包装串**。
 
 ### pty_list / pty_signal（#119）
 
@@ -90,9 +137,11 @@ agent 自己持有的会话**（数据源就是核心的 owner 注册表，与 `
   - **`SIGKILL` 对 shell 目标一律拒绝**（官方同款语义：POSIX 上硬杀 shell 收不回它拥有的
     子进程），改用 `pty_close` 走完整关闭路径。Windows 上任何可投递信号本来就是整棵进程树
     的拆除，所以那里**结束 shell 会话的正规做法就是 `SIGTERM`**（`SIGKILL` 仍按官方的名字
-    拒掉）。**「shell 目标」由打开方声明**：`shell_open`（启动器预设，`./terminal`）传
-    `shell: true`；核心**不从命令行文本猜**，所以 `pty_open({ command: "bash" })` 不算
-    shell 目标 —— 猜不准就不猜（边界见 `src/pty/session-core.ts` 的 `OpenSpec.shell`）。
+    拒掉）。**「shell 目标」由打开方声明**，两条路：`shell_open`（启动器预设，`./terminal`）传
+    `shell: true`，`pty_open({ shellCommand })`（#149）同样标记为 shell 目标（两条路的结果面
+    都能看出来：`shell_open` 返回 `preset`，`pty_open` 返回 `shellCommand`）。
+    核心**不从命令行文本猜**，所以 `pty_open({ command: "bash" })` 不算 shell 目标 ——
+    猜不准就不猜（边界见 `src/pty/session-core.ts` 的 `OpenSpec.shell`）。
     ssh 会话同理**不是** shell 目标：它的本地顶层进程是 ssh 客户端而不是 shell，
     `SIGKILL` 在那里是一次正当的硬断开。
   - 投递**不自己关闭**会话：信号之后用 `pty_tail` 读后事，再用 `pty_close` 回收（幂等）。
@@ -155,6 +204,11 @@ environments fail loudly naming every probe point. The entry's settings
 namespace (`terminal`) carries the custom-preset data channel (the #54
 shape; the CRUD UI is a later ticket reading the same data); the built-in
 preset table is read-only, surfaced live by the unknown-id error.
+
+**分工（#149）**：`shell_open` 是**预设面** —— launcher 预设 + 预设环境（`MSYSTEM` /
+`CHERE_INVOKING` / PATH 前缀）；`pty_open({ shellCommand })` 是**裸声明面** —— 一条命令、
+零词汇、**不注入**预设环境。本包**不复制**预设表、**不新增**预设 id（ADR-0008 单源不变）；
+要预设环境用前者，要一条任意解释器用后者。
 
 ### 覆盖规则 / 并发上限 / 空闲超时（#56 裁决）
 

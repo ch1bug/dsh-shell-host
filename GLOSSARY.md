@@ -338,6 +338,10 @@ profile 并存；但**不宜同时开**官方持久终端与本仓 `pty_*` / `sh
 - **Q6=A 空参触发全局默认**：`pty_open()` 两者都不给 → `defaultShellCommand`；Config 也没配 → 响亮报错
   「必须给 `command` 或 `shellCommand`，或配置 `defaultShellCommand`」。没有这条，全局默认是**死配置**
   （Q5 的互斥必填会让它永远轮不到）。
+- **落地（2026-10-20，批 G 第 1 票）**：解析 = `src/pty/index.ts` 的 `resolveShellDeclaration`
+  （互斥 / 优先级链 / 空参报错都在这一个纯函数里）；环境侦测上下文 = `src/pty/environment-context.ts`
+  （懒算 + 缓存 + 无环境不注入）；配置面 = `./pty` Config 的 `defaultShellCommand`。
+  README「会话默认 shell（#149）」写工具面与代价，机器档读数在 `pty-shell-machine.spec.ts`。
 
 ## 术语表(惰性)
 
