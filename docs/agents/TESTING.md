@@ -383,6 +383,7 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 | 入口 | 层 | 覆盖 | 门禁 |
 |---|---|---|---|
 | `node --run test` | ①②③ | typecheck + unit + machine（本仓常规套件） | 无 |
+| `node scripts/posix-signal-lane.mjs` | **真实层（POSIX，容器）** | `pty_signal` 的 POSIX 分支（`#144`）五个场景：真进程组投递（trap 命中、**输入回声不算**）、trap 命中后会话按**命令自身语义**退出（`exitCode` 读数）、投递后 `pty_close` 仍**真终止**（判据是 `/proc` 里组消失，不是 `closed:true`）、组覆盖（前台同组子进程收到 / `set -m` 独立组够不着 / 票面建议的 `child & wait` 形态会假读） | podman + `node:24-bookworm-slim`；node-pty 版本**从 `package.json` 的依赖锚派生**（单一来源）；退出码三态 **0 绿 / 1 判定红 / 2 没跑完**（无 podman、装不上依赖、参数不对、墙钟超时、没有 `RESULT` 行都是 2）；**不进 Windows 默认车道**（住在 `scripts/`，而 unit 车道按位置只收集 `tests/**/*.spec.ts`） |
 | `tests/doc-references.spec.ts` | ①② | 引用腐烂：注释里的仓内路径必须存在；本仓脚本一律写 `node --run`（历史提及在该注释/该行标 `[History: …]`） | 无 |
 | `tests/evidence-citations.spec.ts` | ①（本机） | 证据引用守卫（`#132`）：`.scratch/` 落地文档 / 批次状态 / retro 里的「证据单元格 × 退出码声称」—— 被引载体必须存在，读数不得与声称**矛盾**（「无读数」不算矛盾，一律 `!! SKIP (loud)` 声明不判） | 有 `.scratch/` 才判（干净 clone / 部署副本 / pre-push 车道恒响亮跳过 ⇒ `PASS*`） |
 | `tests/e2e-tool-call-machine.spec.ts` | **mock 层** | 官方安装（`--from-default-profile` + `dsh plugin add` 源目录）→ 配置（组合树含两行、无 pending）→ 启动（真实 `dsh web`，OS 临时端口，stderr 干净）→ `session/create` → `prompt` → mock provider 要求 `pty_open` → 实例执行 → `tool_result` 回灌 | 插件树 + 宿主树 + pnpm shim（缺失则响亮跳过） |
