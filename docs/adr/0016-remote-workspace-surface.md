@@ -141,6 +141,13 @@ attempted. Tools never open connections: on a dead channel they return a stable
 error code plus the reason, and `remote_status` exposes the connection state to
 the model and to humans.
 
+[2026-10-20, ADR-0017 (Accepted): the "one channel per host" wording is revised —
+ssh multiplexing is measured unusable from a Windows client (`getsockname failed:
+Not a socket`), so the shape becomes one TRANSPORT per host on POSIX clients and
+one CONNECTION PER SESSION on Windows clients; the ref-counting unit is a
+connection, not a host, because a shared shell would let one session's `cd`
+silently move every other session's working directory.]
+
 **9. The residual risk is the two-vocabulary split, not the local paths (Q14 correction).**
 
 Because `ctx.fs` stays untouched, a bug in this package cannot break a local
