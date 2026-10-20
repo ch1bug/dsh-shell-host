@@ -188,7 +188,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   `pty_signal` 已由 `#119` 补齐 —— 但 Windows/ConPTY 侧 `pty_signal` **只有终止语义**
   （`SIGTERM`/`SIGKILL` = 杀会话，其余白名单项响亮拒绝），是平台事实、不假装与 POSIX
   等价（单源：`src/pty/session-core.ts` 的 `PTY_SIGNAL_SEMANTICS`）；② 无
-  `run_in_background`（官方走 `ctx.jobs`）；③ 无 `presentationMeta` / `presentResult` /
+  `run_in_background`（官方走 `ctx.jobs`）—— **已被 `#120` 决策改变**（接入，见下「#120 grill 共识」）；③ 无 `presentationMeta` / `presentResult` /
   `finalizeContent` 字节上限。
 - **`./wsl` entry**：默认 bundle patch 不挂 ⇒ SDK 里不会出现 `win_*`（opt-in entry 的预期行为，非缺陷）。
 
@@ -298,6 +298,25 @@ profile 并存；但**不宜同时开**官方持久终端与本仓 `pty_*` / `sh
   没有该组。
 - **可选、默认关**：`dsh-experimental-terminal-bundle`。默认 preset（`standard`）
   **没有任何持久终端行** ⇒ 插件页开启之前，`terminal_*` 六工具**不存在**。
+
+## #120 grill 共识（2026-10-19：接入宿主 jobs 栈，照抄官方全套）
+
+- **决策 = 接入**：`pty_send` / `ssh_send` 加 `run_in_background`，`jobs.start({ kind: 'pty-send',
+  label: '<sessionId>: <text>', toolCall: { callId, rootCallId }, owner: <agent session id>,
+  outputLimitBytes, output: [...], run })`；**前台路径零行为变化**。
+- **jobs 是「一对包」**（源码核对，`0.2.1-rc.2`）：`@deepseek-ai/dsh-jobs` 只是**抽象 seam**
+  （进程内实现 = `dsh-jobs-local`），`start` 在**没有 attached controller** 服务于该 owner 时
+  **直接拒绝**；`@deepseek-ai/dsh-tool-jobs` 才是 controller（`attachController`）+
+  `job_output` / `job_list` / `job_kill` + 完成投递。**只声明前者 = 永远响亮报错的死路**。
+- **配置门照抄官方**：`enableRunInBackground`（默认 `true`）；缺 `jobs` 时响亮报错，
+  文案点明两个包（不静默降级为前台）。
+- **依赖面政策成本**：两个包都**不是** `dsh-tools` 的直接 peer ⇒ `dev-environment §4.4` /
+  ADR-0005 决策 6 记一条**带理由的例外**：宿主已自带这套栈（桌面 `app.asar` 就有），
+  本票是**接线**不是造面。
+- **否决过两条**：不接入（与宿主既有能力相悖）、自建 controller（等于重写 `dsh-tool-jobs`）。
+- **顺带更正（同一次源码核对）**：`dsh-tool-jobs` 的完成投递 = `ctx.get('agents')` 取 Agent +
+  `Agent.followup`（空闲 owner **开一轮**）/ `Agent.inject`（忙碌 owner 注入下一步）——
+  此前「宿主没有插件起轮入口」的说法**是错的**，见 `#151`。
 
 ## #149 grill 共识（2026-10-19，6 个决定；全文见 `#149` 票面正文）
 
