@@ -261,7 +261,7 @@
 | agent 循环 | 真实 `tool_use` → 真实工具执行 → `tool_result` 回灌 | — |
 | 供应商侧 | ❌ | 真实端点是否接受（鉴权 / 模型名 / 提示词长度上限 / 字段兼容 / 流式格式差异） |
 | 真实模型行为 | ❌ | 模型是否真按预期发起工具调用（注入有效性） |
-| 真实工具面 | ❌ | `shell_open` 等**受审批门**工具的审批/沙箱路径（mock 层刻意挑免审批工具，只证"工具面被打通"） |
+| 真实工具面 | ❌ | **审批弹窗/答者本身**（mock 层不发 `sandbox_permissions`，只证"工具面被打通"与默认策略放行）。#102 起 `pty_open` / `shell_open` / `ssh_start` **都过策略门**：默认 `workspace-write` + 界内 cwd 免审批放行，审批只在升级重试时发生 —— 那条路径的机器判据在 `tests/permission-gate.spec.ts`，真实 UI 答者 HEADLESS 起不来 |
 | 鉴权 | ❌ | mock 层塞的是假 key |
 
 **结论：mock 绿 ≠ 真实调用没问题。**

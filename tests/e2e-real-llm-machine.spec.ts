@@ -27,10 +27,12 @@
  *   optional: DSH_E2E_REAL_MODEL   — pin the model id
  *             DSH_E2E_REAL_PROMPT  — override the task text
  *
- * TOOL CHOICE: the task asks for `pty_open` on purpose. It sits behind no
- * approval gate, so this tier proves provider acceptance + real model
- * behaviour + a real tool execution without entering the approval/sandbox path
- * that `shell_open` would take (that path is a separate concern).
+ * TOOL CHOICE: the task asks for `pty_open` on purpose. Since #102 it passes the
+ * host policy gate, but the default `workspace-write` composition allows an
+ * in-bounds spawn WITHOUT an approval ask — so this tier proves provider
+ * acceptance + real model behaviour + a real tool execution without needing a
+ * human approver (the escalation UI is headless-blind; that contract lives in
+ * `tests/permission-gate.spec.ts`).
  *
  * Isolation: temp DSH_HOME under os.tmpdir() + `--port 0`, so no fixed dev port
  * (19387 / 19501 / 19502) is ever occupied.

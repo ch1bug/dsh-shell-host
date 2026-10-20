@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import * as wslPlugin from '../src/wsl-plugin/index.js'
+import { fakePermissionServices } from './helpers/fake-permissions.ts'
 
 /** Fake shell-seam result the tools consume. */
 function fakeRun(
@@ -25,10 +26,15 @@ function fakeRun(
   }
 }
 
-/** Build a fake ctx: tools.register collector + a scripted shell service. */
+/** Build a fake ctx: tools.register collector + a scripted shell service.
+ * #102: the two host permission services are mounted PERMISSIVE by default —
+ * the gate fails closed on a missing service, and this smoke suite is about the
+ * win_* behaviors. The gate's own verdicts are pinned in
+ * `tests/permission-gate.spec.ts`. */
 function fakeCtx(script: (request: any) => any) {
   const registered: any[] = []
   const calls: any[] = []
+  const permissions = fakePermissionServices()
   const ctx = {
     get(serviceName: string) {
       if (serviceName === 'shell') {
@@ -41,17 +47,19 @@ function fakeCtx(script: (request: any) => any) {
           },
         }
       }
-      return undefined // sandboxPolicy absent by default
+      if (serviceName === 'sandboxPolicy') return permissions.sandboxPolicy
+      if (serviceName === 'approval') return permissions.approval
+      return undefined
     },
     tools: { register: (tool: any) => registered.push(tool) },
   }
-  return { ctx, registered, calls }
+  return { ctx, registered, calls, permissions }
 }
 
 describe('./wsl entry contract (issue #30, ADR-0007)', () => {
   it('exposes the absorbed plugin contract: name, inject, apply', () => {
     expect(wslPlugin.name).toBe('dsh-wsl-bridge')
-    expect(wslPlugin.inject).toEqual(['tools', 'shell', 'sandboxPolicy'])
+    expect(wslPlugin.inject).toEqual(['tools', 'shell', 'sandboxPolicy', 'approval'])
     expect(typeof wslPlugin.apply).toBe('function')
   })
 
@@ -224,7 +232,10 @@ describe('win_* tool behavior through the fake shell seam', () => {
     expect(calls[0].workdir).toBe('/mnt/c/Work')
     expect(calls[0].signal).toBe(signal)
     expect(calls[0]).not.toHaveProperty('stdoutMaxBytes')
-    expect(calls[0]).not.toHaveProperty('sandboxPolicy')
+    // #102: the RESOLVED policy now always rides the request — that is the
+    // ticket's downlink (the executor enforces it). The permissive fake
+    // resolves danger-full-access here.
+    expect(calls[0].sandboxPolicy).toMatchObject({ mode: 'danger-full-access' })
     // No opt-vs-policy confusion: an undefined opt never overwrites a resolved
     // policy and vice versa — the pick is per-field, order-independent.
     const minimal = fakeCtx(() => fakeRun(''))

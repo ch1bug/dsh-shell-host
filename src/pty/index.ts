@@ -62,6 +62,15 @@ import {
   startBackgroundSend,
   type BackgroundJobRegistry,
 } from './background-send.ts'
+import {
+  SANDBOX_EXECUTION_SEMANTICS,
+  createPermissionGate,
+  sandboxPermissionParameters,
+  sandboxSessionWriteSemantics,
+  sessionOf,
+  type PermissionGate,
+  type SandboxMode,
+} from '../permission-gate.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { JobToolCall } from '@deepseek-ai/dsh-jobs'
 
@@ -69,8 +78,13 @@ const name = 'dsh-pty-session'
 // #149 contributes a prompt context, but the TOOLS must never wait on the
 // prompt registry: a tools-only deployment without one still gets the whole pty
 // surface. The contribution rides a child fiber instead (see
-// registerEnvironmentContext), so the entry's required set stays ['tools'].
-const inject = ['tools']
+// registerEnvironmentContext), so the prompt surface is NOT a dependency.
+// #102: the two HOST PERMISSION services ARE real dependencies now — every
+// execution resolves `sandboxPolicy` and an escalation asks `approval`, and the
+// gate fails closed without them. Declaring them here (host convention) makes a
+// deployment that lacks either one refuse to activate this row instead of
+// serving tools that can only fail per call.
+const inject = ['tools', 'sandboxPolicy', 'approval']
 
 /** Runtime configuration schema — the `./pty` entry's own settings namespace. */
 export interface PtyConfig extends SessionCoreConfig {
@@ -300,15 +314,26 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
    * the provided `pty` service are two views of one core. */
   const core: SessionCore = createSessionCore(config, deps)
 
+  /** #102: the host permission model for every execution on this surface —
+   * one gate instance, so `pty_open` / `ssh_start` authorize and `pty_send` /
+   * `ssh_send` re-resolve against the SAME policy source. */
+  const gate: PermissionGate = createPermissionGate(ctx)
+
   /**
    * Programmatic facade: the four pty_* tool semantics as callable functions
    * for CONSUMER PLUGINS (T5 gdb, terminal's shell_open, ssh). Consumers
    * pass the owner explicitly (`exec.agent` from their own tool execution);
    * they must never touch another agent's sessions (the core enforces this).
+   *
+   * #102: the facade is the raw execution channel — it does NOT authorize.
+   * A consumer that opens sessions is responsible for driving its own
+   * `permission-gate` (the `./terminal` entry does exactly that) and for
+   * passing the resulting `authorizedMode` on the open spec, so the pty
+   * surface can still detect a later policy downgrade.
    */
   const facade = {
     /** Spawn the command on a ConPTY with env injected into the process. */
-    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean; shell?: boolean }, signal?: AbortSignal): Promise<any> =>
+    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean; shell?: boolean; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any> =>
       core.open(owner, extractSpec(spec) as OpenSpec, signal),
 
     /** Exclusive send: write, await the settle, return the output read. */
@@ -328,6 +353,11 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
     /** The owner's own sessions as structured rows (#119): id + status + pid,
      * stable creation order. Same registry as `active`, richer view. */
     list: (owner: Owner) => core.list(owner),
+
+    /** #102: the sandbox mode the session was AUTHORIZED under (the mode the spawn
+     * ran at — the one-shot grant when an escalation was approved). This is the
+     * write baseline the send gate re-checks on every write. */
+    modeOf: (owner: Owner, id: string): SandboxMode | undefined => core.modeOf(owner, id),
 
     /** Deliver one whitelisted signal (#119). Platform semantics:
      * `PTY_SIGNAL_SEMANTICS` — POSIX best-effort real delivery,
@@ -392,7 +422,9 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       'and no wrapper echo. `command` and `shellCommand` are mutually exclusive; when both are omitted the configured ' +
       'defaultShellCommand applies, and with no default either the call fails loudly naming all three. ' +
       'A shell session is a SHELL TARGET: pty_signal refuses SIGKILL on it (killing a shell cannot reclaim the children it owns) — ' +
-      'use pty_close, the single close path. ' + AUTO_CLOSE_SEMANTICS,
+      'use pty_close, the single close path. ' + AUTO_CLOSE_SEMANTICS + ' ' +
+      // #102: the permission contract, stated on the face the model reads.
+      SANDBOX_EXECUTION_SEMANTICS,
     parameters: {
       command: {
         type: 'string',
@@ -424,6 +456,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         type: 'boolean',
         description: AUTO_CLOSE_SEMANTICS,
       },
+      ...sandboxPermissionParameters('command'),
     },
     output: {
       schema: {
@@ -450,23 +483,56 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
               'Present exactly when the session is a SHELL TARGET: the resolved interpreter command ' +
               '(the explicit shellCommand, or the configured defaultShellCommand when the call was argument-less).',
           },
+          sandboxMode: {
+            type: 'string',
+            description:
+              'The sandbox mode this spawn ran under (the session policy, or the approved one-shot escalation target).',
+          },
         },
       },
       render: jsonRender as any,
     },
-    async execute(args: { command?: string; shellCommand?: string; cwd?: string; env?: Record<string, string>; autoClose?: boolean }, exec: { agent?: Owner; signal?: AbortSignal }) {
+    async execute(args: { command?: string; shellCommand?: string; cwd?: string; env?: Record<string, string>; autoClose?: boolean; sandbox_permissions?: string; justification?: string }, exec: { agent?: Owner; signal?: AbortSignal; callId?: string }) {
       const owner = requireAgent(exec)
       const declaration = resolveShellDeclaration(args, config.defaultShellCommand)
+      // #102: authorize BEFORE anything spawns — the gate resolves the policy
+      // per execution and routes an escalation through the official approval
+      // service (only 'allowed-once' grants; the grant covers this one call).
+      const authorization = await gate.authorizeSpawn({
+        toolName: 'pty_open',
+        agent: owner,
+        session: sessionOf(owner),
+        callId: exec.callId,
+        signal: exec.signal,
+        cwd: args.cwd,
+        sandboxPermissions: args.sandbox_permissions,
+        justification: args.justification,
+        subject: 'command',
+        // The free-command-line spawn points at shell_open in its denial
+        // (ticket 「命令白名单」§2).
+        presetChannel: true,
+      })
       const opened = await facade.open(owner, {
         command: declaration.command,
         // The shell-target marker rides the core's existing open spec (#119);
         // no second public boolean is introduced on the tool surface.
         ...(declaration.shell ? { shell: true } : {}),
-        ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
+        // Under workspace-write this is the concrete boundary cwd (see the
+        // gate); under danger-full-access it is the caller's value, unchanged.
+        ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
         ...(args.env === undefined ? {} : { env: args.env }),
         ...(args.autoClose === undefined ? {} : { autoClose: args.autoClose }),
+        // The mode the spawn was AUTHORIZED under (the one-shot grant when an
+        // escalation was approved) is the session's write baseline: `pty_send`
+        // re-resolves against it, so a grant never becomes a standing write
+        // permission (it was one call only).
+        authorizedMode: authorization.grantedMode,
       }, exec.signal)
-      return declaration.shellCommand === undefined ? opened : { ...opened, shellCommand: declaration.shellCommand }
+      return {
+        ...opened,
+        ...(declaration.shellCommand === undefined ? {} : { shellCommand: declaration.shellCommand }),
+        sandboxMode: authorization.grantedMode,
+      }
     },
     presentCall: (args: { command?: string; shellCommand?: string }) => ({ card: 'terminal', title: args.shellCommand ?? args.command ?? 'pty_open' }),
   }))
@@ -474,7 +540,8 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
   ctx.tools.register(defineTool({
     name: 'pty_send',
     description:
-      'Write bytes into a live PTY session and return the output read while the write settled.' +
+      'Write bytes into a live PTY session and return the output read while the write settled. ' +
+      sandboxSessionWriteSemantics('pty_close') +
       (enableRunInBackground ? RUN_IN_BACKGROUND_SUFFIX : ''),
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from pty_open.' },
@@ -496,6 +563,17 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
     },
     async execute(args: { id: string; data: string; submit?: boolean; run_in_background?: boolean }, exec: SendExec) {
       const owner = requireAgent(exec)
+      // #102 §5: re-resolve on EVERY write; a session opened under a wider mode
+      // must stop accepting bytes once the policy narrows (the old grant is
+      // not reused). Reads (pty_tail) and the close path stay ungated.
+      gate.assertSessionWritable({
+        toolName: 'pty_send',
+        agent: owner,
+        session: sessionOf(owner),
+        sessionId: args.id,
+        authorizedMode: facade.modeOf(owner, args.id),
+        closeTool: 'pty_close',
+      })
       if (args.run_in_background === true) {
         return background(owner, exec, `${args.id}: ${args.data || '(input)'}`,
           (signal) => facade.send(owner, args.id, { data: args.data, submit: args.submit, signal }))
@@ -637,7 +715,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
     presentCall: (args: { id: string; signal: string }) => ({ card: 'terminal', title: `signal ${args.signal} ${args.id}` }),
   }))
 
-  registerSshTools(ctx, facade, { enabled: enableRunInBackground, start: background })
+  registerSshTools(ctx, facade, { enabled: enableRunInBackground, start: background }, gate)
 }
 
 /**
@@ -797,14 +875,18 @@ export function composeSshCommand(args: SshLaunchArgs): string {
   return parts.join(' ')
 }
 
-function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { command: string }, signal?: AbortSignal): Promise<any>; send(owner: unknown, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>; tail(owner: unknown, id: string, lines?: number): any; close(owner: unknown, id: string): Promise<{ closed: boolean }> }, background: BackgroundSendBridge) {
+function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { command: string; cwd?: string; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any>; send(owner: unknown, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>; tail(owner: unknown, id: string, lines?: number): any; close(owner: unknown, id: string): Promise<{ closed: boolean }>; modeOf(owner: unknown, id: string): SandboxMode | undefined }, background: BackgroundSendBridge, gate: PermissionGate) {
   ctx.tools.register(defineTool({
     name: 'ssh_start',
     description:
       'Open an interactive ssh session on a PTY (full duplex: long-lived remote shell, intermediate output visible). ' +
       `Keepalive defaults (${SSH_KEEPALIVE_INTERVAL_DEFAULT}/${SSH_KEEPALIVE_COUNT_DEFAULT}) are injected unless overridden via options. ` +
       'Returns a sessionId for ssh_tail / ssh_send / ssh_close. One-shot remote commands should use the ssh backend instead. ' +
-      'No auto-reconnect: a dropped session reports status exited; recover by calling ssh_start again.',
+      'No auto-reconnect: a dropped session reports status exited; recover by calling ssh_start again. ' +
+      // #102: ssh_start is a local PROCESS spawn (and `-o ProxyCommand=…` is
+      // arbitrary local execution), so it takes the same policy gate as
+      // pty_open — otherwise it would be the bypass this ticket removes.
+      SANDBOX_EXECUTION_SEMANTICS,
     parameters: {
       host: { type: 'string', required: true, description: 'ssh destination ([user@]host), a single argv atom.' },
       jump: { type: 'string', description: 'Jump host passed as -J (single argv atom).' },
@@ -818,6 +900,7 @@ function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { comm
           'or ServerAliveCountMax suppresses its keepalive default (exact key match).',
       },
       shell: { type: 'string', description: 'Remote command/shell to run after connect (e.g. "bash --login"); omit for the login shell.' },
+      ...sandboxPermissionParameters('command'),
     },
     output: {
       schema: {
@@ -828,14 +911,34 @@ function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { comm
           pid: { type: 'number', description: 'Local ssh process id when the backend exposes one.' },
           status: { type: 'object', additionalProperties: true, description: 'Session status at publication.' },
           initialOutput: { type: 'string', description: 'Banner/auth output captured during connect.' },
+          sandboxMode: {
+            type: 'string',
+            description: 'The sandbox mode this ssh spawn ran under (the session policy, or the approved one-shot escalation target).',
+          },
         },
       },
       render: jsonRender as any,
     },
-    async execute(rawArgs: { host: string; jump?: string; port?: number; shell?: string; options?: SshOptionInput[] }, exec: { agent?: Owner; signal?: AbortSignal }) {
+    async execute(rawArgs: { host: string; jump?: string; port?: number; shell?: string; options?: SshOptionInput[]; sandbox_permissions?: string; justification?: string }, exec: { agent?: Owner; signal?: AbortSignal; callId?: string }) {
       const owner = requireAgent(exec)
       const command = composeSshCommand(rawArgs)
-      return core.open(owner, { command }, exec.signal)
+      const authorization = await gate.authorizeSpawn({
+        toolName: 'ssh_start',
+        agent: owner,
+        session: sessionOf(owner),
+        callId: exec.callId,
+        signal: exec.signal,
+        sandboxPermissions: rawArgs.sandbox_permissions,
+        justification: rawArgs.justification,
+        subject: 'command',
+      })
+      const opened = await core.open(owner, {
+        command,
+        ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
+        // The grant actually used is the ssh session's write baseline (one call only).
+        authorizedMode: authorization.grantedMode,
+      }, exec.signal)
+      return { ...opened, sandboxMode: authorization.grantedMode }
     },
     presentCall: (args: { host: string }) => ({ card: 'terminal', title: `ssh ${args.host}` }),
   }))
@@ -843,7 +946,8 @@ function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { comm
   ctx.tools.register(defineTool({
     name: 'ssh_send',
     description:
-      'Write bytes into the live ssh session and return the output read while the write settled. Core passthrough.' +
+      'Write bytes into the live ssh session and return the output read while the write settled. Core passthrough. ' +
+      sandboxSessionWriteSemantics('ssh_close') +
       (background.enabled ? RUN_IN_BACKGROUND_SUFFIX : ''),
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
@@ -865,6 +969,15 @@ function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { comm
     },
     async execute(args: { id: string; data: string; submit?: boolean; run_in_background?: boolean }, exec: SendExec) {
       const owner = requireAgent(exec)
+      // #102 §5: same re-resolve rule as pty_send (one ambient policy source).
+      gate.assertSessionWritable({
+        toolName: 'ssh_send',
+        agent: owner,
+        session: sessionOf(owner),
+        sessionId: args.id,
+        authorizedMode: core.modeOf(owner, args.id),
+        closeTool: 'ssh_close',
+      })
       if (args.run_in_background === true) {
         return background.start(owner, exec, `${args.id}: ${args.data || '(input)'}`,
           (signal) => core.send(owner, args.id, { data: args.data, submit: args.submit, signal }))

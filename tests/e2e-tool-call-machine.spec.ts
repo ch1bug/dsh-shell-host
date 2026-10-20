@@ -39,6 +39,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MY_ROWS, exchangeToken, rpc, startInstance, startMockLlm, stopChild } from "./helpers/e2e-chain.ts";
+import { sandboxDenialMarker } from "../src/permission-gate.ts";
 import {
   PLUGIN_DIR,
   installPlugin,
@@ -186,6 +187,101 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
       // for it to exit: killing while the agent loop is live leaves libuv teardown
       // noise (and ECONNRESET) in the report. Shared with both sibling tiers — the
       // "kill, then wait" dance had a second copy here (#100).
+      await stopChild(inst.child);
+      await mock.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * #102 — the read-only red scenario, against a REAL instance.
+   *
+   * Why it is a separate case and not a unit assertion: the ticket's
+   * 「依赖 / 待确认」 item asks whether the HOST already gates this bundle's
+   * tools through `tools/pre-execute` (`实现时用验收第 1 项的红场景验证`). The
+   * static answer (no production listener implements a sandbox gate; the only
+   * `tools/pre-execute` owners are hooks / review / jobs) is not a reading. This
+   * case IS the reading, and it needs no human answerer: the gate refuses
+   * BEFORE it would ask `approval`.
+   *
+   * What it pins in one shot:
+   *   - the real composition mounts both permission services (otherwise the
+   *     gate's fail-closed error, not the marker, would come back);
+   *   - the refusal carries THIS bundle's structured vocabulary (so the
+   *     refusal is ours, not a host pre-execute's);
+   *   - nothing was spawned (no `sessionId` in the result).
+   */
+  it("refuses pty_open under a read-only session with this bundle's structured denial", { timeout }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "dsh-shellhost-e2e-ro-"));
+    const dshHome = join(root, ".dsh");
+    const installed = await installPlugin(dshHome, PROFILE);
+    expect(installed.code, `dsh plugin add succeeded (output: ${installed.out.slice(-500)})`).toBe(0);
+
+    const mock = await startMockLlm();
+    const inst = startInstance(PROFILE, dshHome, {
+      DEEPSEEK_BASE_URL: `http://127.0.0.1:${mock.port}`,
+      DEEPSEEK_API_KEY: "mock-key-nonempty",
+      // The base bundle seeds every session from this deployment switch
+      // (`DSH_PERMISSION_MODE ?? 'workspace-write'`); the approval policy then
+      // stays `ask`, so a refusal here is the POLICY branch, not approval.
+      DSH_PERMISSION_MODE: "read-only",
+    });
+    let launchUrl: string;
+    try {
+      launchUrl = await inst.ready;
+    } catch (error) {
+      await mock.close();
+      await rm(root, { recursive: true, force: true });
+      throw error;
+    }
+
+    try {
+      const stderr = inst.stderr();
+      const blamed = MY_ROWS.filter((row) => new RegExp(`\\b${row}\\b`, "u").test(stderr));
+      expect(blamed, "stderr never blames this bundle's loader rows").toEqual([]);
+
+      const exchanged = await exchangeToken(launchUrl);
+      expect(exchanged.status, "launch URL exchanges the token").toBe(303);
+      const cookie = exchanged.cookie;
+      expect(cookie, "exchange issues an auth cookie").toBeTruthy();
+
+      const created = await rpc(exchanged.port, cookie, "session/create", { cwd: PLUGIN_DIR });
+      const createdValue = (JSON.parse(created.text) as any)?.result?.value;
+      expect(createdValue?.sessionId, "session/create returns a sessionId").toBeTruthy();
+
+      await rpc(exchanged.port, cookie, "session/prompt", {
+        requestId: `e2e-ro-${Date.now()}`,
+        sessionId: createdValue.sessionId,
+        mode: "queue",
+        content: [{ type: "text", text: "Call the pty_open tool once." }],
+      });
+
+      const deadline = Date.now() + 90_000;
+      while (mock.agentTurns() < 2 && Date.now() < deadline) {
+        await new Promise((r) => { setTimeout(r, 500); });
+      }
+      const withResult = mock.agentRequests().find((c) => JSON.stringify(c.body).includes("tool_result"));
+      expect(withResult, "the instance executed the tool call path and fed the result back").toBeTruthy();
+      const raw = JSON.stringify(withResult?.body ?? {});
+      // Attribution first (TESTING.md): if the call SUCCEEDED, the artifact
+      // under test predates the gate — it is NOT an environment gap and NOT a
+      // product regression of this checkout. The e2e tiers install
+      // `<copy>/lib` (`DSH_E2E_PLUGIN_DIR`), so a stale deployment copy is the
+      // likely cause; syncing + rebuilding it is `bash scripts/msys-lane.sh`.
+      expect(
+        raw,
+        "the call is reported as an error — if the instance accepted it, the artifact under test predates #102 (sync + rebuild the deployment copy: bash scripts/msys-lane.sh)",
+      ).toMatch(/"is_error":\s*true/u);
+      // OUR structured denial, in the official vocabulary — this is the reading
+      // that says the host did not swallow the call in a pre-execute gate.
+      expect(raw, "the denial carries the official [sandbox: …] marker").toContain(sandboxDenialMarker("read-only"));
+      expect(raw, "the denial names the sanctioned retry arguments").toContain("sandbox_permissions");
+      expect(raw, "the denial names the narrowest wider mode").toContain("Narrowest wider mode that suffices: workspace-write");
+      // Nothing ran: a refused spawn publishes no PTY session. The pattern is
+      // the PTY id shape (`pty-<n>`), NOT the bare word — the request body also
+      // carries the DSH session log, whose own `sessionId` is `session-…`.
+      expect(raw, "no PTY session was opened").not.toMatch(/"sessionId":"pty-\d+"/u);
+    } finally {
       await stopChild(inst.child);
       await mock.close();
       await rm(root, { recursive: true, force: true });

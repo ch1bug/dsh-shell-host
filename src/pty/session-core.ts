@@ -28,6 +28,7 @@
 
 import { spawn as nodePtySpawn } from '@lydell/node-pty'
 import { resolveExecutable } from '../detect.ts'
+import type { SandboxMode } from '../permission-gate.ts'
 
 /** Default concurrent-session soft cap (#56 ruling 3, migrated onto the
  * core: the registry is the single source of truth, so an entry remount
@@ -153,6 +154,12 @@ interface Session {
   /** Shell target flag (#119) — declared by the opening surface, see
    * `OpenSpec.shell`; only `signal()`'s SIGKILL gate reads it. */
   shell?: boolean
+  /** #102: the sandbox mode the session was AUTHORIZED under at open — the
+   * mode the spawn actually ran at, i.e. the one-shot GRANT when an escalation
+   * was approved. `pty_send` re-resolves the policy and refuses a write when the
+   * current mode is NARROWER than this — a one-shot grant never outlives its
+   * call, so it cannot become a standing write permission. */
+  authorizedMode?: SandboxMode
 }
 
 /** Session status shape — the seam's sessionStatus contract, kept. */
@@ -242,6 +249,14 @@ export interface OpenSpec {
    * be honest about `pty_open({ command: "bash" })`, so it does not try.
    */
   shell?: boolean
+  /**
+   * #102: the sandbox mode the opening surface authorized under — the mode the
+   * spawn actually ran at (the one-shot grant when `permission-gate` approved an
+   * escalation). Stored as session metadata, read back by `modeOf` so every
+   * later write can compare the freshly resolved policy against the
+   * authorization without caching a boolean "approved" flag.
+   */
+  authorizedMode?: SandboxMode
 }
 
 /**
@@ -322,6 +337,11 @@ export interface SessionCore {
    * creation order. The data source is the same registry as `active` — this
    * is its structured view, not a second enumeration. */
   list(owner: unknown): SessionSummary[]
+  /** #102: the sandbox mode the session was AUTHORIZED under when it opened —
+   * the write baseline `pty_send` compares the freshly resolved policy against.
+   * `undefined` for an unknown/foreign id, and for a session a consumer opened
+   * through the facade without an authorization (that opener's own gate owns it). */
+  modeOf(owner: unknown, id: string): SandboxMode | undefined
   /** Deliver one whitelisted signal to the owner's session (#119). Platform
    * semantics: {@link PTY_SIGNAL_SEMANTICS}. */
   signal(owner: unknown, id: string, signal: string): SignalResult
@@ -722,6 +742,7 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
           idleTimeoutMs: spec.idleTimeoutMs,
           autoClose: spec.autoClose,
           shell: spec.shell,
+          authorizedMode: spec.authorizedMode,
         }),
         idleLastLines: 0,
         lastActivityAt: Date.now(),
@@ -837,6 +858,14 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         status: statusOf(s),
         ...(s.pty.pid === undefined ? {} : { pid: s.pty.pid }),
       }))
+    },
+
+    modeOf(owner, id) {
+      // Deliberately silent for an unknown/foreign id: the caller's gate uses
+      // this only to detect a DOWNGRADE, and the ownership/existence error
+      // belongs to the operation that follows (pty_send's own NO_SESSION /
+      // SESSION_OWNED), not to this metadata read.
+      return registry.get(owner)?.get(id)?.authorizedMode
     },
 
     signal(owner, id, signal) {

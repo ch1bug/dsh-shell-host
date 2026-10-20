@@ -10,6 +10,7 @@
 import { describe, it, expect, onTestFinished } from "vitest";
 import { spawn as spawnPty } from "@lydell/node-pty";
 import { apply as applyPty } from "../src/pty/index.ts";
+import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
 
 // The host value may carry a user@ prefix — the composition passes it to
 // ssh verbatim, and key auth on the live host is provisioned per user
@@ -27,11 +28,14 @@ function boot() {
   // taking down the whole local ssh <- remote chain.
   const registered: any[] = [];
   const provided = new Map<string, unknown>();
+  // #102: the gate fails closed without the host permission services; this
+  // live round-trip is about the ssh surface, so mount the permissive fakes.
+  const permissions = fakePermissionServices();
   const ctx = {
     provide: (name: string, value: unknown) => provided.set(name, value),
     effect: () => () => Promise.resolve(),
     tools: { register: (t: unknown) => registered.push(t) },
-    get: (name: string) => provided.get(name),
+    get: permissionServiceLookup(permissions, (name) => provided.get(name)),
   };
   applyPty(ctx as any, {});
   const tool = (name: string) => {

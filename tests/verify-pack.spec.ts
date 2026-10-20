@@ -187,6 +187,9 @@ describe("chunkFamilyDeclarations", () => {
     const realFiles: string[] = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).files;
     expect(chunkFamilyDeclarations(realFiles)).toEqual([
       "lib/pty-*.js",
+      // #102: the shared permission-gate module became its own chunk (the three
+      // entries import it), so the `files` face must declare its family too.
+      "lib/permission-gate-*.js",
       "lib/posix-quote-*.js",
       "lib/detect-*.js",
       "lib/launchers-*.js",

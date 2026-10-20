@@ -50,6 +50,7 @@
     "lib/pty-*.js",
     "lib/wsl-plugin/index.js",
     "lib/terminal/index.js",
+    "lib/permission-gate-*.js",
     "lib/posix-quote-*.js",
     "lib/detect-*.js",
     "lib/launchers-*.js",

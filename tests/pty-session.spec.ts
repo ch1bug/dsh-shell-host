@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { apply } from "../src/pty/index.ts";
 import { AUTO_CLOSE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS } from "../src/pty/session-core.ts";
 import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
+import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
 import { waitUntil, stillPending } from "./helpers/wait-until.ts";
 
 // ---------------------------------------------------------------------------
@@ -35,14 +36,20 @@ function makeAgent(name: string) { return { agentName: name }; }
 const exec = (agent: unknown) => ({ agent, signal: new AbortController().signal });
 
 let ctx: any;
-/** The boot context (tools register, `pty` service provides, one dispose effect). */
+/** The boot context (tools register, `pty` service provides, one dispose effect).
+ * #102: the permission services are mounted PERMISSIVE here (`danger-full-
+ * access` + `allowed-once`) — the gate fails closed on a missing service, and
+ * this suite is about the session core, not the policy. The gate's own
+ * verdicts are pinned in `tests/permission-gate.spec.ts`. */
 function makeCtx(): any {
+  const permissions = fakePermissionServices();
   return {
     provided: {},
     provide(name: string, value: unknown) { this.provided[name] = value; },
     tools: { registered: [] as any[], register(t: unknown) { this.registered.push(t); } },
     effects: [] as Array<{ fn: () => () => Promise<void>; label: string }>,
     effect(fn: () => () => Promise<void>, label: string) { this.effects.push({ fn, label }); },
+    get: permissionServiceLookup(permissions),
   };
 }
 

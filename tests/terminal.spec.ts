@@ -14,6 +14,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
+import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
 import { apply as applyPty } from "../src/pty/index.ts";
 import { PWSH_INTERACTIVE_ARGV } from "../src/launchers.ts";
 import { apply as applyTerminal } from "../src/terminal/index.ts";
@@ -62,11 +63,15 @@ function boot(config: { custom?: CustomLauncherConfig[]; maxSessions?: number } 
   };
   const registered: any[] = [];
   const provided = new Map<string, unknown>();
+  // #102: both entries drive the host permission gate, which fails closed on a
+  // missing service — mount the permissive fakes here (the gate's own verdicts
+  // live in tests/permission-gate.spec.ts).
+  const permissions = fakePermissionServices();
   const ctx = {
     provide: (name: string, value: unknown) => provided.set(name, value),
     effect: () => () => Promise.resolve(),
     tools: { register: (t: unknown) => registered.push(t) },
-    get: (name: string) => provided.get(name),
+    get: permissionServiceLookup(permissions, (name) => provided.get(name)),
   };
   applyPty(ctx as any, {}, { spawnPty });
   applyTerminal(ctx as any, config, deps);

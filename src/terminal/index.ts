@@ -44,9 +44,19 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { resolveLauncherDetailed, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
 import { spawnableExists } from '../detect.ts'
 import { DEFAULT_MAX_SESSIONS as CORE_DEFAULT_MAX_SESSIONS } from '../pty/session-core.ts'
+import {
+  SANDBOX_EXECUTION_SEMANTICS,
+  createPermissionGate,
+  sandboxPermissionParameters,
+  sessionOf,
+  type SandboxMode,
+} from '../permission-gate.ts'
 
 const name = 'dsh-shell-host-terminal'
-const inject = ['tools', 'pty']
+// #102: shell_open drives the host permission gate, so both host services are
+// real dependencies (the gate fails closed without them; declaring them makes
+// the row refuse to activate instead of serving a tool that can only fail).
+const inject = ['tools', 'pty', 'sandboxPolicy', 'approval']
 
 /** Default concurrent-session soft cap (#56 ruling 3) — the terminal-side
  * settings surface; the pty core enforces its own copy of the same default. */
@@ -92,7 +102,7 @@ interface TerminalCtx {
  * `open` accepts the opt-in per-session idleTimeoutMs, enforced by the
  * core's own watcher (output-defined idle, #56 ruling). */
 interface PtyCore {
-  open(owner: unknown, spec: { command: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; shell?: boolean }, signal?: AbortSignal): Promise<{ sessionId: string; initialOutput?: string; [key: string]: unknown }>
+  open(owner: unknown, spec: { command: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; shell?: boolean; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<{ sessionId: string; initialOutput?: string; [key: string]: unknown }>
   close(owner: unknown, id: string): Promise<{ closed: boolean }>
   active(owner: unknown): string[]
 }
@@ -141,6 +151,10 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
   if (core === undefined) {
     throw new Error('terminal: the pty session core is missing — mount the dsh-shell-host/pty entry alongside ./terminal')
   }
+  /** #102: shell_open is a narrower executable channel (preset table + probe
+   * points, never a free command line) but it is still a PROCESS SPAWN — so
+   * it takes the same host policy gate as pty_open. */
+  const gate = createPermissionGate(ctx)
 
   ctx.tools.register(defineTool({
     name: 'shell_open',
@@ -148,12 +162,14 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
       'Open a persistent terminal for a launcher preset (e.g. msys2-ucrt, pwsh, powershell, wsl, cmd, git-bash, python-repl, zsh, bash, fish — POSIX rows on POSIX platforms — or a configured custom preset). ' +
       'Returns a sessionId that is a PTY session: operate it with pty_send / pty_tail / pty_close — no second tool family. ' +
       'Unknown ids fail loudly listing the available presets; uninstalled environments fail loudly naming every probe point. ' +
-      'A per-agent concurrent-session cap applies; idleTimeoutMs opts ONE session into auto-close when it produces no new output for that long.',
+      'A per-agent concurrent-session cap applies; idleTimeoutMs opts ONE session into auto-close when it produces no new output for that long. ' +
+      SANDBOX_EXECUTION_SEMANTICS,
     parameters: {
       preset: { type: 'string', required: true, description: 'Launcher preset id (built-in view or configured custom preset).' },
       cwd: { type: 'string', description: 'Working directory override; defaults to the preset\'s cwd.' },
       env: { type: 'object', additionalProperties: true, description: 'Env var overrides merged over the preset env (VS Code profile semantics).' },
       idleTimeoutMs: { type: 'number', description: 'Opt-in per-session idle timeout (ms, positive integer): auto-close the session after this much time with no new output. Omit = never idle-closed (persistent-session contract).' },
+      ...sandboxPermissionParameters('command'),
     },
     output: {
       schema: {
@@ -170,11 +186,15 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
           cwd: { type: 'string', description: 'The effective working directory, when one applies.' },
           source: { type: 'string', required: true, description: '"builtin" or "custom" — where the preset view came from.' },
           overrode: { type: 'boolean', required: true, description: 'True when a custom preset REPLACED a built-in view of the same id (loud flag, never an error).' },
+          sandboxMode: {
+            type: 'string',
+            description: 'The sandbox mode this spawn ran under (the session policy, or the approved one-shot escalation target).',
+          },
         },
       },
       render: (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }],
     },
-    async execute(args: { preset: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number }, exec: { agent?: unknown; signal?: AbortSignal }) {
+    async execute(args: { preset: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; sandbox_permissions?: string; justification?: string }, exec: { agent?: unknown; signal?: AbortSignal; callId?: string }) {
       const owner = exec?.agent
       if (owner === undefined) {
         throw Object.assign(new Error('shell_open requires an owning agent session'), { code: 'NO_AGENT' })
@@ -206,9 +226,26 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
       }
       const cwd = launcher.transport === 'local' ? (args.cwd ?? launcher.cwd) : args.cwd
       const env = launchEnv(launcher, args.env, deps)
+      // #102: authorize BEFORE the spawn — the gate resolves the session
+      // policy per execution and (when the caller asked to retry wider) routes
+      // the request through the official approval service.
+      const authorization = await gate.authorizeSpawn({
+        toolName: 'shell_open',
+        agent: owner,
+        session: sessionOf(owner),
+        callId: exec.callId,
+        signal: exec.signal,
+        cwd,
+        sandboxPermissions: args.sandbox_permissions,
+        justification: args.justification,
+        subject: 'command',
+      })
       const opened = await core.open(owner, {
         command,
-        ...(cwd === undefined ? {} : { cwd }),
+        // Under workspace-write the gate hands back the concrete boundary cwd
+        // (an omitted cwd DEFAULTS to the workspace root); under
+        // danger-full-access the caller's/preset's value passes through.
+        ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
         ...(env === undefined ? {} : { env }),
         ...(args.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: args.idleTimeoutMs }),
         // #119: this layer KNOWS it resolved a launcher preset (a shell), so it
@@ -216,6 +253,9 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
         // on it (official terminal_signal semantics: killing a shell cannot
         // reclaim the children it owns). No heuristic in the core.
         shell: true,
+        // #102: the mode the spawn was AUTHORIZED under (the one-shot grant
+        // when an escalation was approved) is the session's write baseline.
+        authorizedMode: authorization.grantedMode,
       }, exec.signal)
       return {
         sessionId: opened.sessionId,
@@ -224,9 +264,10 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
         command,
         ...(opened.initialOutput === undefined ? {} : { initialOutput: opened.initialOutput }),
         ...(launched === undefined ? {} : { executable: launched.executable, probed: launched.probed }),
-        ...(cwd === undefined ? {} : { cwd }),
+        ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
         source: detail.source,
         overrode: detail.overrode,
+        sandboxMode: authorization.grantedMode,
       }
     },
     presentCall: (args: { preset: string }) => ({ card: 'terminal', title: `shell_open ${args.preset}` }),

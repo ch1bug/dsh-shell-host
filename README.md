@@ -37,6 +37,50 @@ pacman -S --needed diffutils patch jq unzip rsync
 
 判定方法：agent 会话里 `command -v diff` 落空即缺。新增工具需求时在此处追加清单。
 
+## 权限模型（#102）：每次执行 resolve 宿主策略，升级走官方审批
+
+本包的三条**执行面**（`pty_open` / `shell_open` / `ssh_start`）都起**进程**，`win_*` 走宿主
+shell seam 执行命令。**#102 之前**它们既不读 `ctx.sandboxPolicy` 也不走 `ctx.approval` ——
+`read-only` 会话或 `approval/policy = ask` 下照样能起进程、写字节（一条绕过官方审批界面的任意执行面）。
+现在这三条面接入宿主权限模型，实现集中在 `src/permission-gate.ts`（单一来源）：
+
+| 面 | 行为 |
+|---|---|
+| `pty_open` / `shell_open` / `ssh_start` | **每次执行前** `sandboxPolicy.resolve({ session })`：`read-only` **拒绝**起进程；`workspace-write` **只允许在 workspaceRoot 内**起动（**省略 cwd 时默认落在 workspaceRoot**，相对 cwd 相对它解析）；`danger-full-access` 不限制 |
+| `pty_send` / `ssh_send` | **每次写入都重解析**：写入基线 = 会话**被授权时**的模式（升级打开时就是那个**一次性授予**的模式）。当前模式比它**窄**就拒绝（如策略降到 `read-only`，或该会话是 read-only 下经升级打开的 ⇒ 授权不外溢）。**升宽**不算降级。读（`pty_tail`）与收尾（`pty_close` / `ssh_close`）**不设门** —— 它们不放大权限 |
+| `win_*` | 解析后的策略**随每次 shell 请求**交给执行器（执行器才是真正的强制面）；策略拒绝时结果带官方 `[sandbox: file access denied under <mode> mode]` 标记 + 同轮升级提示 |
+
+**升级（one-shot retry）**：拒绝后可用 `sandbox_permissions`（`workspace-write` /
+`danger-full-access`）+ `justification`（一句话理由，与前者**成对**）重试**同一次调用**。请求经
+`ctx.approval.request` 交给**官方审批界面**（本包**不自造弹窗**），**只有 `allowed-once` 放行**；
+`rejected` / `cancelled` / `unavailable` 一律拒绝并把 outcome 回显给模型（fail closed，不静默重试）。
+`approval/policy = never` 时官方服务直接判 `rejected`（不弹窗）—— 本包按同一条拒绝路径处置。
+
+**文案来源（如实标注，不夸大「逐字」）**：升级请求的 `reason` / `displayReason` 文本、`allowed-once`
+的授予语义与非 grant 的处置**直接来自** `@deepseek-ai/dsh-sandbox` 的 `approveEscalation`；拒绝标记 /
+同轮提示 / `sandbox_permissions` 的参数说明来自同包的 `sandboxDenialMarker` / `escalationHintMarker` /
+`sandboxPermissionsDescription`（与上游 `bash` / `pwsh` / `fs` 家族同一套词表）。**模式阶梯的前置比较
+是本包自己做的**（用官方 `WIDER_MODES` 表，把「参数错误」与「策略拒绝」分开，因此错误文案比上游多一句
+允许目标清单）—— 这一处是**有意的分叉**，写在这里而不是声称逐字。
+
+**缺服务 = fail closed**：`ctx.get('sandboxPolicy')` / `ctx.get('approval')` 任一为空时**拒绝执行**，
+错误点名缺的服务并给出挂载指引（**不静默放行**）；三个 entry 也把这两个服务写进 `inject`，所以缺服务的
+部署里这些行**不会激活**。⇒ 没挂 `dsh-sandbox-policy` + `dsh-user-approval` 的部署里
+`pty_*` / `shell_open` / `ssh_start` / `win_*` **直接不可用** —— 这是**有意**的取舍（宁响亮失败，
+不绕过）。官方 **base** bundle（`web` / `headless` 档）默认挂这两行（模式 `DSH_PERMISSION_MODE ??
+'workspace-write'`）；**`sdk-minimal` 不是**（它是 `danger-full-access` 且不挂 approval）⇒ 该档下本包
+的工具面按上述口径不可用，要改用 base 系 profile 或自行补 approval 行。
+
+**诚实的边界（不假装做到了没做的）**：`ctx.subprocess` 的 spawn spec **没有** `sandboxPolicy`
+字段，本包**拿不到进程级隔离**。这里能承诺的只有**策略判定（模式）+ 起动工作区边界 + 审批门** ——
+进程一旦起来，OS 层的读写仍由平台执行器/沙箱方言负责，本包不冒充它。
+
+**没有自定义命令白名单**（与上游一致）：`pty_open` 收**自由命令行**，`shell_open` 是**更窄的通道**
+（可执行只能来自 launcher 预设表 + 探测点）。真正的命令白名单要改公开面（`allowedCommands` 配置 +
+`resolveExecutable` 同一执行世界判定），属**另一张票**，本包不预先造一套与上游分叉的语义。
+
+`pty_open` / `shell_open` / `ssh_start` 的结果带 `sandboxMode`（本次跑在哪个模式；带升级时是**授予**模式）。
+
 ## The `./pty` entry (issue #28, ADR-0007; seam-free since #61, ADR-0010)
 
 `src/pty/` is the absorbed dsh-pty-session module (pure move from the

@@ -19,17 +19,23 @@
 import { describe, expect, it, onTestFinished } from "vitest";
 import { apply } from "../src/pty/index.ts";
 import { waitUntil } from "./helpers/wait-until.ts";
+import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
 
 const AGENT = { name: "pty-signal-machine" };
 
-/** Boot the pty entry on the REAL core (default spawner = @lydell/node-pty). */
+/** Boot the pty entry on the REAL core (default spawner = @lydell/node-pty).
+ * #102: the gate resolves the host policy per execution and fails closed on a
+ * missing service, so the permissive fakes ride along (this lane is about the
+ * ConPTY signal semantics, not the policy). */
 function boot() {
   const registered: any[] = [];
   const provided = new Map<string, unknown>();
+  const permissions = fakePermissionServices();
   const ctx = {
     provide: (name: string, value: unknown) => provided.set(name, value),
     effect: () => () => Promise.resolve(),
     tools: { register: (t: unknown) => registered.push(t) },
+    get: permissionServiceLookup(permissions, (name) => provided.get(name)),
   };
   apply(ctx as any, {});
   const tool = (name: string) => {

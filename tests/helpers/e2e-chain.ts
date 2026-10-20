@@ -79,9 +79,12 @@ export async function startMockLlm() {
         agentTurns += 1;
         if (agentTurns === 1) {
           // pty_open's REQUIRED argument is `command` (shell_open's is `preset`).
-          // pty_open is chosen deliberately: it sits behind no approval gate, so
-          // this tier can prove the tool surface is wired without entering the
-          // approval/sandbox path (which the real-LLM tier owns).
+          // pty_open is chosen deliberately: since #102 it DOES pass the host
+          // policy gate, but under the default `workspace-write` composition an
+          // in-bounds autoClose spawn is allowed WITHOUT an approval ask — so
+          // this tier still proves the tool surface is wired without needing a
+          // human approver (the escalation UI is structurally headless-blind;
+          // `tests/permission-gate.spec.ts` owns that contract).
           content = { type: "tool_use", id: "toolu_e2e_1", name: "pty_open", input: { command: "cmd.exe /c echo verify-ok", autoClose: true } };
           stopReason = "tool_use";
         } else {

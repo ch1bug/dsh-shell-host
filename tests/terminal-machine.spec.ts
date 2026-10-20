@@ -26,6 +26,7 @@ import {
   matchesNeedle,
   type ProbeNeedle,
 } from "./helpers/probe-needle.ts";
+import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
 
 const AGENT = { name: "terminal-machine" };
 
@@ -37,11 +38,15 @@ const AGENT = { name: "terminal-machine" };
 function boot(config: { custom?: unknown[] } = {}) {
   const registered: any[] = [];
   const provided = new Map<string, unknown>();
+  // #102: the gate fails closed without the host permission services; this
+  // machine lane tests the launcher/preset layer, so it mounts the permissive
+  // fakes (the gate's own verdicts live in tests/permission-gate.spec.ts).
+  const permissions = fakePermissionServices();
   const ctx = {
     provide: (name: string, value: unknown) => provided.set(name, value),
     effect: () => () => Promise.resolve(),
     tools: { register: (t: unknown) => registered.push(t) },
-    get: (name: string) => provided.get(name),
+    get: permissionServiceLookup(permissions, (name) => provided.get(name)),
   };
   applyPty(ctx as any, {});
   applyTerminal(ctx as any, config);

@@ -11,6 +11,7 @@
 import type { IPty } from "@lydell/node-pty";
 import { apply } from "../../src/pty/index.ts";
 import type { SessionCore, CoreSpawnSpec } from "../../src/pty/session-core.ts";
+import { fakePermissionServices, permissionServiceLookup, type FakeApproval, type FakeSandboxPolicy } from "./fake-permissions.ts";
 
 export const terr = (code: string, message: string) => Object.assign(new Error(message), { code });
 
@@ -122,17 +123,36 @@ export function bootPlugin(opts?: {
   spawnPty?: (spec: CoreSpawnSpec) => FakePtyHandle | IPty;
   config?: unknown;
   deps?: Record<string, unknown>;
+  /** #102: override the host permission services. Defaults are permissive
+   * (`danger-full-access` + `allowed-once`) so unrelated suites keep testing
+   * what they were written to test; the #102 spec overrides the mode. */
+  permissions?: { sandboxPolicy?: FakeSandboxPolicy; approval?: FakeApproval };
 }) {
   const provided = new Map<string, unknown>();
   const registered: any[] = [];
   const effects: Array<{ label: string; dispose: () => Promise<void> }> = [];
   const systemPrompt = fakeSystemPrompt();
   const specs: CoreSpawnSpec[] = [];
+  const defaults = fakePermissionServices();
+  const permissions = {
+    sandboxPolicy: opts?.permissions?.sandboxPolicy ?? defaults.sandboxPolicy,
+    approval: opts?.permissions?.approval ?? defaults.approval,
+  };
   const ctx: any = {
     provide: (name: string, value: unknown) => provided.set(name, value),
     effect: (fn: () => () => Promise<void>, label: string) => effects.push({ label, dispose: fn() }),
     tools: { register: (t: unknown) => registered.push(t) },
-    get: (name: string) => (name === "systemPrompt" ? systemPrompt.service : provided.get(name)),
+    get: (name: string) => {
+      // A service the lane itself `provide()`d wins over the shared fakes
+      // (before #102 the permission fakes were consulted first, which silently
+      // SHADOWED a lane's own `provide('sandboxPolicy', …)`).
+      const own = provided.get(name);
+      if (own !== undefined) return own;
+      if (name === "systemPrompt") return systemPrompt.service;
+      // #102: the host permission model. The gate FAILS CLOSED on a missing
+      // service, so the shared harness mounts both by default.
+      return permissionServiceLookup(permissions)(name);
+    },
     // The child-fiber seam (#149): run the callback now, on the same context.
     inject: (_deps: string[], callback: (scope: unknown) => void) => {
       callback(ctx);
@@ -157,5 +177,5 @@ export function bootPlugin(opts?: {
     return t;
   };
   const core = provided.get("pty") as SessionCore;
-  return { registered, tool, core, provided, effects, systemPrompt, specs, ctx };
+  return { registered, tool, core, provided, effects, systemPrompt, specs, ctx, permissions };
 }
