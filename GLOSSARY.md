@@ -299,6 +299,27 @@ profile 并存；但**不宜同时开**官方持久终端与本仓 `pty_*` / `sh
 - **可选、默认关**：`dsh-experimental-terminal-bundle`。默认 preset（`standard`）
   **没有任何持久终端行** ⇒ 插件页开启之前，`terminal_*` 六工具**不存在**。
 
+## #149 grill 共识（2026-10-19，6 个决定；全文见 `#149` 票面正文）
+
+- **Q1=C 声明形态 = 显式命令**：`pty_open({ shellCommand })` 说一句裸命令（可执行 + 交互 argv）。
+  **零词汇**：不用 launcher 预设 id、不造 shell 名表、不新增预设 id、不新增 `shell: true` 布尔。
+  环境标签路线被否 —— 它会让 `pty_open(预设 id)` 与 `shell_open(preset)` 撞成第二套 launcher 面。
+- **Q2=A 发现面 = 侦测一次 + 动态上下文**：本机可用的 launcher 环境以 `systemPrompt.context` 一行交给
+  agent（是**环境事实**、不是指令，也**不主动起轮**）。侦测必须**懒**（首次装配算一次并缓存）——
+  `resolveLaunchers` 在 win32 会 `execFileSync('wsl.exe')`，插件 `apply` 不该背这个延迟。
+  这是本仓**第一次**注册提示词面（此前一个段都没有）。
+- **Q3=A 全局来源 = 本包 settings**：`./pty` Config 新增 `defaultShellCommand?: string`。
+  作用域今天是**本插件全局**，不是工作区；跨工作区隔离留给将来的工作区面（解析处留缝，工具面不动）。
+- **Q4=A 临时切换 = 零工具面**：进入另一解释器 = 在会话里发它自己的启动命令，`exit` 回默认
+  （状态在 PTY 进程树里，无状态机、无新参数）；「一条命令」形式由 caller 自写方言一-shot，工具不代拼引号。
+  **硬事实**：env/PATH 只在 spawn 时注入 ⇒ 临时切换只能换**解释器**，换不了预设的 `MSYSTEM`/PATH 前缀。
+- **Q5=A 互斥且沿用既有 spawn 通道**：`shellCommand` 与 `command` 二选一（同填 = 报错），且不自动发首命令；
+  win32 直接 `spawn`（无 shell 解释），POSIX 仍 `/bin/sh -c`（**多一层 `sh`**，`pid` 报 `sh`）。
+  **不新增** POSIX 分词/引号面。
+- **Q6=A 空参触发全局默认**：`pty_open()` 两者都不给 → `defaultShellCommand`；Config 也没配 → 响亮报错
+  「必须给 `command` 或 `shellCommand`，或配置 `defaultShellCommand`」。没有这条，全局默认是**死配置**
+  （Q5 的互斥必填会让它永远轮不到）。
+
 ## 术语表(惰性)
 
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。
@@ -307,6 +328,10 @@ profile 并存；但**不宜同时开**官方持久终端与本仓 `pty_*` / `sh
 - **远程工作区(Remote workspace)**:远端目录 = 工作区根;一个工作区持有**多条**持久会话(shell / 构建 / 测试)与一套远端文件面,命令与文件操作都**在远端就地执行**(长驻 `ssh <host> -- sh` 通道 + 帧化请求),不装远端 server、不用 SFTP(ADR-0016)。前身 = `dsh-shell-remote` 仓的 one-shot 远程执行世界(ADR-0004)与被吸收的 `./remote` entry(ADR-0007 吸收,ADR-0013 删除);现在**不要求**该独立插件安装。
 - **持久会话(Persistent session)**:交互式/长生命周期 shell 语义,归 `dsh-pty-session` 仓(本地或 ssh 实例);shell-host 与 shell-remote 都不承载(ADR-0004 决策 5)。ADR-0007 后迁入 shell-host 包的 `./pty` entry,所有权结论不变。
 - **Entry(包入口)**:dsh-shell-host 单包多入口的导出单元(ADR-0007)。现行 entry 面(ADR-0016):`./pty`(持久 PTY 会话核心)、`./ssh`(ssh 通道能力 + ssh 四工具)、`./terminal`(`shell_open` launcher 预设)、`./remote`(远程工作区 = 多会话编排 + 连接池)、`./remote-fs`(加性 `ctx.remoteFs` 后端 + `remote_*` 工具)、`./wsl`(WSL 桥工具)。全部是插件层 entry(defineTool + ctx.tools),各 entry 独立 settings namespace,共享包不合并配置面;执行器 entry(`./host`)及其执行语义已随 ADR-0013 删除。
+- **会话默认 shell(Session default shell)**:`pty_open` 打开会话时**声明一次**的解释器,形态是**裸命令串**(`shellCommand`:可执行 + 交互 argv,如 `<msys2>/usr/bin/bash.exe --login -i`)。声明后 `pty_send` 的裸命令由它解释(`cd`/管道/`&&` 跨调用生效)。来源链 = 显式 `shellCommand` > `./pty` settings 的 `defaultShellCommand` > 响亮报错(#149 grill)。**与 launcher 预设不是一回事**:预设面归 `shell_open`,本声明不经预设解析、零词汇。
+- **Shell 目标(Shell target)**:会话的顶进程是 shell —— 杀它收不回它拥有的子进程,故 `pty_signal` 对 SIGKILL 一律拒绝(`SIGNAL_FORBIDDEN`)、指向 `pty_close`(#119 起的信号语义)。`shell_open` 的预设会话与 #149 的 `shellCommand` 会话同属此类;**不是**从命令文本猜出来的,由声明层显式标记。
+- **全局默认 shell(Global default shell)**:`./pty` settings 的 `defaultShellCommand` —— 只在 `pty_open` 两个参数**都不给**时才生效的默认解释器命令(`#149` Q6)。作用域今天是**本插件全局**,不是工作区;工作区作用域(**怎么建 / 生命周期 / 跨工作区隔离**)尚未存在,另票另议。
+- **环境侦测上下文(Environment detection context)**:懒算一次并缓存、以 `systemPrompt.context` 交给 agent 的「本机可用 shell 环境(预设 id → 解析出的可执行)」**事实**。是事实不是指令,也**不主动起轮**(`#149` Q2;主动推送推荐属另一张票)。
 
 ## #52 grill 共识(2026-10-09,进行中)
 
