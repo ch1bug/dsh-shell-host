@@ -317,6 +317,16 @@ profile 并存；但**不宜同时开**官方持久终端与本仓 `pty_*` / `sh
 - **顺带更正（同一次源码核对）**：`dsh-tool-jobs` 的完成投递 = `ctx.get('agents')` 取 Agent +
   `Agent.followup`（空闲 owner **开一轮**）/ `Agent.inject`（忙碌 owner 注入下一步）——
   此前「宿主没有插件起轮入口」的说法**是错的**，见 `#151`。
+- **落地（2026-10-20，批 G 第 2 票）**：新模块 `src/pty/background-send.ts` 一个门面收全部 ——
+  两处响亮失败（缺 `ctx.jobs` 点明两个包 / `enableRunInBackground: false`）、job spec（照官方逐字段）、
+  输出拉取源（settle 时填的 delta，读一次消费一次）、以及 `cancel` 走 core `send` 的 abort signal；
+  `pty_send` / `ssh_send` 只共用这一个分支，**前台路径零改动**（结果面仍旧 `{ delta, status }`，
+  `kind` 字段只在后台形态出现）。配置门与参数面走 `./pty` 的 `enableRunInBackground`（默认 `true`；
+  关掉时**连参数都不在工具面列出**）。
+  **依赖面**：两个包都进了 `peerDependencies` + `devDependencies`（锚 `0.2.1-rc.2`），
+  作为「只跟 `dsh-tools` 直接 peer 集」的带理由例外，记账在
+  `docs/dev-environment.md` §4.4 与 ADR-0005 **决策 7**；代价 = `pnpm peers check` 多一条
+  `dsh-output-retention` missing（peer 的 peer，已知并接受）。
 
 ## #149 grill 共识（2026-10-19，6 个决定；全文见 `#149` 票面正文）
 
@@ -355,6 +365,7 @@ profile 并存；但**不宜同时开**官方持久终端与本仓 `pty_*` / `sh
 - **Shell 目标(Shell target)**:会话的顶进程是 shell —— 杀它收不回它拥有的子进程,故 `pty_signal` 对 SIGKILL 一律拒绝(`SIGNAL_FORBIDDEN`)、指向 `pty_close`(#119 起的信号语义)。`shell_open` 的预设会话与 #149 的 `shellCommand` 会话同属此类;**不是**从命令文本猜出来的,由声明层显式标记。
 - **全局默认 shell(Global default shell)**:`./pty` settings 的 `defaultShellCommand` —— 只在 `pty_open` 两个参数**都不给**时才生效的默认解释器命令(`#149` Q6)。作用域今天是**本插件全局**,不是工作区;工作区作用域(**怎么建 / 生命周期 / 跨工作区隔离**)尚未存在,另票另议。
 - **环境侦测上下文(Environment detection context)**:懒算一次并缓存、以 `systemPrompt.context` 交给 agent 的「本机可用 shell 环境(预设 id → 解析出的可执行)」**事实**。是事实不是指令,也**不主动起轮**(`#149` Q2;主动推送推荐属另一张票)。
+- **后台发送(Background send)**:一次 `pty_send` / `ssh_send` **不 await settle**,而是登记成宿主作业(`ctx.jobs`,`kind: 'pty-send'`),凭 `jobId` 由 `job_output` 收输出、`job_kill` 取消。它不是第二种发送通道 —— 写入与 settle 仍是同一条 core `send`;`run_in_background: true` 只是把「等 settle」换成「交作业」(`#120`)。
 
 ## #52 grill 共识(2026-10-09,进行中)
 

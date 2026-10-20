@@ -16,7 +16,11 @@
  *       are mutually exclusive, the argument-less call shape falls back to the
  *       `defaultShellCommand` setting, and a shell session is a SHELL TARGET
  *       for `pty_signal` (SIGKILL refused, `pty_close` is the close path);
- *   pty_send({ id, data, submit? })  → write bytes, return the delta read;
+ *   pty_send({ id, data, submit?, run_in_background? })  → write bytes, return
+ *       the delta read; #120's `run_in_background: true` instead registers a
+ *       HOST job (`ctx.jobs`, the `@deepseek-ai/dsh-jobs` +
+ *       `@deepseek-ai/dsh-tool-jobs` pair) and returns its id immediately —
+ *       the foreground settle path is byte-for-byte unchanged;
  *   pty_tail({ id, lines? })         → incremental read from a per-session
  *       cursor — repeated tails never resend old lines;
  *   pty_close({ id })                → clean termination + reclaim;
@@ -42,7 +46,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { posixQuote } from '../posix-quote.ts'
-import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike, type SendResult } from './session-core.ts'
 import {
   ENVIRONMENT_CONTEXT_NAME,
   ENVIRONMENT_CONTEXT_ORDER,
@@ -50,6 +54,13 @@ import {
   detectEnvironmentRows,
   type EnvironmentRow,
 } from './environment-context.ts'
+import {
+  BACKGROUND_DISABLED_MESSAGE,
+  startBackgroundSend,
+  type BackgroundJobRegistry,
+} from './background-send.ts'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { JobToolCall } from '@deepseek-ai/dsh-jobs'
 
 const name = 'dsh-pty-session'
 // #149 contributes a prompt context, but the TOOLS must never wait on the
@@ -65,6 +76,11 @@ export interface PtyConfig extends SessionCoreConfig {
    * `pty_open()` call shape — it never overrides an explicit `command` or
    * `shellCommand`. No default value = no global default. */
   defaultShellCommand?: string
+  /** Background sends (#120): expose `run_in_background` on `pty_send` /
+   * `ssh_send` and accept it. Default true — the official `terminal_send`
+   * posture; false makes every background request fail loudly instead of
+   * silently degrading to a foreground settle. */
+  enableRunInBackground?: boolean
 }
 
 /**
@@ -79,6 +95,9 @@ const Config = z.object({
   /** Global default session shell (#149): used by the argument-less
    * `pty_open()` only; unset = no global default. */
   defaultShellCommand: z.string(),
+  /** Background sends (#120): expose and accept `run_in_background`
+   * (default true, the official posture). */
+  enableRunInBackground: z.boolean().default(true),
 })
 
 /** Default-fill a raw config (#64 fix: forward the FULL core config — the
@@ -95,6 +114,10 @@ function resolveConfig(raw: unknown): PtyConfig {
   return {
     ...resolveCoreConfig(c),
     ...(defaultShellCommand === undefined ? {} : { defaultShellCommand }),
+    // #120: absent = the default (true). Only an explicit `false` closes the
+    // background path — a non-boolean reaches the core untouched, where the
+    // schema layer rejects it long before a send runs.
+    enableRunInBackground: c.enableRunInBackground !== false,
   }
 }
 
@@ -153,6 +176,51 @@ export function resolveShellDeclaration(
 /** Shared render for structured tool output: one JSON text block. */
 const jsonRender = (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }]
 
+// ---------------------------------------------------------------------------
+// #120 — the model-facing faces of a background send
+//
+// ONE definition, shared by `pty_send` and `ssh_send`: the parameter, the
+// description tail, the two extra result properties, the render and the call
+// card. The executor is already a single branch (`background-send.ts`); copying
+// these four would leave the drift surface wide open — the exact failure the
+// one-facade split exists to prevent.
+// ---------------------------------------------------------------------------
+
+/** The `run_in_background` parameter, advertised only while the path is open
+ * (official posture: a disabled deployment does not offer a parameter it will
+ * refuse). */
+const RUN_IN_BACKGROUND_PARAM = {
+  type: 'boolean',
+  description: 'Return a job id immediately; collect with job_output or stop with job_kill.',
+} as const
+
+/** Description tail of both send tools while the background path is open. */
+const RUN_IN_BACKGROUND_SUFFIX =
+  ' With run_in_background: true the call returns a job id immediately instead of awaiting the settle — ' +
+  'collect it with job_output, stop it with job_kill (that path needs the host job stack mounted).'
+
+/** The two result properties a BACKGROUND call adds. The foreground result
+ * keeps its shape (`{ delta, status }`), so both stay absent there. */
+const BACKGROUND_RESULT_PROPERTIES = {
+  kind: { type: 'string', description: 'Present exactly when the send ran in the background: "background".' },
+  jobId: { type: 'string', description: 'Registry-issued job id (background calls only) — pass it to job_output / job_kill.' },
+} as const
+
+/** A background call renders ONLY its job id; every other outcome keeps the
+ * structured JSON block. */
+const renderSend = (_args: unknown, value: { kind?: string; jobId?: string }) =>
+  value.kind === 'background'
+    ? [{ type: 'text' as const, text: `started background job ${value.jobId ?? '(unknown id)'}` }]
+    : jsonRender(_args, value)
+
+/** Call card: the background form swaps to the generic card and carries the
+ * text as raw input (the official `terminal_send` posture); the foreground
+ * keeps the terminal card. */
+const presentSendCall = (args: { id: string; data: string; run_in_background?: boolean }) =>
+  args.run_in_background === true
+    ? { card: 'generic' as const, title: `Send to session ${args.id} in background`, kind: 'execute' as const, rawInput: args.data }
+    : { card: 'terminal' as const, title: args.data }
+
 /** The tool-execution context slice the plugin consumes (duck-typed seam). */
 interface PtyCtx {
   provide: (name: string, value: unknown) => void
@@ -174,6 +242,31 @@ interface SystemPromptCtx {
 
 /** Owner (Agent) identity passed to every core call. */
 type Owner = unknown
+
+/** The send-tool execution slice the background branch reads (#120): the
+ * owning agent, its cancellation, and the two call ids the host's job record
+ * carries. The ids are OPAQUE STRINGS at this boundary for the same reason
+ * `Owner` is `unknown` — the seam is duck-typed (the unit harnesses pass plain
+ * object literals), so the host's branded `ToolCallId` is asserted once, at the
+ * job record, the only place that has to speak the host's type. `agent` is
+ * optional because a harness may pass `{ agent }` alone. */
+type SendExec = { agent?: Owner; signal?: AbortSignal; callId?: string; rootCallId?: string }
+
+/** How a send tool reaches the background path (#120): the gate, then the job
+ * start. One function, so `pty_send` and `ssh_send` cannot drift apart. */
+type BackgroundStarter = (
+  owner: Owner,
+  exec: SendExec,
+  label: string,
+  send: (signal: AbortSignal) => Promise<SendResult>,
+) => { kind: 'background'; jobId: string }
+
+/** The background path as the ssh family sees it: whether it is open, and the
+ * starter. A named clump because both fields travel together everywhere. */
+interface BackgroundSendBridge {
+  readonly enabled: boolean
+  readonly start: BackgroundStarter
+}
 
 /** Every pty/ssh tool requires an owning agent session (owner-scoped core). */
 function requireAgent(exec: { agent?: Owner }): Owner {
@@ -246,6 +339,39 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
   ctx.provide('pty', facade)
 
   ctx.effect(() => () => facade.dispose(), 'dsh-pty-session session cleanup')
+
+  /** #120's gate, resolved ONCE: the parameter face, both tool descriptions and
+   * the executor all read this value, so they cannot disagree about whether the
+   * path is open. Absent = open (default true, the official posture); only an
+   * explicit `false` closes it. */
+  const enableRunInBackground = config.enableRunInBackground !== false
+
+  /**
+   * Background sends (#120): the ONE branch `pty_send` and `ssh_send` share —
+   * they differ only in which core send runs, so the gate, the job record and
+   * the output source all live in `background-send.ts`.
+   *
+   * `ctx.get('jobs')` is read PER CALL, never at apply time: a host that
+   * mounts the job stack after this row still serves the tool, and a host
+   * without one gets the loud two-package error on the first background
+   * request instead of a tool that quietly never offers the path.
+   */
+  const background: BackgroundStarter = (owner, exec, label, send) => {
+    if (!enableRunInBackground) throw new Error(BACKGROUND_DISABLED_MESSAGE)
+    const jobs = ctx.get('jobs') as BackgroundJobRegistry | undefined
+    return startBackgroundSend({
+      jobs,
+      // The job contract fences access by the owning agent's SESSION id; this
+      // package treats the Agent as an opaque owner, so the id is read here
+      // and branded at the one boundary that has to name the host type.
+      owner: (owner as { id: SessionId }).id,
+      ...(exec.callId === undefined || exec.rootCallId === undefined
+        ? {}
+        : { toolCall: { callId: exec.callId as JobToolCall['callId'], rootCallId: exec.rootCallId as JobToolCall['rootCallId'] } }),
+      label,
+      send,
+    })
+  }
 
   ctx.tools.register(defineTool({
     name: 'pty_open',
@@ -330,28 +456,36 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
 
   ctx.tools.register(defineTool({
     name: 'pty_send',
-    description: 'Write bytes into a live PTY session and return the output read while the write settled.',
+    description:
+      'Write bytes into a live PTY session and return the output read while the write settled.' +
+      (enableRunInBackground ? RUN_IN_BACKGROUND_SUFFIX : ''),
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from pty_open.' },
       data: { type: 'string', required: true, description: 'Text to write into the session.' },
       submit: { type: 'boolean', description: 'Whether to write the backend\'s Enter sequence after data (default true).' },
+      ...(enableRunInBackground ? { run_in_background: RUN_IN_BACKGROUND_PARAM } : {}),
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: true,
         properties: {
-          delta: { type: 'string', description: 'Output produced since the previous read.' },
+          ...BACKGROUND_RESULT_PROPERTIES,
+          delta: { type: 'string', description: 'Output produced since the previous read (foreground calls).' },
           status: { type: 'object', additionalProperties: true, description: 'Top-level session status at settlement.' },
         },
       },
-      render: jsonRender as any,
+      render: renderSend,
     },
-    async execute(args: { id: string; data: string; submit?: boolean }, exec: { agent?: Owner; signal?: AbortSignal }) {
+    async execute(args: { id: string; data: string; submit?: boolean; run_in_background?: boolean }, exec: SendExec) {
       const owner = requireAgent(exec)
+      if (args.run_in_background === true) {
+        return background(owner, exec, `${args.id}: ${args.data || '(input)'}`,
+          (signal) => facade.send(owner, args.id, { data: args.data, submit: args.submit, signal }))
+      }
       return facade.send(owner, args.id, { data: args.data, submit: args.submit, signal: exec.signal })
     },
-    presentCall: (args: { data: string }) => ({ card: 'terminal', title: args.data }),
+    presentCall: presentSendCall,
   }))
 
   ctx.tools.register(defineTool({
@@ -486,7 +620,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
     presentCall: (args: { id: string; signal: string }) => ({ card: 'terminal', title: `signal ${args.signal} ${args.id}` }),
   }))
 
-  registerSshTools(ctx, facade, config)
+  registerSshTools(ctx, facade, { enabled: enableRunInBackground, start: background })
 }
 
 /**
@@ -646,7 +780,7 @@ export function composeSshCommand(args: SshLaunchArgs): string {
   return parts.join(' ')
 }
 
-function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { command: string }, signal?: AbortSignal): Promise<any>; send(owner: unknown, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>; tail(owner: unknown, id: string, lines?: number): any; close(owner: unknown, id: string): Promise<{ closed: boolean }> }, _config: PtyConfig) {
+function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { command: string }, signal?: AbortSignal): Promise<any>; send(owner: unknown, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>; tail(owner: unknown, id: string, lines?: number): any; close(owner: unknown, id: string): Promise<{ closed: boolean }> }, background: BackgroundSendBridge) {
   ctx.tools.register(defineTool({
     name: 'ssh_start',
     description:
@@ -691,28 +825,36 @@ function registerSshTools(ctx: PtyCtx, core: { open(owner: unknown, spec: { comm
 
   ctx.tools.register(defineTool({
     name: 'ssh_send',
-    description: 'Write bytes into the live ssh session and return the output read while the write settled. Core passthrough.',
+    description:
+      'Write bytes into the live ssh session and return the output read while the write settled. Core passthrough.' +
+      (background.enabled ? RUN_IN_BACKGROUND_SUFFIX : ''),
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
       data: { type: 'string', required: true, description: 'Text to write into the session.' },
       submit: { type: 'boolean', description: 'Whether to write the backend\'s Enter sequence after data (default true).' },
+      ...(background.enabled ? { run_in_background: RUN_IN_BACKGROUND_PARAM } : {}),
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: true,
         properties: {
-          delta: { type: 'string', description: 'Output produced since the previous read.' },
+          ...BACKGROUND_RESULT_PROPERTIES,
+          delta: { type: 'string', description: 'Output produced since the previous read (foreground calls).' },
           status: { type: 'object', additionalProperties: true, description: 'Session status at settlement — kind "exited" means the session dropped (no auto-reconnect).' },
         },
       },
-      render: jsonRender as any,
+      render: renderSend,
     },
-    async execute(args: { id: string; data: string; submit?: boolean }, exec: { agent?: Owner; signal?: AbortSignal }) {
+    async execute(args: { id: string; data: string; submit?: boolean; run_in_background?: boolean }, exec: SendExec) {
       const owner = requireAgent(exec)
+      if (args.run_in_background === true) {
+        return background.start(owner, exec, `${args.id}: ${args.data || '(input)'}`,
+          (signal) => core.send(owner, args.id, { data: args.data, submit: args.submit, signal }))
+      }
       return core.send(owner, args.id, { data: args.data, submit: args.submit, signal: exec.signal })
     },
-    presentCall: (args: { data: string }) => ({ card: 'terminal', title: args.data }),
+    presentCall: presentSendCall,
   }))
 
   ctx.tools.register(defineTool({

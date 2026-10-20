@@ -44,6 +44,37 @@ independent per-repo semver drifts and hides that mapping.
    release into a user-visible outage (the bundle is skipped whole at profile
    load), which the range removes.
 
+7. **(2026-10-20) A justified exception to the "direct `dsh-tools` peers only"
+   set (`#107`): `@deepseek-ai/dsh-jobs` and `@deepseek-ai/dsh-tool-jobs`,
+   both pinned `0.2.1-rc.2`.**
+
+   Neither package is a direct peer of `dsh-tools`, so decision 6's certified
+   set — the `dsh-tools` dependency plus the direct peer set — does not admit
+   them by itself. The exception is recorded here rather than silently
+   appended because the set is what a release claims to be verified against.
+
+   - **What it buys** (`#120`): `run_in_background` on `pty_send` /
+     `ssh_send`. The work is WIRING, not a new surface: the desktop host
+     already ships this stack (`dsh-jobs` / `dsh-jobs-local` /
+     `dsh-tool-jobs` are in `app.asar`), and the alternative designs were
+     rejected in the ticket's grill (not integrating contradicts an existing
+     host capability; writing our own controller reimplements
+     `dsh-tool-jobs`).
+   - **They are a PAIR**: `dsh-jobs.start` refuses work while no attached job
+     controller serves the owner, and the controller lives in `dsh-tool-jobs`.
+     Declaring the registry alone would be a path that can only fail loudly —
+     so the missing-service error names BOTH packages and never downgrades to
+     a foreground send.
+   - **Cost, stated**: one more known-missing peer shows up in
+     `pnpm peers check` (`dsh-output-retention`, a peer of `dsh-tool-jobs`).
+     Like the pre-existing `dsh-fs` / `dsh-session-projection` entries it is a
+     peer-of-a-peer and is accepted, not chased (`docs/dev-environment.md`
+     §4.4).
+
+   Only this pair is admitted. A third package outside the `dsh-tools` direct
+   peer set needs its own dated decision here, with the same shape: what it
+   buys, why wiring beats building, and what it costs.
+
 ## Consequences
 
 - The compatibility matrix (DSH version × module version) is readable

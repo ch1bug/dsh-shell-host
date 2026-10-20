@@ -558,17 +558,37 @@ tarball 里」（+ 逐个 import 冒烟）—— 而 `lib/pty-*.js` 这类宽松
 ### 4.4 本插件的依赖锚（#82）
 
 `@deepseek-ai/dsh-tools` 必须锚 **当前 RC 线**（`0.2.1-rc.2`；门禁已由 `engines.dsh`
-区间接管，这里的精确钉表示**认证版本**，见 §2.1），且其 **10 个
+区间接管，这里的精确钉表示**认证版本**，见 §2.1），且 **`dsh-tools` 自己的 10 个
 peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-ptc-runtime` /
 `dsh-sandbox` / `dsh-sandbox-policy` / `dsh-scope` / `dsh-session` /
 `dsh-system-prompt` / `dsh-user-approval` / **`dsh-working-directory`**；
 `dsh-invariants` 自 `0.2.1-rc.1` 起被上游整包移除，声明已删）。未声明时 pnpm
 严格布局下运行时缺失：`Cannot find package '@deepseek-ai/dsh-scope'`。
+⚠️ 这个"10"是 **`dsh-tools` 的 peer 集**，不是本包 `peerDependencies` 的总条数 ——
+本包另外还声明 `cordis` / `schemastery`，以及下面 #120 的那**两个例外包**（合计 14 条）。
 
 口径 = **只跟 `dsh-tools` 的直接 peer 集**（#107 拍板）：不补传递闭包 ——
 `dsh-working-directory` 自身还 peer 依赖 `dsh-fs` / `dsh-session-projection`，
 因此 `pnpm peers check` 会报这两条 missing，属**已知并接受**；`node --run test`
 与 `test:release` 不受影响。
+
+**例外（#120，2026-10-20，带理由）：`dsh-jobs` + `dsh-tool-jobs` 两个包显式声明为 peer。**
+
+- **加的是哪两个**：`@deepseek-ai/dsh-jobs@0.2.1-rc.2`（抽象 `JobRegistry` seam）与
+  `@deepseek-ai/dsh-tool-jobs@0.2.1-rc.2`（那个 seam 的 controller + `job_*` 工具 + 完成投递）。
+- **为什么破例**：两者**都不是** `dsh-tools` 的直接 peer，照 #107 的口径本不该声明。
+  但 `pty_send` / `ssh_send` 的 `run_in_background` 要接的是**宿主已经自带**的后台任务栈
+  （桌面端 `app.asar` 的文件清单里就有这三个包，`dsh-jobs-local` 是进程内实现）——
+  本包做的是**接线**，不是造新面。缺这两个包时 `ctx.get('jobs')` 取不到，工具**响亮报错并点名两个包**
+  （姿态见 README「后台发送」；源码入口 `src/pty/background-send.ts`）。
+- **必须成对**：`dsh-jobs` 的 `start` 在**没有 attached controller 服务该 owner 时直接拒绝**，
+  而 controller 在 `dsh-tool-jobs` 里（`ctx.jobs.attachController`）。只声明前者 =
+  一条永远报错的死路，所以两个一起声明、一起记账。
+- **`pnpm peers check` 的新增读数**：多一条 `missing peer @deepseek-ai/dsh-output-retention`
+  （`dsh-tool-jobs` 要它）。与既有的 `dsh-fs` / `dsh-session-projection` 同一性质 ——
+  peer 的 peer，属**已知并接受**，不补闭包。当前实测三条 missing：
+  `dsh-session-projection`（agent / sandbox-policy / working-directory 要）、
+  `dsh-output-retention`（tool-jobs 要）、`dsh-fs`（working-directory 要）。
 
 ### 4.5 msys 的 `pkill` 杀不掉 Windows node 进程
 

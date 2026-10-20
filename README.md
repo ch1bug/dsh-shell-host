@@ -148,6 +148,29 @@ agent 自己持有的会话**（数据源就是核心的 owner 注册表，与 `
     注意带 `idleTimeoutMs` 的会话若因信号停止产出，**空闲 watcher 之后仍可能把它回收** ——
     那是空闲策略，不是 `pty_signal` 关的。
 
+### 后台发送（#120）：`run_in_background` 接宿主 jobs 栈
+
+`pty_send` / `ssh_send` 多一个 `run_in_background?: boolean`（只认 `true`）。**前台路径零变化** ——
+不给这个参数就是原来的「写入 + 等 settle（150 ms 静默窗，2000 ms 硬上限）并回 `{ delta, status }`」。
+
+给 `true` 时**不等 settle**：立刻返回 `{ kind: 'background', jobId }`，工作交给**宿主已有的后台任务栈**，
+`job_output` 收输出、`job_kill` 取消（作业记录带 `kind: 'pty-send'`、`label = '<sessionId>: <text>'`、
+`toolCall`、`owner = 拥有者会话 id`、256 KiB 的 `outputLimitBytes`、一个输出拉取源）。
+
+**两个包是一对，缺一个就是死路**（源码核对，`0.2.1-rc.2`）：`@deepseek-ai/dsh-jobs` 只是抽象 seam，
+它的 `start` 在**没有 attached controller 服务该 owner 时直接拒绝**；`@deepseek-ai/dsh-tool-jobs`
+才是那个 controller（`attachController`）+ `job_output` / `job_list` / `job_kill` + 完成投递。
+所以 `ctx.get('jobs')` 取不到时的报错**同时点名这两个包**，且**不静默降级为前台**；
+`./pty` 配置的 `enableRunInBackground: false` 同样响亮拒绝（连参数都不在工具面上列出）。
+
+- 取消 = 提前结束 settle：`job_kill` 走 core `send` 已收的 abort signal，作业落
+  `{ status: 'killed', detail: 'cancelled after N bytes read' }`；正常结束落 `completed`。
+- 输出 = 这次 send **在 settle 期间产生的 delta**（core `send` 的回包），由作业的输出源交给
+  `job_output`（每次读消费掉已交出的字节，游标单调）。
+- 结果面：后台形态只报 `started background job <jobId>`（卡片换 `generic`）；前台形态逐字不变。
+- **不自己造 controller、不复制 `job_*` 工具**：那是宿主的能力，本包只接线
+  （依赖面的例外记账见 `docs/dev-environment.md` §4.4 与 ADR-0005 决策 7）。
+
 ### ssh 四工具（issue #24，承接 dsh-pty-session#3）
 
 The `./pty` entry additionally registers `ssh_start` / `ssh_tail` /
