@@ -159,6 +159,10 @@ bash <repo>/scripts/msys-lane.sh --lane machine   # 迭代口径（只跑 machin
 （批 D 的 #126 就踩出了 CRLF 判据假红与 `amend` 打爆副本同步两条）。
 ⇒ 交接文档写清单时，**把本轮新增的那条也加进去**，否则陷阱清单会随时间失真。
 
+**模板里的「环境快照」「产物清单」两节必填**（批 G 聚合 G9，计次 ×2；`#149` / `#120` 实测空模板）：
+留空会逼子会话自己重跑起手式 + 逐条哈希自验，而且**证明不了**「与父会话看到的是同一棵树」。
+父会话没跑起手式时写「**未填（父会话未跑起手式）**」—— 明确的不填 ≠ 留空假装已验证。
+
 **本仓无 CI（ADR-0014）** ⇒ 批次末的"CI 绿"口径 = **pre-push 的 msys `--no-live` 车道全绿**
 （`.githooks/pre-push` 自动跑）+ `node --run test`。
 
@@ -184,6 +188,10 @@ Gotchas (learned the hard way):
   因此推不上去）。这是**前置未满足，不是产品红**：等对方收尾，或确认自己的提交面已单独验过
   （`node --run typecheck` + 与改动相关的 spec + `scripts/privacy-scan.mjs`）后，走钩子自己写的
   逃生口 `SKIP_HOOKS=1 git push …`，并把「跳了什么、为什么」写进当次汇报。
+- **加/删依赖的票在「首次推送」时才撞部署副本**（批 G 聚合 G14；`#120` / `#146` 实测）：权威树装过 ≠
+  副本装过，pre-push 在副本重建 `lib/` 时报 `TS2307`（报错文案已区分"副本前置"与"产品缺陷"）。
+  推送前先在副本里 `node <pnpm.mjs> install --frozen-lockfile`（走本地 store，约 2s），再推。
+  这是**前置未满足，不是产品红**。
 - `!!js` values inside `cordis.patch.yml` that contain a colon-space (`: `)
   must be block scalars (`!!js >-`) — colon-space breaks YAML plain-scalar
   parsing. Colon-free inline expressions (the platform guards) are fine;

@@ -615,6 +615,11 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
   - **`echo exit=%RC%> file` 会被 cmd 当成句柄重定向**：RC=0 时该行解析成 `echo exit=` + `0>`
     ⇒ **证据文件被建成 0 字节、`exit=` 打在 stdout** —— 与"没跑"不可区分（同 A9「空日志 ≠ 没跑」）。
     正确写法：`(echo exit=%RC%)> file` 或前置重定向 `> file echo exit=%RC%`。
+  - **同一行 `&` 链里的 `%ERRORLEVEL%` 是「解析期展开」**（批 G 聚合 G14；`#147` 实测）：
+    `cmd /d /c "node … > log 2>&1 & (echo exit=%ERRORLEVEL%)> log.exit"` 会把 `%ERRORLEVEL%`
+    在**解析整行时**展开成上一条命令的值 ⇒ 边车里的 `exit=` 与本次运行**毫无关系**（看起来完美，
+    换一次红跑就会把红写成绿）。要么 `cmd /v:on` + `!ERRORLEVEL!`，要么**拆成两次发送**
+    （第二次单独发 `(echo exit=%ERRORLEVEL%)> file`）。
   - **模板形状**：`<name>.bat` 第一行取 `%1` 当**日志名**（先 `del` 旧 `.log`/`.exit` 再写，
     跑完 `type` 出 `.exit`）—— 复跑同名会**覆盖红步读数**（`#103` 的红步因此只剩文档里抄的异常原文）。
   - **交接文档点名的模板名要先核存在**：`#100` 照抄一个不存在的 bat 名，cmd 直接报
@@ -645,6 +650,22 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
     `pty_send` 发 `pwd`（cwd 会保持）。**采集环境必须一并记**（文件沙箱策略 + 是否走审批）——
     换个策略读数可能就反过来。本机 2026-10-20 读数（转录）：
     `.scratch/t147-pty-crosscall.md`。
+- **agent 会话取读数时的几个工具层事实**（批 G 补；每条都是实测踩出来的）：
+  - **不读 stdin 的子进程在 ConPTY 下 `pty_send` 零回显**（`delta: ""`）⇒ 别拿它断言「会话可驱动」；
+    要量驱动性用读 stdin 的交互 shell（`#147` 实测：`node -e "setInterval(() => {}, 1000)"` 的
+    `pty_send` 永远读到空增量）。
+  - **`cmd` 会话的输入回显可能乱序 / 截断**（丢前半截 + 一个响铃字节）但命令**照常执行** ⇒
+    别拿回显判「命令发完整了没」，看日志与窗口标题（`#147` 实测）。
+  - **长跑命令别用 `… | Select-Object -Last N`**：PowerShell 会把进度**全缓冲**掉，看起来像挂死
+    （`#149` 实测：5 分钟没有任何输出）⇒ 一律 `*>` 落文件，另起一条命令读。
+  - **Node 24 可直接把 `src/*.ts` 当模块 import** 做只读探针：
+    `node -e "import('./src/pty/index.ts').then(m => console.log(Object.keys(m)))"` —— 不写临时 spec、
+    不碰 `lib/`；改描述类文案时先看**成品串**（`#146` 实测）。
+  - **`pnpm` 不在 PATH 上**：用 `node "$HOME/.dsh/dsh-runtimes/<rt>/dependencies/pnpm/bin/pnpm.mjs" <args>`
+    （`.githooks/pre-commit` 已这么找，别发明第二条路径）。`pnpm peers check` 的 **exit=1 是常态**
+    （§4.4 那三条已知并接受的 missing peer），它**不在** `node --run test` 里 —— 别当验收红。
+  - **`wait_agent` 对 `subagent` 不适用**（返回 `no_active_peer`）：两轴的 `subagent` 不是 Team 成员，
+    完成会主动回报；用它等只会空转一轮（`#147` 实测）。
 - **临时产物（驱动脚本 / 生成的 config / 探针）一律放 `.scratch/` 下，别落仓库根**
   （#123 retro C6）：
   - **为什么**：本机**多个会话共用一个检出**，而**复核者看到的永远是一个瞬间快照**
