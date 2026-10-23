@@ -53,7 +53,7 @@ Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See
 
 ### 环境与安装（细节见文档，勿在此复述）
 
-- **agent 解释器禁令（human 明确要求）**：仅禁止调用 `pwsh` 工具，以及使用 PowerShell（`pwsh` / `powershell`）和 `cmd.exe` 作为 agent 的命令解释器；其他环境不限制，也不强制使用 MSYS2。文件读取、编辑、搜索仍优先专用工具；测试与 git 写操作沿用 PTY 要求，但不得选择上述禁用解释器。此约束针对 agent 的执行方式，不改变产品已有功能；历史 cmd/pwsh 取证示例不构成使用许可。
+- **agent 解释器边界（human 明确要求）**：禁止使用 `cmd.exe`；PowerShell（含 `pwsh` 工具、`pwsh` / `powershell` 解释器）**仅允许执行 git 和 gh 操作**，其他用途禁止。其他环境不限制，也不强制使用 MSYS2；human说明UCRT已装gh、MSYS已装git，也可按实际PATH使用。文件读取、编辑、搜索仍优先专用工具；测试仍走PTY并选择允许的解释器。此约束针对 agent 的执行方式，不改变产品已有功能；历史 cmd/pwsh 示例不扩展上述许可。
 - **权威工作树**：`<repo>`（本仓检出，唯一提交处）；msys2 侧检出（如
   `~/dsh-shellhost-src`，跑 19502 实例）是**只读部署副本**，
   用 `fetch` + `merge --ff-only` 单向同步。两边 `main` 必须同提交；本仓不
