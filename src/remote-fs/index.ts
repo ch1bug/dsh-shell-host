@@ -16,9 +16,8 @@
  * makes a later swap to an upstream workspace-scoped `ctx.fs` a re-point, not a
  * rewrite.
  *
- * Scope (#137): `resolve` / `stat` / `listDir` (+ the pure `processPath` /
- * `fileUrl` / `contains`) are real; the read face lands in #138 and the write
- * face in #139, and both fail LOUDLY until then (see `contract.ts`).
+ * #137提供路径/元数据/目录面；#138提供有界分块字节读与严格UTF-8文本读。
+ * 写面仍留给#139，未实现方法响亮拒绝（见contract.ts）。
  *
  * @module dsh-shell-host/remote-fs
  */
@@ -43,6 +42,7 @@ import {
   type RemoteWorkspaceStatus,
 } from '../remote/service.ts'
 import { requireAgentFor } from '../tool-support.ts'
+import { registerRemoteRead } from './read-tool.ts'
 
 const name = 'dsh-shell-host-remote-fs'
 // `remote` is the workspace service this entry's file face executes through —
@@ -141,6 +141,15 @@ function nulFields(buffer: Buffer, width: number): string[] {
   return fields
 }
 
+/** stat与lstat共享线路字段校验；是否跟随符号链接由调用方命令决定。 */
+function fileMetadata(buffer: Buffer, path: string): { version: FsVersion; mode: number; size: number } {
+  const fields = nulFields(buffer, 3), [version, modeText, sizeText] = fields
+  if (fields.length !== 3 || !version || !/^[0-9a-f]+$/iu.test(modeText!) || !/^\d+$/u.test(sizeText!)) {
+    throw new FsError(`stat ${path} returned invalid metadata`, 'FS_IO_ERROR')
+  }
+  return { version: version as FsVersion, mode: Number.parseInt(modeText!, 16) & 0xf000, size: Number(sizeText) }
+}
+
 /** Cancellation settles the caller even if a shared channel cannot cancel a
  * single remote process. The background result is observed, not left rejected. */
 function cancellable<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -169,9 +178,7 @@ const REMOTE_LOCALE = 'LC_ALL=C; export LC_ALL; '
 /**
  * Build the file service over the workspace service.
  *
- * Only `resolve` / `stat` / `listDir` talk to the remote in this increment;
- * every other method exists so the SHAPE is the contract's shape, and fails
- * with the increment that will land it.
+ * 路径、元数据、目录与读面经工作区服务进入远端；写面保留#139的响亮stub。
  */
 export function createRemoteFileSystem(remote: RemoteWorkspaceService): RemoteFileSystem {
   const workspaces = (): RemoteWorkspaceStatus[] => remote.list()
@@ -280,7 +287,45 @@ export function createRemoteFileSystem(remote: RemoteWorkspaceService): RemoteFi
     return { workspace, target: { targetKey: targetKeyFor(workspace.host, paths[0]!), displayPath: paths[0]! } }
   }
 
-  return {
+  // 每次请求最多256KiB原始字节（base64后远低于8MiB帧上限）。
+  // 不用shell变量承载文件内容；dd直接输出字节，由既有帧循环编码。
+  const chunkBytes = 256 * 1024
+  const validCount = (value: number) => Number.isSafeInteger(value) && value >= 0
+  const fileInfo = async (target: FsTarget, signal?: AbortSignal) => {
+    const info = await filesystem.stat(target, signal)
+    if (!info) throw new FsError(`read ${target.displayPath}: not found`, 'FS_NOT_FOUND')
+    if (info.type !== 'file') throw new FsError(`read ${target.displayPath}: not a regular file`, 'FS_NOT_REGULAR_FILE')
+    if (info.size === undefined || !validCount(info.size)) throw new FsError('read: invalid file size', 'FS_IO_ERROR')
+    return info as FsInfo & { size: number }
+  }
+  const checkVersion = async (target: FsTarget, info: FsInfo, signal?: AbortSignal) => {
+    if ((await fileInfo(target, signal)).version !== info.version) {
+      throw new FsError(`read ${target.displayPath}: file changed during read`, 'FS_STALE_VERSION')
+    }
+  }
+  async function* byteChunks(target: FsTarget, info: FsInfo & { size: number }, offset: number, length: number, signal?: AbortSignal): AsyncIterable<Buffer> {
+    const { workspaceId, path } = workspaceTarget(target)
+    const end = offset + length
+    for (let at = offset; at < end;) {
+      throwIfAborted(signal)
+      await checkVersion(target, info, signal)
+      const count = Math.min(chunkBytes, end - at)
+      const result = await cancellable(() => remote.exec(workspaceId,
+        REMOTE_LOCALE + `dd if=${posixQuote(path)} iflag=skip_bytes,count_bytes skip=${String(at)} count=${String(count)} bs=${String(chunkBytes)} status=none`,
+      ), signal)
+      if (result.exitCode !== 0) throw failureFor('read', path, result.exitCode, result.stderr.toString())
+      const received = result.stdout.length
+      if (received > count || (received < count && at + received < Math.min(info.size, end))) {
+        throw new FsError(`read ${path}: truncated or oversized chunk`, 'FS_IO_ERROR')
+      }
+      await checkVersion(target, info, signal)
+      at += received
+      if (received > 0) yield result.stdout
+      if (received < count) break
+    }
+    await checkVersion(target, info, signal)
+  }
+  const filesystem: RemoteFileSystem = {
     async resolve(path, opts) {
       const { target } = await resolveTarget(path, opts)
       return target
@@ -324,47 +369,78 @@ export function createRemoteFileSystem(remote: RemoteWorkspaceService): RemoteFi
         if (error.code === 'FS_NOT_FOUND') return undefined
         throw error
       }
-      const fields = nulFields(result.stdout, 3)
-      const [version, modeText, sizeText] = fields
-      if (fields.length !== 3 || !version || !/^[0-9a-f]+$/iu.test(modeText!) || !/^\d+$/u.test(sizeText!)) {
-        throw new FsError(`stat ${path} returned invalid metadata`, 'FS_IO_ERROR')
-      }
-      const mode = Number.parseInt(modeText!, 16) & 0xf000
+      const { version, mode, size } = fileMetadata(result.stdout, path)
       const type = mode === 0x8000 ? 'file' : mode === 0x4000 ? 'directory' : 'other'
-      return { version: version as FsVersion, type, ...(type === 'file' ? { size: Number(sizeText) } : {}) }
+      return { version, type, ...(type === 'file' ? { size } : {}) }
     },
 
     async lstat(path, opts, signal) {
       throwIfAborted(signal)
-      void path
-      void opts
-      throw new FsError('lstat is not implemented by the remote backend yet — the read face lands in #138', 'FS_IO_ERROR')
+      if (path.includes('\u0000') || opts?.cwd?.includes('\u0000')) throw new FsError('lstat: NUL in path', 'FS_IO_ERROR')
+      const workspace = workspaceFor(opts?.cwd), absolute = absolutePathFor(workspace, path, opts?.cwd)
+      const result = await cancellable(() => remote.exec(workspace.workspaceId,
+        REMOTE_LOCALE + `stat --printf '%d:%i:%s:%y:%z\\0%f\\0%s\\0' -- ${posixQuote(absolute)}`,
+      ), signal)
+      if (result.exitCode !== 0) {
+        const error = failureFor('lstat', absolute, result.exitCode, result.stderr.toString())
+        if (error.code === 'FS_NOT_FOUND') return undefined
+        throw error
+      }
+      const { version, mode, size } = fileMetadata(result.stdout, absolute)
+      const type = mode === 0x8000 ? 'file' : mode === 0x4000 ? 'directory' : mode === 0xa000 ? 'symlink' : 'other'
+      return { version, type, ...(type === 'file' ? { size } : {}) }
     },
 
     async readText(target, signal) {
-      throwIfAborted(signal)
-      void target
-      throw new FsError('readText is not implemented by the remote backend yet — the read face lands in #138', 'FS_IO_ERROR')
+      let text = ''
+      for await (const chunk of await filesystem.streamText(target, signal)) text += chunk
+      return text
     },
 
     async streamText(target, signal) {
-      throwIfAborted(signal)
-      void target
-      throw new FsError('streamText is not implemented by the remote backend yet — the read face lands in #138', 'FS_IO_ERROR')
+      const info = await fileInfo(target, signal)
+      return (async function* () {
+        const decoder = new TextDecoder('utf-8', { fatal: true })
+        let sampled = 0
+        const decode = (bytes?: Buffer) => {
+          try { return decoder.decode(bytes, { stream: bytes !== undefined }) }
+          catch (cause) { throw new FsError(`read ${target.displayPath}: invalid UTF-8 text`, 'FS_NOT_TEXT', { cause }) }
+        }
+        for await (const bytes of byteChunks(target, info, 0, Infinity, signal)) {
+          const sampleLength = Math.min(bytes.length, 8192 - sampled)
+          if (bytes.subarray(0, sampleLength).includes(0)) throw new FsError(`read ${target.displayPath}: binary file`, 'FS_NOT_TEXT')
+          sampled += sampleLength
+          const text = decode(bytes)
+          if (text !== '') yield text
+        }
+        const tail = decode()
+        if (tail !== '') yield tail
+      })()
     },
 
     async readBytes(target, signal, maxBytes) {
       throwIfAborted(signal)
-      void target
-      void maxBytes
-      throw new FsError('readBytes is not implemented by the remote backend yet — the read face lands in #138', 'FS_IO_ERROR')
+      if (!validCount(maxBytes)) throw new FsError('readBytes: invalid maxBytes', 'FS_IO_ERROR')
+      const info = await fileInfo(target, signal)
+      if (info.size > maxBytes) throw new FsError(`read ${target.displayPath}: exceeds ${String(maxBytes)} bytes`, 'FS_TOO_LARGE')
+      const chunks: Buffer[] = []
+      let total = 0
+      for await (const chunk of byteChunks(target, info, 0, maxBytes + 1, signal)) {
+        total += chunk.length
+        if (total > maxBytes) throw new FsError(`read ${target.displayPath}: exceeds ${String(maxBytes)} bytes`, 'FS_TOO_LARGE')
+        chunks.push(chunk)
+      }
+      return Buffer.concat(chunks)
     },
 
     async readByteRange(target, range, signal) {
       throwIfAborted(signal)
-      void target
-      void range
-      throw new FsError('readByteRange is not implemented by the remote backend yet — the read face lands in #138', 'FS_IO_ERROR')
+      if (!validCount(range.offset) || !validCount(range.length) || !Number.isSafeInteger(range.offset + range.length)) {
+        throw new FsError('readByteRange: invalid offset/length', 'FS_IO_ERROR')
+      }
+      const info = await fileInfo(target, signal), chunks: Buffer[] = []
+      for await (const chunk of byteChunks(target, info, range.offset, range.length, signal)) chunks.push(chunk)
+      return Buffer.concat(chunks)
     },
 
     async listDir(target, signal) {
@@ -438,6 +514,7 @@ export function createRemoteFileSystem(remote: RemoteWorkspaceService): RemoteFi
       throw new FsError('Filesystem watching is not supported by this provider.', 'FS_IO_ERROR')
     },
   }
+  return filesystem
 }
 
 /** Register the `remote_ls` tool over the file service (the tool's ONLY door). */
@@ -550,6 +627,7 @@ function apply(ctx: RemoteFsCtx, config: unknown): void {
   const fs = createRemoteFileSystem(remote)
   ctx.provide('remoteFs', fs)
   registerRemoteLs(ctx, fs, resolved)
+  registerRemoteRead(ctx, fs, exec => agentCwd(ctx, requireAgentFor('remote', exec), exec.signal))
 }
 
 export { Config, apply, inject, name }

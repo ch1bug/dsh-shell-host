@@ -24,7 +24,7 @@ platform shell executors alone.
    `ssh_tail` / `ssh_send` / `ssh_close`), over the `pty` core (#136).
 3. `terminal` (`dsh-shell-host/terminal`) — the `shell_open` launcher surface.
 4. `remote` (`dsh-shell-host/remote`) — 远程工作区登记、预热与长驻连接（#137）。
-5. `remote-fs` (`dsh-shell-host/remote-fs`) — 加性 `ctx.remoteFs` 与 `remote_ls`（#137），依赖前一行。
+5. `remote-fs` (`dsh-shell-host/remote-fs`) — 加性 `ctx.remoteFs`、`remote_ls` 与 `remote_read`（#137/#138），依赖前一行。
 
 The platform executors (`pwsh-sandbox` / `bash-sandbox`) keep their DSH-native
 posture untouched; the one-shot `bash`/`pwsh` tool faces are the platform's own
@@ -378,19 +378,26 @@ port/jump/options 不同，明确拒绝复用，须使用不同 OpenSSH host ali
 内存预算；超出帧上限会响亮失败而不是返回半棵目录。**本地 read/write/edit 看到的是锚点，
 远端文件必须用 `remote_*` 工具**。
 
+`remote_read({ file_path, offset?, limit? })` 对齐上游 `read`：路径按会话锚点与远程文件系统解析，
+行号从 1 开始；默认及最大 2000 行，每行最多 2000 字符，选中文本最多 50 KiB，footer 提示续读。
+目录拒绝为 `FS_NOT_REGULAR_FILE`；严格 UTF-8 文本面拒绝非法编码及前 8 KiB 内的 NUL（`FS_NOT_TEXT`），
+不猜编码或用替换字符掩盖坏字节。底层 `readBytes` / `readByteRange` 可逐字节读回非 UTF-8 文件。
+读取按 256 KiB 字节块走既有 base64 通道；跨块保留 UTF-8 解码状态，大于单帧的文件不塞进一帧。
+途中断连、超时、短块或文件版本变化均响亮失败，不返回前缀冒充完整结果。
+
 ### 传输与本期边界
 
 - POSIX 客户端明确启用 ControlMaster；Windows 明确禁用它，绝不先试 master 再回退。
   可显式 `ControlMaster=no` 选择独立连接，状态同步报告该形态；`auto`/`ask` 等不能保证
   可观测形态的模式响亮拒绝。WSL 承载和 tmux 仍为 ADR-0017 的 deferred 选项。
-- 远端必须有 POSIX 登录 shell，以及 GNU `base64` / `mktemp` / `stat` / `find` / `realpath`
+- 远端必须有 POSIX 登录 shell，以及 GNU `base64` / `mktemp` / `stat` / `find` / `realpath` / `dd`
   等工具；打开时实测 `uname` 与 `$SHELL`，Windows 或非 POSIX 登录 shell 响亮拒绝。
   不安装远端 server，不用 SFTP，不做本地文件镜像。
 - 文件通道使用 `ssh -T` 的原始 pipe，不是交互 PTY；内部请求是带 id 的 base64 行帧。
   先协商协议版本与 `clientId`，异版或身份不匹配响亮拒绝；子命令与协议 stdin 隔离，
   响应帧有 8 MiB 上限。这是文件传输通道，不是第二份 PTY 核心。
-- 本期真正实现 `resolve` / `stat` / `listDir`；其余 `dsh-fs` 同形方法存在但响亮拒绝。
-  读面由 #138、写面由 #139、工作区多会话编排由 #140 承接，不能把契约骨架当作已交付功能。
+- 本期真正实现 `resolve` / `stat` / `listDir` 与 #138 的 `lstat` / `readText` / `streamText` /
+  `readBytes` / `readByteRange`；写面仍由 #139、工作区多会话编排由 #140 承接，不能把契约骨架当作已交付功能。
 - 无活体 ssh 主机的环境中，真实 bash 循环与注入通道覆盖不等于 ssh 活体验收；验证报告须
   明说 `not run locally: remote live`，不能用假通道绿灯代替真实网络证据。
 

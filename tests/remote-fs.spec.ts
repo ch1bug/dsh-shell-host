@@ -90,6 +90,43 @@ describe('exec 错误与不完整数据', () => {
   })
 })
 
+describe('#138读面错误与编码边界', () => {
+  it.each([['FS_NOT_FOUND', result(1, '', 'No such file or directory')], ['FS_PERMISSION_DENIED', result(1, '', 'Permission denied')], ['FS_NOT_REGULAR_FILE', result(0, 'v1\0' + '41ed\0' + '4096\0')]])('读面保留%s而非空内容', async (code, reply) => {
+    const h = harness(), target = await h.fs.resolve('/srv/app')
+    h.exec.mockResolvedValue(reply)
+    for (const operation of [() => h.fs.readText(target), () => h.fs.streamText(target), () => h.fs.readBytes(target, undefined, 10), () => h.fs.readByteRange(target, { offset: 0, length: 0 })]) {
+      await expect(operation()).rejects.toMatchObject({ code })
+    }
+  })
+  it('文本对不合法UTF8及末尾残缺序列严格拒绝，BOM按TextDecoder处理', async () => {
+    for (const bytes of [Buffer.from([255]), Buffer.from([0xe4, 0xb8]), Buffer.from([0])]) {
+      const h = harness(), target = await h.fs.resolve('/srv/app')
+      const info = result(0, `v1\0` + `81a4\0${String(bytes.length)}\0`)
+      h.exec.mockResolvedValue(info).mockResolvedValueOnce(info).mockResolvedValueOnce(info).mockResolvedValueOnce({ exitCode: 0, stdout: bytes, stderr: Buffer.alloc(0) })
+      await expect(h.fs.readText(target)).rejects.toMatchObject({ code: 'FS_NOT_TEXT' })
+    }
+  })
+  it('stat.size为0不等于EOF，必须实际读取，也不得绕过空文件权限检查', async () => {
+    const h = harness(), target = await h.fs.resolve('/srv/app')
+    const zero = result(0, 'v1\0' + '81a4\0' + '0\0')
+    h.exec.mockResolvedValue(zero).mockResolvedValueOnce(zero).mockResolvedValueOnce(zero).mockResolvedValueOnce(result(0, 'virtual-data\n'))
+    expect(await h.fs.readText(target)).toBe('virtual-data\n')
+    h.exec.mockResolvedValue(zero).mockResolvedValueOnce(zero).mockResolvedValueOnce(zero).mockResolvedValueOnce(result(0, '123456'))
+    await expect(h.fs.readBytes(target, undefined, 5)).rejects.toMatchObject({ code: 'FS_TOO_LARGE' })
+    h.exec.mockResolvedValue(zero).mockResolvedValueOnce(zero).mockResolvedValueOnce(zero).mockResolvedValueOnce(result(1, '', 'Permission denied'))
+    await expect(h.fs.readBytes(target, undefined, 10)).rejects.toMatchObject({ code: 'FS_PERMISSION_DENIED' })
+  })
+  it('预先取消所有读面均拒绝且不进入远端', async () => {
+    const h = harness(), target = await h.fs.resolve('/srv/app'), controller = new AbortController()
+    h.exec.mockClear(); controller.abort()
+    const signal = controller.signal
+    for (const operation of [() => h.fs.readText(target, signal), () => h.fs.streamText(target, signal), () => h.fs.readBytes(target, signal, 10), () => h.fs.readByteRange(target, { offset: 0, length: 0 }, signal), () => h.fs.lstat('/srv/app', undefined, signal)]) {
+      await expect(operation()).rejects.toMatchObject({ code: 'FS_ABORTED' })
+    }
+    expect(h.exec).not.toHaveBeenCalled()
+  })
+})
+
 describe('取消与 cwd 选择', () => {
   it('预先取消不发请求；在飞取消及时拒绝；迟到 reject 仍被观察', async () => {
     const h = harness(), controller = new AbortController()
@@ -141,13 +178,8 @@ describe('取消与 cwd 选择', () => {
     expect(url.search).toBe('')
     expect(decodeURIComponent(url.pathname)).toBe('/srv/a #?%.txt')
   })
-  it('未实现读写/观察仍响亮 stub，不扩展 #138/#139', async () => {
+  it('未实现写/观察仍响亮 stub，不扩展 #139', async () => {
     const h = harness(), target = await h.fs.resolve('/srv/app')
-    await expect(h.fs.readText(target)).rejects.toThrow('#138')
-    await expect(h.fs.streamText(target)).rejects.toThrow('#138')
-    await expect(h.fs.readBytes(target, undefined, 10)).rejects.toThrow('#138')
-    await expect(h.fs.readByteRange(target, { offset: 0, length: 1 })).rejects.toThrow('#138')
-    await expect(h.fs.lstat('/srv/app')).rejects.toThrow('#138')
     await expect(h.fs.writeText(target, 'x')).rejects.toThrow('#139')
     await expect(h.fs.editText(target, { oldString: 'x', newString: 'y', replaceAll: false })).rejects.toThrow('#139')
     await expect(h.fs.watch(target, () => {}, new AbortController().signal)).rejects.toMatchObject({ code: 'FS_IO_ERROR' })

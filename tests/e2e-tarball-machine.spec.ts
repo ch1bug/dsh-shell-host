@@ -282,6 +282,7 @@ describe.skipIf(absent.length > 0)("e2e: pack → install from tarball → confi
                 // artifact too (a `files` omission would silently drop them).
                 expect(names, "remote_open (./remote row) is in the tool surface").toContain("remote_open");
                 expect(names, "remote_ls (./remote-fs row) is in the tool surface").toContain("remote_ls");
+                expect(names, "remote_read (./remote-fs row) is in the tool surface").toContain("remote_read");
 
                 // The loop closes only when the instance EXECUTED the tool and fed
                 // the result back into a subsequent request.

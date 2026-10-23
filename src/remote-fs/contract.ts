@@ -21,11 +21,9 @@
  *   3. `watch` resolves to an async CLOSE FUNCTION (`() => Promise<void>`), not
  *      a `{ dispose }` object.
  *
- * Scope of THIS ticket (#137): `resolve` / `stat` / `listDir` are implemented
- * (plus the pure `processPath` / `fileUrl` / `contains`). The rest exist on the
- * interface and fail LOUDLY with a coded error naming the increment that lands
- * them — `#138` (read face: `readText` / `streamText` / `readBytes` /
- * `readByteRange` / `lstat`) and `#139` (write face: `writeText` / `editText`).
+ * #137实现路径/元数据/目录面，#138实现读面：`readText` / `streamText` /
+ * `readBytes` / `readByteRange` / `lstat`。写面 `writeText` / `editText` 仍留给
+ * #139；watch仍按上游基类边界响亮拒绝。
  * A stub that throws the same vocabulary is honest; a stub that returns empty
  * data is a lie a consumer cannot detect.
  *

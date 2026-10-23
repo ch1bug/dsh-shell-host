@@ -5,6 +5,8 @@ import { detectPlainBash } from '../src/detect.ts'
 import { createRemoteFileSystem } from '../src/remote-fs/index.ts'
 import type { RemoteWorkspaceService, RemoteWorkspaceStatus } from '../src/remote/service.ts'
 import type { RemoteResult } from '../src/remote/channel.ts'
+import { FRAME_MAX_LINE_BYTES } from '../src/remote/frame.ts'
+import { realFileChannel } from './helpers/real-file-channel.ts'
 
 const bash = process.platform === 'win32' ? detectPlainBash() : 'bash'
 if (!bash) console.warn('!! SKIP (loud) remote-fs-machine：缺少 bash，真实文件脚本未验证')
@@ -43,6 +45,46 @@ describe.skipIf(!bash)('真实 bash 文件系统契约（#137）', () => {
     // 精确检查由本用例 mktemp 创建的路径，再清它自己的夹具。
     if (/^\/tmp\/dsh-fs-137-[\w]+$/.test(root)) expect((await run(`rm -rf -- ${quote(root)}`)).exitCode).toBe(0)
   })
+  it('字节读面保留非UTF8/NUL和末尾换行，范围及上限沿公共接口生效', async () => {
+    const path = root + '/real/binary'
+    expect((await run(`printf '\\000\\377\\376a\\n\\n' > ${quote(path)}`)).exitCode).toBe(0)
+    const fs = createRemoteFileSystem(remote()), target = await fs.resolve(path)
+    expect(Buffer.from(await fs.readBytes(target, undefined, 6))).toEqual(Buffer.from([0, 255, 254, 97, 10, 10]))
+    expect(Buffer.from(await fs.readByteRange(target, { offset: 1, length: 3 }))).toEqual(Buffer.from([255, 254, 97]))
+    await expect(fs.readBytes(target, undefined, 5)).rejects.toMatchObject({ code: 'FS_TOO_LARGE' })
+  })
+  it('UTF8跨块拼接、BOM与非文本拒绝、lstat不跟随末级符号链接', async () => {
+    const path = root + '/real/utf8', text = 'a'.repeat(256 * 1024 - 4) + '中文\r\n尾行\n'
+    expect((await run(`{ printf '\\357\\273\\277'; head -c 262140 /dev/zero | tr '\\0' a; printf '中文\\r\\n尾行\\n'; } > ${quote(path)}`)).exitCode).toBe(0)
+    const fs = createRemoteFileSystem(remote()), target = await fs.resolve(path)
+    expect(await fs.readText(target)).toBe(text)
+    let streamed = ''
+    for await (const chunk of await fs.streamText(target)) streamed += chunk
+    expect(streamed).toBe(text)
+    expect((await run(`printf '\\377' > ${quote(root + '/real/nontext')}`)).exitCode).toBe(0)
+    const binary = await fs.resolve(root + '/real/nontext')
+    await expect(fs.readText(binary)).rejects.toMatchObject({ code: 'FS_NOT_TEXT' })
+    expect(await fs.lstat(root + '/alias')).toMatchObject({ type: 'symlink' })
+    expect(await fs.lstat(root + '/missing')).toBeUndefined()
+  })
+  it('超单帧文件经真实握手/base64循环分块返回，逐字节完整且每帧有界', async () => {
+    const path = root + '/real/large', length = 7 * 1024 * 1024
+    expect((await run(`{ head -c ${String(length)} /dev/zero | tr '\\0' a; printf '\\000\\377\\n'; } > ${quote(path)}`)).exitCode).toBe(0)
+    const channel = await realFileChannel(bash!)
+    try {
+      const service = remote()
+      service.exec = (_id, command) => channel.exec(command)
+      const fs = createRemoteFileSystem(service), target = await fs.resolve(path)
+      const bytes = Buffer.from(await fs.readBytes(target, undefined, length + 3))
+      expect(bytes.length).toBe(length + 3)
+      expect(bytes.subarray(0, length)).toEqual(Buffer.alloc(length, 97))
+      expect(bytes.subarray(length)).toEqual(Buffer.from([0, 255, 10]))
+      expect(4 * Math.ceil(bytes.length / 3)).toBeGreaterThan(FRAME_MAX_LINE_BYTES)
+      expect(channel.maxFrameBytes()).toBeLessThan(FRAME_MAX_LINE_BYTES)
+      expect(Buffer.from(await fs.readByteRange(target, { offset: length - 1, length: 10 }))).toEqual(Buffer.from([97, 0, 255, 10]))
+      expect((await fs.readByteRange(target, { offset: length + 5, length: 3 })).length).toBe(0)
+    } finally { await channel.close() }
+  }, 180_000)
   it('cwd 是真实解析基准：远端 cwd 与锚点子目录都不回退 root', async () => {
     const fs = createRemoteFileSystem(remote())
     expect((await fs.resolve('file', { cwd: root + '/real' })).displayPath).toBe(root + '/real/file')

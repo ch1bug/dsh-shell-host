@@ -70,6 +70,7 @@ describe("入口自面：name / inject / Config / apply 与服务面", () => {
     expect(boot.provided.get("remote")).toBeTruthy();
     expect(boot.provided.get("remoteFs")).toBeTruthy();
     expect(boot.tool("remote_ls").name).toBe("remote_ls");
+    expect(boot.tool("remote_read").name).toBe("remote_read");
   });
 });
 
