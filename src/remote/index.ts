@@ -28,8 +28,8 @@
  * `read-only` session cannot open a workspace, and under `workspace-write` the
  * spawn starts inside the session workspace. Reads through an existing channel
  * (`remote_ls`) are NOT gated, for the same reason `pty_tail` is not: a read
- * widens nothing. The write face (#139) will have to re-resolve the session
- * policy per write — recorded as a hand-off fact in the landing document.
+ * widens nothing. The write face (#139, `./remote-fs`) re-resolves the calling
+ * session policy per write; an existing channel is not permanent write authorization.
  *
  * @module dsh-shell-host/remote
  */

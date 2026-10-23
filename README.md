@@ -385,6 +385,16 @@ port/jump/options 不同，明确拒绝复用，须使用不同 OpenSSH host ali
 读取按 256 KiB 字节块走既有 base64 通道；跨块保留 UTF-8 解码状态，大于单帧的文件不塞进一帧。
 途中断连、超时、短块或文件版本变化均响亮失败，不返回前缀冒充完整结果。
 
+`remote_write({ file_path, content })` 原子创建或替换文本；`remote_edit({ file_path, old_string,
+new_string, replace_all? })` 做字面量替换，默认只允许唯一匹配。覆盖/编辑前先用 `remote_read` 读取；
+观察按会话与远程 canonical 身份隔离，外部改动返回 `FS_STALE_VERSION`，需重读再试。成功创建/修改后
+可以继续编辑，不必额外读取。编辑按上游规则恢复 LF/CRLF，`$&` 等不当作正则替换语法。
+写入以有界 base64 块进入同目录私有 staging，发布前校验版本，替换保留已有权限位；失败清理 staging。
+create 使用原子 no-clobber，替换使用 `mv`；provider 内同目标串行，不宣称对任意外部进程的 OS 级 CAS。
+通道已死时无法保证远端清理，失败会明确报告。此后端不宣称本机文件沙箱能监禁远端路径；
+写工具每次重新解析调用方会话策略，只有 `danger-full-access` 可写；降级、缺少策略服务均在远端请求前拒绝。
+直接调用服务并传入受限本机 `sandboxPolicy` 同样返回 `FS_SANDBOX_DENIED`，工具不提供虚假的提权参数。
+
 ### 传输与本期边界
 
 - POSIX 客户端明确启用 ControlMaster；Windows 明确禁用它，绝不先试 master 再回退。
@@ -397,7 +407,7 @@ port/jump/options 不同，明确拒绝复用，须使用不同 OpenSSH host ali
   先协商协议版本与 `clientId`，异版或身份不匹配响亮拒绝；子命令与协议 stdin 隔离，
   响应帧有 8 MiB 上限。这是文件传输通道，不是第二份 PTY 核心。
 - 本期真正实现 `resolve` / `stat` / `listDir` 与 #138 的 `lstat` / `readText` / `streamText` /
-  `readBytes` / `readByteRange`；写面仍由 #139、工作区多会话编排由 #140 承接，不能把契约骨架当作已交付功能。
+  `readBytes` / `readByteRange`，以及 #139 的 `writeText` / `editText`；工作区多会话编排仍由 #140 承接。
 - 无活体 ssh 主机的环境中，真实 bash 循环与注入通道覆盖不等于 ssh 活体验收；验证报告须
   明说 `not run locally: remote live`，不能用假通道绿灯代替真实网络证据。
 
@@ -587,7 +597,7 @@ source deployment and build gotchas.
   set** (10 `dsh-*` pins that track the certified anchor — ADR-0005, dev-environment
   §4.4); admission is gated separately by the `engines.dsh` range (ADR-0005
   decision 6, dev-environment §2.1); deps are `@deepseek-ai/dsh-tools` +
-  `@lydell/node-pty`; tooling
+  `@lydell/node-pty` + `diff`（#139 的上下文 diff 卡片，沿上游版本）；tooling
   (typescript/vitest/tsdown) comes from npm.
 
 Status: v0.2.1-rc.2-r1, tools-only (ADR-0012/0013): `./pty` + `./ssh` +

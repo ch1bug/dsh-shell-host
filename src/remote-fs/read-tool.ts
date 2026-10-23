@@ -6,6 +6,7 @@
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { GenericCallView, ReadResultView, ToolDefinition, ToolExecution, ToolResult } from "@deepseek-ai/dsh-tools";
 import { FsError, type RemoteFileSystem } from "./contract.ts";
+import type { RemoteObservations } from "./observation.ts";
 /** 上游read默认的单行字符上限；远程工具沿用此固定值。 */
 export const READ_MAX_LINE_LENGTH = 2000;
 /** 上游read默认的选中文本字节上限；不含行号与外层envelope。 */
@@ -272,7 +273,7 @@ export function registerRemoteRead(ctx: {
     tools: {
         register: (tool: ToolDefinition) => unknown;
     };
-}, fs: RemoteFileSystem, cwd: (exec: ToolExecution) => Promise<string | undefined>): void {
+}, fs: RemoteFileSystem, cwd: (exec: ToolExecution) => Promise<string | undefined>, observations?: RemoteObservations): void {
     const caps: ReadToolCaps = { limit: READ_LIMIT, maxLineLength: READ_MAX_LINE_LENGTH, maxBytes: READ_MAX_BYTES, streamMinSize: STREAM_MIN_SIZE };
     ctx.tools.register(defineTool({
         name: "remote_read",
@@ -337,8 +338,10 @@ export function registerRemoteRead(ctx: {
             // 一次 stat 同时判定类型与路由；不向本地观察策略发送远程身份。
             const target = await fs.resolve(input.filePath, { cwd: await cwd(exec), signal: exec.signal });
             const info = await fs.stat(target, exec.signal);
-            if (info === undefined)
+            if (info === undefined) {
+                observations?.record(target, { kind: "absent" }, exec);
                 throw new FsError(`cannot read "${target.displayPath}": not found`, "FS_NOT_FOUND");
+            }
             if (info.type !== "file")
                 throw new FsError(`cannot read "${target.displayPath}": not a regular file`, "FS_NOT_REGULAR_FILE");
             // Stream when the file is large OR size is unknown, so a size-less backend
@@ -353,6 +356,8 @@ export function registerRemoteRead(ctx: {
                 lines: window.lines,
                 totalLines: window.totalLines,
             };
+            // 只有完整流与窗口均成功才观察；保留读取前stat的版本，不伪造读后新鲜度。
+            observations?.record(target, { kind: "present", version: info.version }, exec);
             return outcome;
         },
         // Result-time display: a `read` card carrying the structured line window a

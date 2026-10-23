@@ -17,7 +17,7 @@
  * rewrite.
  *
  * #137提供路径/元数据/目录面；#138提供有界分块字节读与严格UTF-8文本读。
- * 写面仍留给#139，未实现方法响亮拒绝（见contract.ts）。
+ * #139提供原子writeText/editText与远程专用观察策略；watch仍响亮拒绝。
  *
  * @module dsh-shell-host/remote-fs
  */
@@ -33,6 +33,7 @@ import {
   type FsTarget,
   type FsTargetKey,
   type FsVersion,
+  type FsSandboxPolicy,
   type RemoteFileSystem,
 } from './contract.ts'
 import {
@@ -43,6 +44,9 @@ import {
 } from '../remote/service.ts'
 import { requireAgentFor } from '../tool-support.ts'
 import { registerRemoteRead } from './read-tool.ts'
+import { createRemoteMutations, REMOTE_STAT_VERSION_FORMAT, assertRemoteMutationPolicy } from './mutations.ts'
+import { registerRemoteMutations } from './mutation-tools.ts'
+import { RemoteObservations } from './observation.ts'
 
 const name = 'dsh-shell-host-remote-fs'
 // `remote` is the workspace service this entry's file face executes through —
@@ -79,6 +83,7 @@ interface RemoteFsCtx {
   provide: (name: string, value: unknown) => void
   tools: { register: (tool: unknown) => void }
   get: (name: string) => unknown
+  on?: (event: 'dispose', callback: () => void) => unknown
 }
 
 /** The `workingDirectory` slice (optional: a tools-only deployment may have none). */
@@ -178,7 +183,7 @@ const REMOTE_LOCALE = 'LC_ALL=C; export LC_ALL; '
 /**
  * Build the file service over the workspace service.
  *
- * 路径、元数据、目录与读面经工作区服务进入远端；写面保留#139的响亮stub。
+ * 路径、元数据、目录、读写均经工作区服务进入远端。
  */
 export function createRemoteFileSystem(remote: RemoteWorkspaceService): RemoteFileSystem {
   const workspaces = (): RemoteWorkspaceStatus[] => remote.list()
@@ -362,7 +367,7 @@ export function createRemoteFileSystem(remote: RemoteWorkspaceService): RemoteFi
       // unlike %Y/%Z (two same-size writes in one second must not share a token).
       const result = await cancellable(() => remote.exec(
         workspaceId,
-        REMOTE_LOCALE + `stat -L --printf '%d:%i:%s:%y:%z\\0%f\\0%s\\0' -- ${posixQuote(path)}`,
+        REMOTE_LOCALE + `stat -L --printf '${REMOTE_STAT_VERSION_FORMAT}\\0%f\\0%s\\0' -- ${posixQuote(path)}`,
       ), signal)
       if (result.exitCode !== 0) {
         const error = failureFor('stat', path, result.exitCode, result.stderr.toString())
@@ -379,7 +384,7 @@ export function createRemoteFileSystem(remote: RemoteWorkspaceService): RemoteFi
       if (path.includes('\u0000') || opts?.cwd?.includes('\u0000')) throw new FsError('lstat: NUL in path', 'FS_IO_ERROR')
       const workspace = workspaceFor(opts?.cwd), absolute = absolutePathFor(workspace, path, opts?.cwd)
       const result = await cancellable(() => remote.exec(workspace.workspaceId,
-        REMOTE_LOCALE + `stat --printf '%d:%i:%s:%y:%z\\0%f\\0%s\\0' -- ${posixQuote(absolute)}`,
+        REMOTE_LOCALE + `stat --printf '${REMOTE_STAT_VERSION_FORMAT}\\0%f\\0%s\\0' -- ${posixQuote(absolute)}`,
       ), signal)
       if (result.exitCode !== 0) {
         const error = failureFor('lstat', absolute, result.exitCode, result.stderr.toString())
@@ -487,23 +492,8 @@ export function createRemoteFileSystem(remote: RemoteWorkspaceService): RemoteFi
       return entries.sort((a, b) => a.name.localeCompare(b.name))
     },
 
-    async writeText(target, content, expected, signal, sandboxPolicy) {
-      throwIfAborted(signal)
-      void target
-      void content
-      void expected
-      void sandboxPolicy
-      throw new FsError('writeText is not implemented by the remote backend yet — the write face lands in #139', 'FS_IO_ERROR')
-    },
-
-    async editText(target, edit, expected, signal, sandboxPolicy) {
-      throwIfAborted(signal)
-      void target
-      void edit
-      void expected
-      void sandboxPolicy
-      throw new FsError('editText is not implemented by the remote backend yet — the write face lands in #139', 'FS_IO_ERROR')
-    },
+    writeText: (...args) => mutations.writeText(...args),
+    editText: (...args) => mutations.editText(...args),
 
     async watch(target, changed, signal) {
       throwIfAborted(signal)
@@ -514,6 +504,10 @@ export function createRemoteFileSystem(remote: RemoteWorkspaceService): RemoteFi
       throw new FsError('Filesystem watching is not supported by this provider.', 'FS_IO_ERROR')
     },
   }
+  const mutations = createRemoteMutations(filesystem, (target, command) => {
+    const { workspaceId } = workspaceTarget(target)
+    return remote.exec(workspaceId, command)
+  }, target => targetOf(target).path)
   return filesystem
 }
 
@@ -627,7 +621,19 @@ function apply(ctx: RemoteFsCtx, config: unknown): void {
   const fs = createRemoteFileSystem(remote)
   ctx.provide('remoteFs', fs)
   registerRemoteLs(ctx, fs, resolved)
-  registerRemoteRead(ctx, fs, exec => agentCwd(ctx, requireAgentFor('remote', exec), exec.signal))
+  const observations = new RemoteObservations()
+  const cwd = (exec: import('@deepseek-ai/dsh-tools').ToolExecution) => agentCwd(ctx, requireAgentFor('remote', exec), exec.signal)
+  registerRemoteRead(ctx, fs, cwd, observations)
+  registerRemoteMutations(ctx, fs, cwd, observations, exec => {
+    // 既有连接/观察不是永久写授权；每次都取调用方当前session策略。
+    const service = ctx.get('sandboxPolicy') as { resolve: (request: { session?: unknown }) => FsSandboxPolicy } | undefined
+    if (typeof service?.resolve !== 'function') throw new FsError('remote mutation refused: sandboxPolicy service is missing', 'FS_SANDBOX_DENIED')
+    const session = (exec.agent as { session?: unknown } | undefined)?.session
+    const policy = service.resolve(session === undefined ? {} : { session })
+    if (!policy) throw new FsError('remote mutation refused: sandboxPolicy returned no policy', 'FS_SANDBOX_DENIED')
+    assertRemoteMutationPolicy(policy)
+  })
+  ctx.on?.('dispose', () => observations.clear())
 }
 
 export { Config, apply, inject, name }

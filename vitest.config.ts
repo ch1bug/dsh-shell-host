@@ -52,6 +52,8 @@ const machineLane = [
   // #137：真实 bash 执行 shipping 帧循环，不能由 fake-channel 代验。
   'tests/remote-frame-machine.spec.ts',
   'tests/remote-fs-machine.spec.ts',
+  // #139：真实多请求原子写/分块上传，串行避免MSYS进程启动负载污染。
+  'tests/remote-write-machine.spec.ts',
   'tests/e2e-tool-call-machine.spec.ts',
   'tests/e2e-real-llm-machine.spec.ts',
   'tests/e2e-tarball-machine.spec.ts',

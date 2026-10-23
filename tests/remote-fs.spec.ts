@@ -178,10 +178,8 @@ describe('取消与 cwd 选择', () => {
     expect(url.search).toBe('')
     expect(decodeURIComponent(url.pathname)).toBe('/srv/a #?%.txt')
   })
-  it('未实现写/观察仍响亮 stub，不扩展 #139', async () => {
+  it('watch仍按上游基类响亮拒绝，mutation已有专门公共验收', async () => {
     const h = harness(), target = await h.fs.resolve('/srv/app')
-    await expect(h.fs.writeText(target, 'x')).rejects.toThrow('#139')
-    await expect(h.fs.editText(target, { oldString: 'x', newString: 'y', replaceAll: false })).rejects.toThrow('#139')
     await expect(h.fs.watch(target, () => {}, new AbortController().signal)).rejects.toMatchObject({ code: 'FS_IO_ERROR' })
   })
 })
@@ -208,6 +206,35 @@ describe('remote_ls 公共工具', () => {
     expect(listDir).toHaveBeenCalledOnce()
     expect(output).toMatchObject({ path: '/srv/app', truncated: true, total: 2 })
     expect(output.entries).toHaveLength(1)
+    expect(h.exec).not.toHaveBeenCalled()
+  })
+})
+
+describe('#139已打开通道后的逐次写权限', () => {
+  it('成功后降级read-only/workspace-write或移除policy服务，均在resolve/写入前拒绝', async () => {
+    const h = harness(), provided = new Map<string, unknown>(), tools: any[] = []
+    const session = {}, actor = { agent: { session }, signal: new AbortController().signal }
+    let mode = 'danger-full-access', mounted = true
+    const resolvePolicy = vi.fn(() => ({ mode, workspaceRoot: '/local/one' }))
+    apply({ provide: (key, value) => { provided.set(key, value) }, tools: { register: tool => tools.push(tool) }, get: key => key === 'remote' ? h.remote : key === 'sandboxPolicy' ? (mounted ? { resolve: resolvePolicy } : undefined) : provided.get(key) }, {})
+    const fs = provided.get('remoteFs') as RemoteFileSystem
+    const target = { targetKey: 'one\0/srv/app' as FsTargetKey, displayPath: '/srv/app' }
+    const resolve = vi.spyOn(fs, 'resolve').mockResolvedValue(target)
+    const write = vi.spyOn(fs, 'writeText').mockResolvedValue({ operation: 'create', version: 'v2' as FsVersion, before: null, after: 'new' })
+    const edit = vi.spyOn(fs, 'editText').mockResolvedValue({ version: 'v3' as FsVersion, before: 'new', after: 'edited' })
+    const writeTool = tools.find(tool => tool.name === 'remote_write'), editTool = tools.find(tool => tool.name === 'remote_edit')
+    await writeTool.execute({ file_path: '/srv/app', content: 'new' }, actor)
+    for (mode of ['read-only', 'workspace-write']) {
+      for (const [tool, args] of [[writeTool, { file_path: '/srv/app', content: 'new' }], [editTool, { file_path: '/srv/app', old_string: 'new', new_string: 'edited' }]]) {
+        await expect(tool.execute(args, actor)).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED', message: expect.stringContaining('[sandbox:') })
+      }
+    }
+    expect(resolvePolicy).toHaveBeenLastCalledWith({ session })
+    mounted = false
+    await expect(writeTool.execute({ file_path: '/srv/app', content: 'new' }, actor)).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(edit).not.toHaveBeenCalled()
     expect(h.exec).not.toHaveBeenCalled()
   })
 })

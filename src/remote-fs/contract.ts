@@ -22,8 +22,8 @@
  *      a `{ dispose }` object.
  *
  * #137实现路径/元数据/目录面，#138实现读面：`readText` / `streamText` /
- * `readBytes` / `readByteRange` / `lstat`。写面 `writeText` / `editText` 仍留给
- * #139；watch仍按上游基类边界响亮拒绝。
+ * `readBytes` / `readByteRange` / `lstat`。#139实现写面 `writeText` / `editText`；
+ * watch仍按上游基类边界响亮拒绝。
  * A stub that throws the same vocabulary is honest; a stub that returns empty
  * data is a lie a consumer cannot detect.
  *
