@@ -11,6 +11,8 @@
 import type { IPty } from "@lydell/node-pty";
 import { apply } from "../../src/pty/index.ts";
 import { apply as applySsh } from "../../src/ssh/index.ts";
+import { apply as applyRemote } from "../../src/remote/index.ts";
+import { apply as applyRemoteFs } from "../../src/remote-fs/index.ts";
 import type { SessionCore, CoreSpawnSpec } from "../../src/pty/session-core.ts";
 import { fakePermissionServices, permissionServiceLookup, type FakeApproval, type FakeSandboxPolicy } from "./fake-permissions.ts";
 
@@ -136,8 +138,24 @@ export function bootPlugin(opts?: {
   /** #136: the ssh entry's own settings namespace. Defaults to `config` (both
    * entries read `enableRunInBackground`, the only shared key). */
   sshConfig?: unknown;
+  /** #137: mount the `./remote` entry (workspace service + its three tools).
+   * The value is its settings namespace (`{ workspaces, anchorRoot, … }`). */
+  remote?: unknown;
+  /** #137: the remote entry's channel seams (`spawner` / `sleep` / `platform`). */
+  remoteDeps?: Record<string, unknown>;
+  /** #137: mount the `./remote-fs` entry (it CONSUMES the `remote` service, so
+   * this only takes effect together with `remote`). */
+  remoteFs?: unknown;
+  /** Extra services to mount BEFORE the entries run (e.g. #137's
+   * `workingDirectory` stand-in, which the remote file face reads for the
+   * session's anchor). Same lookup precedence as a real `ctx.provide`. */
+  services?: Record<string, unknown>;
 }) {
   const provided = new Map<string, unknown>();
+  // Pre-mounted services (#137: a lane's own `workingDirectory` stand-in must
+  // win over nothing — they are provided BEFORE the entries run, exactly as a
+  // composition would).
+  for (const [serviceName, value] of Object.entries(opts?.services ?? {})) provided.set(serviceName, value);
   const registered: any[] = [];
   const effects: Array<{ label: string; dispose: () => Promise<void> }> = [];
   const systemPrompt = fakeSystemPrompt();
@@ -183,6 +201,10 @@ export function bootPlugin(opts?: {
   // #136: the ssh entry builds on the pty service, so it is applied AFTER the
   // pty entry (the real bundle patch mounts the rows in the same order).
   if (opts?.ssh === true) applySsh(ctx, opts?.sshConfig ?? opts?.config ?? {});
+  // #137: the remote pair, in the bundle patch's own order (`remote` → `remote-fs`:
+  // the file sibling injects the workspace service).
+  if (opts?.remote !== undefined) applyRemote(ctx, opts.remote, opts.remoteDeps ?? {});
+  if (opts?.remoteFs !== undefined) applyRemoteFs(ctx, opts.remoteFs);
   const tool = (name: string) => {
     const t = registered.find((x) => x.name === name);
     if (!t) throw new Error(`tool not registered: ${name}`);

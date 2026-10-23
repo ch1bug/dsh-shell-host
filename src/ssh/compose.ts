@@ -52,7 +52,7 @@ const SHELL_UNSAFE = /[\s'"`$\\;&|<>(){}*?[\]#~!]/
  * atom becomes `{ key }`. Suppression then matches on the normalized KEY —
  * exact, no prefix heuristics.
  */
-const normalizeSshOptions = (options: SshOptionInput[] | undefined): SshOption[] => {
+export const normalizeSshOptions = (options: readonly SshOptionInput[] | undefined): SshOption[] => {
   if (options === undefined) return []
   return options.map((entry, i): SshOption => {
     const at = `ssh_start options[${i}]`
@@ -96,13 +96,29 @@ export interface SshLaunchArgs {
   options?: SshOptionInput[]
 }
 
+/** The argv clump (same fields + the two call-shape switches the remote
+ * workspace's framed channel needs; #137). */
+export interface SshArgvArgs extends SshLaunchArgs {
+  /** `false` = no remote TTY (`-T`): the framed channel must see raw bytes,
+   * never a line-disciplined remote terminal. Default `true` (`-tt`). */
+  tty?: boolean
+  /** Remote command line as ONE argv atom, appended after the host. The caller
+   * quotes it (`sh -c <quoted script>`): ssh joins its operands and the remote
+   * LOGIN shell parses the result, so this layer must not split it. */
+  remoteCommand?: string
+}
+
 /**
- * The ssh composition, single source (#49/#54): the ssh_start tool and the
- * launcher layer's ssh transport dimension (ADR-0008 decision 1) both derive
- * from this one function — the launcher never re-hardcodes keepalive or -o
- * semantics.
+ * The ssh ARGV composition, single source (#49/#54 + #137).
+ *
+ * The two call shapes are both derived here so the keepalive defaults, the
+ * `-o` rendering and the `-p`/`-J` ordering can never grow a second spelling:
+ *   - the pty-hosted interactive session (`ssh_start`, launcher ssh presets)
+ *     renders {@link composeSshCommand} — one command LINE for a PTY;
+ *   - the remote workspace's framed channel (`./remote`) needs the ARGV form
+ *     with `-T` (no remote TTY) and a pre-quoted remote command.
  */
-export function composeSshCommand(args: SshLaunchArgs): string {
+function buildSshArgv(args: SshArgvArgs, renderOption: (option: SshOption) => string): string[] {
   /** argv ATOMS (host/jump) — never shell text; reject whitespace loudly. */
   const atom = (kind: string, value: string) => {
     if (!/^[\w.@:[\]-]+$/.test(value)) {
@@ -112,8 +128,9 @@ export function composeSshCommand(args: SshLaunchArgs): string {
   }
   // -tt: force remote TTY allocation even when the local side is a pipe —
   // the interactive full-duplex contract (banner, prompt, echo) depends on
-  // the remote shell being interactive.
-  const parts = ['ssh', '-tt']
+  // the remote shell being interactive. -T is the opposite call shape (#137):
+  // the framed channel must receive bytes, never a rendered terminal.
+  const parts = ['ssh', args.tty === false ? '-T' : '-tt']
   if (args.jump !== undefined) parts.push('-J', atom('jump', args.jump))
   if (args.port !== undefined) {
     if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535) {
@@ -135,12 +152,27 @@ export function composeSshCommand(args: SshLaunchArgs): string {
   if (!setsKey(SSH_KEEPALIVE_COUNT_KEY)) {
     parts.push('-o', SSH_KEEPALIVE_COUNT_DEFAULT)
   }
-  for (const option of supplied) parts.push('-o', renderSshOption(option))
+  for (const option of supplied) parts.push('-o', renderOption(option))
   parts.push(atom('host', args.host))
-  // `shell` is deliberately NOT an atom: it is remote SHELL TEXT appended
-  // verbatim (e.g. "bash --login"). core.open delivers `command` as shell
-  // text into the PTY (the PTY model has no argv array), so only host/jump
-  // need atom validation — they are the pieces ssh itself parses.
-  if (args.shell !== undefined && args.shell.trim() !== '') parts.push(args.shell.trim())
-  return parts.join(' ')
+  // `remoteCommand` is the single already-quoted atom a framed caller hands in;
+  // `shell` is remote SHELL TEXT appended verbatim (e.g. "bash --login") — the
+  // PTY call shape has no argv array, so only host/jump need atom validation
+  // (they are the pieces ssh itself parses).
+  if (args.remoteCommand !== undefined) parts.push(args.remoteCommand)
+  else if (args.shell !== undefined && args.shell.trim() !== '') parts.push(args.shell.trim())
+  return parts
+}
+
+/**
+ * The ssh command LINE (the pty call shape): the argv composition joined into
+ * one string. Kept as the same function every pre-#137 caller uses, so
+ * {@link composeSshArgv} owns the semantics and this owns the string form.
+ */
+export function composeSshCommand(args: SshLaunchArgs): string {
+  return buildSshArgv(args, renderSshOption).join(' ')
+}
+
+/** pipe spawn 的选项已经是一个 argv 元素，不再添加本地 shell 引号。 */
+export function composeSshArgv(args: SshArgvArgs): string[] {
+  return buildSshArgv(args, (option) => option.value === undefined ? option.key : `${option.key}=${option.value}`)
 }

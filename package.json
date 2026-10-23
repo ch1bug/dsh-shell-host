@@ -46,6 +46,14 @@
     "./terminal": {
       "types": "./lib/types/terminal/index.d.ts",
       "default": "./lib/terminal/index.js"
+    },
+    "./remote": {
+      "types": "./lib/types/remote/index.d.ts",
+      "default": "./lib/remote/index.js"
+    },
+    "./remote-fs": {
+      "types": "./lib/types/remote-fs/index.d.ts",
+      "default": "./lib/remote-fs/index.js"
     }
   },
   "files": [
@@ -55,12 +63,16 @@
     "lib/ssh/index.js",
     "lib/wsl-plugin/index.js",
     "lib/terminal/index.js",
+    "lib/remote/index.js",
+    "lib/remote-fs/index.js",
     "lib/permission-gate-*.js",
     "lib/posix-quote-*.js",
     "lib/detect-*.js",
     "lib/launchers-*.js",
     "lib/tool-support-*.js",
     "lib/compose-*.js",
+    "lib/transport-*.js",
+    "lib/service-*.js",
     "lib/src-*.js",
     "cordis.patch.yml"
   ],

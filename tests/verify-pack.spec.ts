@@ -131,10 +131,11 @@ describe("entryTargets", () => {
     // 在 node 侧必然失败）。
     const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
     expect(Object.keys(pkg.exports)).not.toContain("./client");
-    // 顺带锁住本判据读取的那份真实输入形状：11 个 entry、6 个具名 entry（`./src/*` 被通配过滤掉）。
+    // 顺带锁住本判据读取的那份真实输入形状：15 个 entry、8 个具名 entry（`./src/*` 被通配过滤掉）。
     // #136: `./ssh` is the fourth own entry (它把 ssh 四工具从 `./pty` 分了出去).
+    // #137: `./remote` + `./remote-fs` are the remote workspace pair (ADR-0016 decision 1).
     const entries = entryTargets(pkg.exports).filter(([, target]) => !target.includes("*"));
-    expect(entries).toHaveLength(11);
+    expect(entries).toHaveLength(15);
     expect([...new Set(entries.map(([entry]) => entry))]).toEqual([
       ".",
       "./package.json",
@@ -142,6 +143,8 @@ describe("entryTargets", () => {
       "./ssh",
       "./wsl",
       "./terminal",
+      "./remote",
+      "./remote-fs",
     ]);
   });
 });
@@ -200,6 +203,11 @@ describe("chunkFamilyDeclarations", () => {
       // by the ssh entry and the launcher layer).
       "lib/tool-support-*.js",
       "lib/compose-*.js",
+      // #137: the remote pair introduced two more — the ADR-0017 transport
+      // vocabulary (the ssh entry + the remote channel) and the workspace
+      // service contract (the remote entry + its file sibling).
+      "lib/transport-*.js",
+      "lib/service-*.js",
       "lib/src-*.js",
     ]);
     // 具体文件名（`lib/pty/index.js`）与跨段通配（`lib/types/**/*.d.ts`）都不是族：前者点一个文件，
@@ -328,7 +336,29 @@ describe("guardSelfCheck", () => {
 
 describe("strayTypeDeclarations", () => {
   /** 生产 `src/` 面的**真实**根相对路径（tsc 的 emit 根，`tsconfig.build.json`: rootDir=src）。 */
-  const realSources = ["src/detect.ts", "src/launchers.ts", "src/posix-quote.ts", "src/pty/index.ts", "src/pty/session-core.ts", "src/terminal/index.ts", "src/wsl-plugin/index.ts"];
+  const realSources = [
+    "src/detect.ts",
+    "src/launchers.ts",
+    "src/permission-gate.ts",
+    "src/posix-quote.ts",
+    "src/tool-support.ts",
+    "src/pty/background-send.ts",
+    "src/pty/environment-context.ts",
+    "src/pty/index.ts",
+    "src/pty/session-core.ts",
+    "src/ssh/compose.ts",
+    "src/ssh/index.ts",
+    "src/ssh/transport.ts",
+    "src/terminal/index.ts",
+    "src/wsl-plugin/index.ts",
+    // #137: the remote workspace pair.
+    "src/remote/channel.ts",
+    "src/remote/frame.ts",
+    "src/remote/index.ts",
+    "src/remote/service.ts",
+    "src/remote-fs/contract.ts",
+    "src/remote-fs/index.ts",
+  ];
 
   it("THE POINT (#117): a hand-written `.d.ts` with no `src/` counterpart is flagged", () => {
     // 票面实测（2026-10-17）：`Set-Content lib/types/zz-not-real.d.ts 'declare const zz: never'`
@@ -346,19 +376,32 @@ describe("strayTypeDeclarations", () => {
     ).toEqual(["lib/types/zz-not-real.d.ts"]);
   });
 
-  it("NO FALSE ALARM (AC2): the real build face — 7 `.d.ts` — is clean", () => {
-    // 变异验证的另一半：正常构建（`src/` 下 7 个 `.ts` ⇒ `lib/types/` 下 7 个 `.d.ts`）
-    // **不得**被该判据误报。这 7 条是真件、真路径，一一对应。
+  it("NO FALSE ALARM (AC2): the real build face — 20 `.d.ts` — is clean", () => {
+    // 变异验证的另一半：正常构建（`src/` 下 20 个 `.ts` ⇒ `lib/types/` 下 20 个 `.d.ts`，
+    // #137 后实测：六个 entry + 十四个模块）**不得**被该判据误报。这 20 条是真件、真路径，一一对应。
     expect(
       strayTypeDeclarations(
         [
           "lib/types/detect.d.ts",
           "lib/types/launchers.d.ts",
+          "lib/types/permission-gate.d.ts",
           "lib/types/posix-quote.d.ts",
+          "lib/types/tool-support.d.ts",
+          "lib/types/pty/background-send.d.ts",
+          "lib/types/pty/environment-context.d.ts",
           "lib/types/pty/index.d.ts",
           "lib/types/pty/session-core.d.ts",
+          "lib/types/ssh/compose.d.ts",
+          "lib/types/ssh/index.d.ts",
+          "lib/types/ssh/transport.d.ts",
           "lib/types/terminal/index.d.ts",
           "lib/types/wsl-plugin/index.d.ts",
+          "lib/types/remote/channel.d.ts",
+          "lib/types/remote/frame.d.ts",
+          "lib/types/remote/index.d.ts",
+          "lib/types/remote/service.d.ts",
+          "lib/types/remote-fs/contract.d.ts",
+          "lib/types/remote-fs/index.d.ts",
         ],
         realSources,
       ),
@@ -506,9 +549,15 @@ describe("unexpectedPackedFiles / compileFilesMatcher", () => {
         "lib/posix-quote-Y4b21.js",
         "lib/detect-Ab12.js",
         "lib/launchers-Cd34.js",
+        "lib/tool-support-Ab12.js",
+        "lib/compose-Cd34.js",
+        "lib/transport-Ef56.js",
+        "lib/service-Gh78.js",
         "lib/src-Ef56.js",
         "lib/wsl-plugin/index.js",
         "lib/terminal/index.js",
+        "lib/remote/index.js",
+        "lib/remote-fs/index.js",
         "cordis.patch.yml", // 声明面里的非 lib/ 件：范围内不判、也不该被判（`lib/` 前缀之外）
       ]),
     ).toEqual([]);
@@ -1372,7 +1421,7 @@ describe("判据 6 的 CLI 通路（#117）：临时副本里真跑，不写产�
     }
   }, CLI_CASE_TIMEOUT_MS);
 
-  it("NO FALSE ALARM (AC2)：真实构建面下判据 6 **不**报 —— 7 个 `.d.ts` 全有源码对应", async () => {
+  it("NO FALSE ALARM (AC2)：真实构建面下判据 6 **不**报，声明全有源码对应", async () => {
     // 变异验证的另一半：若判据 6 写成了"永远报"，上面的响亮用例照样绿，只有这条能拦。
     await waitForRepoLibReady();
     const root = makeRepoCopyWithFaces("stray-types-clean");
@@ -1383,9 +1432,9 @@ describe("判据 6 的 CLI 通路（#117）：临时副本里真跑，不写产�
       expect(run.stderr, "判据 1/1b 不该早退").not.toContain("pointers to missing files");
       // 判据 6 必须**真的跑过**并给出正常读数（否则"没报"可能只是它压根没执行）。
       expect(run.stdout).toContain("every lib/types/ declaration has a matching src/ file");
-      // 判据 3 的读数顺带证明走到了那一步（`entries` 计数 = 11 —— #92 的 AC，
-      // #136 起多了 `./ssh` 的两个指针）。
-      expect(run.stdout).toContain("all 11 export entries packed and importable");
+      // 判据 3 的读数顺带证明走到了那一步（#137后15个导出指针；
+      // #136新增ssh，#137新增remote/remote-fs）。
+      expect(run.stdout).toContain("all 15 export entries packed and importable");
     } finally {
       rmSync(root, { recursive: true, force: true });
       snapshot.dispose();

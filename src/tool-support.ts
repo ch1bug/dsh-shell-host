@@ -81,13 +81,26 @@ export const presentSendCall = (args: { id: string; data: string; run_in_backgro
     ? { card: 'generic' as const, title: `Send to session ${args.id} in background`, kind: 'execute' as const, rawInput: args.data }
     : { card: 'terminal' as const, title: args.data }
 
-/** Every pty/ssh tool requires an owning agent session (owner-scoped core).
+/**
+ * Every pty/ssh tool requires an owning agent session (owner-scoped core).
  * The prose is kept VERBATIM from the pre-#136 ssh family as well: this ticket
- * is a refactor, and the ssh tools have always answered with this line. */
+ * is a refactor, and the ssh tools have always answered with this line.
+ *
+ * #137: the family name is a PARAMETER now (see {@link requireAgentFor}) — the
+ * `remote_*` tools answer with their own family name, and this alias keeps the
+ * pty/ssh wording byte-for-byte what it was.
+ */
 export function requireAgent(exec: { agent?: Owner }): Owner {
+  return requireAgentFor('pty', exec)
+}
+
+/** The same contract, naming the calling FAMILY: `<family>_* tools require an
+ * owning agent session`, `code: NO_AGENT`. One implementation, so the code can
+ * never drift while the prose stays family-correct. */
+export function requireAgentFor(family: string, exec: { agent?: Owner }): Owner {
   const owner = exec?.agent
   if (owner === undefined) {
-    throw Object.assign(new Error('pty_* tools require an owning agent session'), { code: 'NO_AGENT' })
+    throw Object.assign(new Error(`${family}_* tools require an owning agent session`), { code: 'NO_AGENT' })
   }
   return owner
 }

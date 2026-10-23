@@ -11,6 +11,11 @@
 # 独立 settings namespace(id: terminal)。【2026-10-10 撤下→#61 恢复】
 # ADR-0010 改道自带通道后 ./pty 不再 inject terminals,会话核心由 node-pty
 # (Windows ConPTY)自管;两行恢复随 bundle 挂载,无依赖等待。
+#
+# #136:ssh 家族独立成 ./ssh(pty 回归纯会话核心)。
+# #137:远程工作区 ./remote(工作区登记 + 每主机一条长驻通道)与它的文件姐妹
+# ./remote-fs(ctx.remoteFs + remote_ls,ADR-0016 决策 1)。remote-fs 的
+# inject 含 remote,故 remote 行必须先于 remote-fs 行(顺序即依赖)。
 - insert:
     - id: pty
       name: dsh-shell-host/pty
@@ -22,3 +27,9 @@
       name: dsh-shell-host/terminal
       config:
         custom: []
+- insert:
+    - id: remote
+      name: dsh-shell-host/remote
+- insert:
+    - id: remote-fs
+      name: dsh-shell-host/remote-fs

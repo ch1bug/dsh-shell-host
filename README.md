@@ -2,7 +2,7 @@
 
 DSH bundle: **a tools-only plugin (ADR-0012/0013)** — persistent PTY sessions
 (`./pty`), interactive ssh sessions (`./ssh`), launcher-preset terminals
-(`shell_open`, `./terminal`), and WSL bridge tools (`./wsl`). No shell executor,
+(`shell_open`, `./terminal`), 远程工作区与文件服务（`./remote` / `./remote-fs`），以及 WSL bridge tools (`./wsl`). No shell executor,
 no `ctx.shell` provider, no upstream loader-row takeover: every row in
 `cordis.patch.yml` is an own-id insert, and the shell seam belongs to the
 platform shell executors alone.
@@ -12,17 +12,19 @@ platform shell executors alone.
 > of the permission-presets and pwsh-tool rows. That world was removed in two
 > steps — ADR-0012 (no upstream-row takeover) and ADR-0013 (executor world
 > deleted) — after the executor registration/composition path kept failing in
-> practice. Remote ONE-SHOT execution now lives in the standalone
-> `dsh-shell-remote` plugin (route C).
+> practice. 原远程 one-shot 的 route C 分工后来由 ADR-0016 修订；
+> 现行工作区能力由本包承接，单次执行与 `dsh-ssh/ssh_exec` 正交分工。
 
 ## The bundle patch
 
-`cordis.patch.yml` mounts exactly three own-id rows and touches nothing else:
+`cordis.patch.yml` 挂载五条自有 id 行，不接管上游行：
 
 1. `pty` (`dsh-shell-host/pty`) — the persistent session core.
 2. `ssh` (`dsh-shell-host/ssh`) — the interactive ssh instance (`ssh_start` /
    `ssh_tail` / `ssh_send` / `ssh_close`), over the `pty` core (#136).
 3. `terminal` (`dsh-shell-host/terminal`) — the `shell_open` launcher surface.
+4. `remote` (`dsh-shell-host/remote`) — 远程工作区登记、预热与长驻连接（#137）。
+5. `remote-fs` (`dsh-shell-host/remote-fs`) — 加性 `ctx.remoteFs` 与 `remote_ls`（#137），依赖前一行。
 
 The platform executors (`pwsh-sandbox` / `bash-sandbox`) keep their DSH-native
 posture untouched; the one-shot `bash`/`pwsh` tool faces are the platform's own
@@ -288,9 +290,9 @@ on the core PTY; the three passthroughs reuse the core's cursors and reads
 verbatim. **合成逻辑单一来源**：`src/ssh/compose.ts`（keepalive 默认值 / `port` /
 `-o` 透传 / argv 合成）——`./terminal` 的 ssh transport 维度也吃同一份，行为与 #136 之前逐字一致。
 
-Division of labor (README-documented): ONE-SHOT remote commands belong to the
-standalone `dsh-shell-remote` plugin (ADR-0013, route C — formerly this
-package's `./remote` entry); `ssh_start` is for sessions a human/agent
+远程 one-shot 分工按 ADR-0016 修订：单次执行使用 `dsh-ssh` 的 `ssh_exec`，本包不新增 one-shot 工具。
+原独立 `dsh-shell-remote`（route C）仅为历史分工；
+`ssh_start` remains for sessions a human/agent
 converses with (long-lived remote shell, intermediate output via the tail
 cursor).
 
@@ -332,6 +334,65 @@ Live verification (machine lane): `tests/ssh-pty-live.spec.ts` runs the full
 start → interactive → incremental tail → close round-trip against a real
 host; it is gated on `DSH_SSH_LIVE_HOST` (optionally `DSH_SSH_LIVE_JUMP`)
 and skips loudly when unset — no network in the default test lanes.
+
+## 远程工作区：`./remote` 与 `./remote-fs`（#137）
+
+这两个是兄弟入口：前者提供 `ctx.remote`，负责工作区登记与连接生命周期；后者提供
+`ctx.remoteFs`，文件工具只经这个服务访问远端。它们不替换上游 `ctx.fs`，也不新增
+`ctx.shell` 执行器。只挂 `pty` 的旧 profile 仍须先补上 `ssh` 行；需要远程工作区时再补
+`remote` → `remote-fs` 两行，完整 bundle 已包含五行。
+
+### 预热配置与工具
+
+`remote` 行的配置示例（元数据，不保存凭据）：
+
+```yaml
+- insert:
+    - id: remote
+      name: dsh-shell-host/remote
+      config:
+        workspaces:
+          - host: devbox
+            root: /srv/app
+            title: 远程应用
+```
+
+组合装载即开始连接，失败记录为 `unavailable` 与稳定错误码，不阻塞宿主启动。
+`remote_open({ host, root, anchor?, title?, port?, jump?, options? })` 可动态登记或显式重试，
+`remote_list` 查看登记项，`remote_status({ workspaceId? })` 查看实际启动形态、远端 shell
+探测值、引用计数、重连次数、在飞请求及最后错误。同一 host 的工作区共享文件通道；若
+port/jump/options 不同，明确拒绝复用，须使用不同 OpenSSH host alias，避免静默访问错误主机。
+动态登记保留到组件卸载；需在重启后预热的工作区写入上面的 `workspaces` 配置。
+
+`remote_open` 创建本地锚点目录，内含 `.dsh-remote-workspace.json`（host + 远端 root
+与连接指纹，不含凭据）。默认位于 `anchorRoot` 下；未配置时使用本次会话工作区根下的
+`.dsh-remote`，配置预热则使用部署默认工作区根。锚点是身份而非文件副本；完整宿主有
+`workspaceRegistry` 时自动把锚点登记为普通工作区，纯工具组合仍可通过本服务查询它。
+已有 marker 不匹配、marker 是符号链接、或无 marker 的目录非空时均拒绝接管。
+`remote_open` 经过 #102 权限门；`workspace-write` 同时约束 ssh 启动 cwd 与锚点真实路径，
+`read-only` 拒绝开连接。配置预热是部署者声明，不冒充某个 agent 的一次性授权。
+
+`remote_ls({ path?, limit? })` 列远端目录；显式 `path` 必须为绝对 POSIX 路径，省略则列
+工作区根。工作区由会话 cwd 对应的本地锚点选定；无锚点时仅在唯一工作区下兜底，多主机
+歧义必须明确报错。`limit` 只限制展示行数，返回 `truncated` 与 `total`，不是远端扫描或
+内存预算；超出帧上限会响亮失败而不是返回半棵目录。**本地 read/write/edit 看到的是锚点，
+远端文件必须用 `remote_*` 工具**。
+
+### 传输与本期边界
+
+- POSIX 客户端明确启用 ControlMaster；Windows 明确禁用它，绝不先试 master 再回退。
+  可显式 `ControlMaster=no` 选择独立连接，状态同步报告该形态；`auto`/`ask` 等不能保证
+  可观测形态的模式响亮拒绝。WSL 承载和 tmux 仍为 ADR-0017 的 deferred 选项。
+- 远端必须有 POSIX 登录 shell，以及 GNU `base64` / `mktemp` / `stat` / `find` / `realpath`
+  等工具；打开时实测 `uname` 与 `$SHELL`，Windows 或非 POSIX 登录 shell 响亮拒绝。
+  不安装远端 server，不用 SFTP，不做本地文件镜像。
+- 文件通道使用 `ssh -T` 的原始 pipe，不是交互 PTY；内部请求是带 id 的 base64 行帧。
+  先协商协议版本与 `clientId`，异版或身份不匹配响亮拒绝；子命令与协议 stdin 隔离，
+  响应帧有 8 MiB 上限。这是文件传输通道，不是第二份 PTY 核心。
+- 本期真正实现 `resolve` / `stat` / `listDir`；其余 `dsh-fs` 同形方法存在但响亮拒绝。
+  读面由 #138、写面由 #139、工作区多会话编排由 #140 承接，不能把契约骨架当作已交付功能。
+- 无活体 ssh 主机的环境中，真实 bash 循环与注入通道覆盖不等于 ssh 活体验收；验证报告须
+  明说 `not run locally: remote live`，不能用假通道绿灯代替真实网络证据。
 
 ## The `./terminal` entry (issue #55, ADR-0008)
 
@@ -400,7 +461,7 @@ import * as wsl from 'dsh-shell-host/wsl'   // { name, inject, apply }
 ```
 
 `./wsl` is **exported but deliberately NOT bundle-mounted** (ADR-0013): the
-bundle patch mounts only three rows (`pty`, `ssh`, `terminal` — see *The bundle
+bundle patch mounts five rows (`pty`, `ssh`, `terminal`, `remote`, `remote-fs` — see *The bundle
 patch* above), so installing the bundle does NOT give you the `win_*` tools.
 That is
 by design — the row was never in the patch, so its absence is not a regression.

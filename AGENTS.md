@@ -15,8 +15,10 @@ to-spec → to-tickets → implement).
 executor world is gone — no `ctx.shell` provider, no backends, no upstream
 loader-row takeover. Entries: `./pty` (persistent PTY sessions), `./ssh`
 (interactive ssh sessions — split out of `./pty` by #136), `./terminal`
-(`shell_open` launcher presets), `./wsl` (WSL bridge tools). Remote one-shot
-belongs to the standalone `dsh-shell-remote` plugin (route C).
+(`shell_open` launcher presets), `./wsl` (WSL bridge tools)，以及 #137 新增的
+`./remote` / `./remote-fs`。远程工作区配置、权限与本期边界见
+[README 的远程工作区说明](README.md)。原远程 one-shot
+路线归独立 `dsh-shell-remote` 插件（route C）的结论，已由 ADR-0016 的工作区方案修订。
 
 ## Agent skills
 

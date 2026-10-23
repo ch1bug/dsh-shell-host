@@ -237,6 +237,8 @@ export const LIB_ENTRY_FILES = [
   "lib/pty/index.js",
   "lib/ssh/index.js",
   "lib/terminal/index.js",
+  "lib/remote/index.js",
+  "lib/remote-fs/index.js",
   "lib/wsl-plugin/index.js",
 ] as const;
 
@@ -251,7 +253,7 @@ export const LIB_ENTRY_FILES_WITHIN_LIB = LIB_ENTRY_FILES.map((relative) =>
 );
 
 /**
- * `lib/` 目录是否像"重建完成"：四个入口文件都在。
+ * `lib/` 目录是否像"重建完成"：六个入口文件都在。
  *
  * @param libDir **`lib/` 自己**的绝对路径（不是仓根）—— 入参语义与 {@link LIB_ENTRY_FILES}
  *   的仓根相对写法不同，见那里的说明。

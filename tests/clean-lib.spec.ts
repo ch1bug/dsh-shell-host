@@ -3,7 +3,7 @@
  *
  * 票面（ch1bug/dsh-shell-host#111）要两条面：
  *
- * 1. **纯函数面**：「该删 vs 该留」的判定是 `planLibCleanup()`，「删 lib/*.js + 删四个入口目录、
+ * 1. **纯函数面**：「该删 vs 该留」的判定是 `planLibCleanup()`，「删 lib/*.js + 删六个入口目录、
  *    留 `lib/types/**`」逐条覆盖；**边界**两条必须锁住 ——
  *    （a）`lib/types/` 下的同名 `.js` **不得**被误删（声明面目录不是 tsdown 的产物面）；
  *    （b）`lib/` 完全不存在时（首次构建 / `git clean -fxd` 之后）**不得抛错**。
@@ -65,7 +65,7 @@ function makeLib(root: string, entries: string[]): void {
   }
 }
 
-/** 一棵"上一代产物已铺满"的 fixture：chunk + 四个入口目录 + 声明面（含声明面里的 `.js`）。 */
+/** 一棵"上一代产物已铺满"的 fixture：chunk + 六个入口目录 + 声明面（含声明面里的 `.js`）。 */
 const RESIDUE_LIB = [
   // 上一代 chunk（哈希名形态，与真产物同形）
   "lib/pty-C0_H63de.js",
@@ -74,10 +74,12 @@ const RESIDUE_LIB = [
   "lib/detect-def456.js",
   "lib/launchers-ghi789.js",
   "lib/src-jkl012.js",
-  // 四个入口目录（含其子文件）
+  // 六个入口目录（含其子文件）
   "lib/pty/index.js",
   "lib/ssh/index.js",
   "lib/terminal/index.js",
+  "lib/remote/index.js",
+  "lib/remote-fs/index.js",
   "lib/wsl-plugin/index.js",
   // 声明面 —— 必须整棵保留（含 `.d.ts.map`：tsc 的真实产出，虽不在 `files` 面上）
   "lib/types/pty/index.d.ts",
@@ -98,7 +100,7 @@ const RESIDUE_LIB = [
 ];
 
 describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
-  it("deletes the top-level tsdown chunks and the four entry directories", () => {
+  it("deletes the top-level tsdown chunks and the six entry directories", () => {
     // 判据吃的是 `listLibEntries()` 的顶层条目形态：目录条目不带尾斜杠。
     const doomed = planLibCleanup(RESIDUE_LIB.map((p) => p.replace(/\/index\.js$/u, "")));
     expect(doomed).toEqual([
@@ -111,6 +113,8 @@ describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
       "lib/pty",
       "lib/ssh",
       "lib/terminal",
+      "lib/remote",
+      "lib/remote-fs",
       "lib/wsl-plugin",
     ]);
   });
@@ -171,9 +175,9 @@ describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
     expect(planLibCleanup(["lib/pty-C0_H63de.js"])).toEqual(["lib/pty-C0_H63de.js"]);
   });
 
-  it("treats all four separator spellings of an entry directory identically", () => {
+  it("treats all separator spellings of an entry directory identically", () => {
     // 分隔符两形态 × 是否带尾斜杠 = 四种写法，都是"同一个目录"。漏任何一种的后果都是
-    // **四个入口目录整棵留下**（尾斜杠那条本轮真踩过）。
+    // **六个入口目录整棵留下**（尾斜杠那条本轮真踩过）。
     for (const spelling of ["lib/pty", "lib/pty/", "lib\\pty", "lib\\pty\\"]) {
       expect(planLibCleanup([spelling]), `${JSON.stringify(spelling)} 应命中入口目录`).toEqual([
         "lib/pty",
@@ -198,14 +202,14 @@ describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
     expect(planLibCleanup([])).toEqual([]);
     expect(planLibCleanup(undefined)).toEqual([]);
     expect(normalizeLibPath(".\\lib\\pty\\index.js")).toBe("lib/pty/index.js");
-    // 末尾分隔符：`readdirSync` 的目录条目形态与手工写法必须等价 —— 否则四个入口目录
+// 末尾分隔符：`readdirSync` 的目录条目形态与手工写法必须等价 —— 否则六个入口目录
     // 会整棵留下（`TSDOWN_ENTRY_DIRS.includes()` 逐字比较）。
     expect(normalizeLibPath("lib/pty/")).toBe("lib/pty");
     expect(planLibCleanup(["lib/pty/", "lib/terminal/"])).toEqual(["lib/pty", "lib/terminal"]);
   });
 
   it("deletes by tsdown product SHAPE, never by a negative 'everything but .d.ts' rule", () => {
-    // 否定式判据（"`lib/` 下非 `.d.ts` 全删"）会当场把四个入口 `lib/*/index.js` 删掉 ——
+// 否定式判据（"`lib/` 下非 `.d.ts` 全删"）会当场把六个入口 `lib/*/index.js` 删掉 ——
     // 它们在 `package.json` 的 `files` 里是**显式声明**的，`verify-pack` 判据 3 立刻红。
     // 本用例锁住**肯定式**删除面：只删顶层 chunk + 三个已知入口目录。
     const survivors = [
@@ -219,7 +223,7 @@ describe("planLibCleanup（纯函数：该删 vs 该留）", () => {
     // 注意判据吃的是 `listLibEntries()` 的**顶层条目名**：目录以 `lib/pty` 形态出现
     // （不带尾斜杠，见 `normalizeLibPath`），代表整棵子树。
     expect(planLibCleanup(["lib/pty", "lib/wsl-plugin"])).toEqual(["lib/pty", "lib/wsl-plugin"]);
-    // 尾斜杠是同一件事的等价写法，必须同样命中（本轮真踩过：漏判 ⇒ 四个入口目录整棵留下）。
+// 尾斜杠是同一件事的等价写法，必须同样命中（本轮真踩过：漏判 ⇒ 六个入口目录整棵留下）。
     expect(planLibCleanup(["lib/pty/", "lib/terminal/"])).toEqual(["lib/pty", "lib/terminal"]);
     // 但**深层文件路径**不是目录条目 —— 不据此删（判不准不删）。
     expect(planLibCleanup(["lib/pty/index.js"])).toEqual([]);
@@ -252,7 +256,7 @@ describe("listLibEntries / applyLibCleanup（薄 I/O 层）", () => {
 
       const doomed = applyLibCleanup(join(root, LIB_DIR));
 
-      // chunk 与四个入口目录**整棵**没了
+// chunk 与六个入口目录**整棵**没了
       expect(doomed).toContain("lib/pty-C0_H63de.js");
       expect(doomed).toContain("lib/pty");
       expect(existsSync(join(root, "lib/pty-C0_H63de.js"))).toBe(false);

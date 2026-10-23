@@ -49,6 +49,9 @@ const machineLane = [
   'tests/pty-signal-machine.spec.ts',
   'tests/pty-shell-machine.spec.ts',
   'tests/pty-oneshot-machine.spec.ts',
+  // #137：真实 bash 执行 shipping 帧循环，不能由 fake-channel 代验。
+  'tests/remote-frame-machine.spec.ts',
+  'tests/remote-fs-machine.spec.ts',
   'tests/e2e-tool-call-machine.spec.ts',
   'tests/e2e-real-llm-machine.spec.ts',
   'tests/e2e-tarball-machine.spec.ts',

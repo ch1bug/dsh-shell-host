@@ -181,15 +181,19 @@ describe.skipIf(absent.length > 0)("e2e: pack → install from tarball → confi
         } else {
           // ── ring 3: config — the composed tree carries this bundle's rows ──
           let configured = false;
-          await ring("3 config: all three loader rows composed, nothing pending", async () => {
+          await ring("3 config: all five loader rows composed, nothing pending", async () => {
             const dumped = await runHost(dshHome, ["--profile", PROFILE, "--dump-config"]);
             const dumpOut = dumped.out;
             expect(dumpOut, "composed tree carries dsh-shell-host/pty").toContain("dsh-shell-host/pty");
             expect(dumpOut, "composed tree carries dsh-shell-host/ssh (#136)").toContain("dsh-shell-host/ssh");
             expect(dumpOut, "composed tree carries dsh-shell-host/terminal").toContain("dsh-shell-host/terminal");
+            // #137: the remote workspace pair — `remote-fs` injects `remote`, so a
+            // tree that carries only one of them would leave the other pending.
+            expect(dumpOut, "composed tree carries dsh-shell-host/remote (#137)").toContain("dsh-shell-host/remote");
+            expect(dumpOut, "composed tree carries dsh-shell-host/remote-fs (#137)").toContain("dsh-shell-host/remote-fs");
             expect(dumpOut, "no row is left pending on a missing service").not.toMatch(/waiting for service|Missing services/u);
             configured = true;
-            return "dsh-shell-host/pty + dsh-shell-host/ssh + dsh-shell-host/terminal";
+            return "dsh-shell-host/pty + ssh + terminal + remote + remote-fs";
           });
 
           let launchUrl: string | undefined;
@@ -274,6 +278,10 @@ describe.skipIf(absent.length > 0)("e2e: pack → install from tarball → confi
                 // #136: the ssh family is its own row — the split must not have
                 // dropped it from the packed bundle's surface.
                 expect(names, "ssh_start (./ssh row) is in the tool surface").toContain("ssh_start");
+                // #137: the remote workspace pair registers its tools in the packed
+                // artifact too (a `files` omission would silently drop them).
+                expect(names, "remote_open (./remote row) is in the tool surface").toContain("remote_open");
+                expect(names, "remote_ls (./remote-fs row) is in the tool surface").toContain("remote_ls");
 
                 // The loop closes only when the instance EXECUTED the tool and fed
                 // the result back into a subsequent request.

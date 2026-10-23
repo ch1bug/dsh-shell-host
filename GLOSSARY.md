@@ -203,9 +203,9 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   `src/core/`、`src/backends*`、`src/types|timeout|subprocess-context|wsl-bridge`、
   client 设置卡、`./remote` entry)全部删除;`ctx.shell` 只由平台 shell 执行器
   提供。理由:B 路径(执行器注册/缝组装)已被实证会直接报错。
-- **挂载面 = 三个自有 id 行**（`#136` 起；原记 `pty` + `terminal` 两行）:`pty` + `ssh` + `terminal`;entry 面 = `./pty`(持久
+- **挂载面 = 五个自有 id 行**（`#137` 起；`#136` 阶段为三行）:`pty` + `ssh` + `terminal` + `remote` + `remote-fs`;entry 面 = `./pty`(持久
   PTY 会话核心)、`./ssh`(ssh 四工具 + 通道合成，`#136` 从 `./pty` 抽出)、`./terminal`(shell_open launcher 预设)、`./wsl`(WSL 桥
-  工具)。`launchers.ts` 吸收了原 backends 的 argv/prefix 常量
+  工具)、`./remote`（工作区登记与文件通道）、`./remote-fs`（加性文件服务；本期 resolve/stat/listDir + remote_ls）。`launchers.ts` 吸收了原 backends 的 argv/prefix 常量
   (`*_INTERACTIVE_ARGV`、`msys2PathPrefix`、`parseWslDistroList`)。
 - **远程 one-shot = C 路线**【已被 D14 / ADR-0016 覆盖:远程工作区收回本包,
   `dsh-shell-remote` 只记为前身】:原结论为归独立 `dsh-shell-remote` 插件
@@ -241,7 +241,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   "工作区作用域化 `ctx.fs`"时,迁移 = **换挂载点 + 删前缀**,语义与提示词都不用改。
   这也是否掉"自带粗粒度工具"的理由:那会把将来的迁移变成重写。
 - **文件操作远端就地执行**:工作区持有一条长驻 `ssh <host> -- sh` 通道,帧化请求
-  (长度前缀 + 请求 id),只传 payload(base64 / `tar` 批量);**不用 SFTP / SSHFS / rsync**,
+  （#137采用base64行帧 + 请求id，并先协商协议版本/clientId），只传payload；**不用 SFTP / SSHFS / rsync**，
   零新增依赖。
 - **远端零安装**:只要求 `sh` + `base64`/`find`/`stat`/`tar`;不装 server、不做版本目录。
 - **升级门槛**:watch/增量、千文件级扫描、断线续期/多客户端 —— 任一成立才升 helper
