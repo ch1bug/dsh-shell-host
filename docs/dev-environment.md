@@ -597,6 +597,8 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
 
 ### 4.6 DSH 沙箱下的执行口径（agent 会话，2026-10-18 起实测）
 
+> **当前执行环境以 [AGENTS.md](../AGENTS.md) 的解释器禁令为准：仅禁 PowerShell 与 cmd.exe，其他环境不限制、不强制。** 下列 cmd/pwsh 内容保留为历史故障取证，不是当前 agent 的使用许可。
+
 - **跑测试、写 git 走 PTY 会话**（`pty_open` 开 `cmd`）：`pwsh` 工具下 vitest 在**加载配置**
   阶段就炸 —— `spawn EPERM`（vite `optimizeSafeRealPathSync` → `exec("net use")` 需要管道）；
   `git add` / `commit` / `push` 报 `Unable to create .git/index.lock: Permission denied`。
