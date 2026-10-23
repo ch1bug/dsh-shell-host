@@ -207,8 +207,8 @@
   'dsh-shell*'`），**本轮那几个档名**不应新增；残留里可能带复制的
   `.credentials.yaml`，看到先解释来源再删。旧档名 `dsh-shellhost-verify-*` 的来源**已解释**：
   那是 pre-`#97` 挂具**失败路径**的泄漏残留（含复制的 `.credentials.yaml`），不由现树任何
-  挂具产出（`dsh-shellhost-*` 这一族现役只有 `-real-` / `-tarball-` / `-e2e-` 三处
-  `mkdtemp`），本机那 9 个已于 2026-10-17 清掉。
+  挂具产出（`dsh-shellhost-*` 这一族现役只有 `-real-` / `-tarball-` / `-e2e-` 三个
+  前缀的 `mkdtemp`），本机那 9 个已于 2026-10-17 清掉。
   **过滤器为什么是 `dsh-shell*` 而不是只写一族**：本机有**两个**同源前缀，`dsh-shellhost-*`
   （e2e 挂具）与 `dsh-shell-host-pack-*`（`verify-pack` 的 packdir）——后者**匹配不到**只写
   `dsh-shellhost-*` 的 pattern（`shellhost` 无连字符），于是它长期的残留按本文档的命令扫**恒为 0**，
@@ -290,7 +290,7 @@ else bad('失败归咎于本仓新增行', blamed.join(', '))
 - **断言"装好了"要看三处**：`dsh.profile.bundles` 含插件名、`dependencies` 有该
   条目、`node_modules/<pkg>/package.json` 存在。只看一条会漏掉"注册了但没装"的
   假绿形态。
-- **用共享挂具** `tests/helpers/e2e-install.ts`（三个 e2e 套件共用：安装流程、
+- **用共享挂具** `tests/helpers/e2e-install.ts`（四个 e2e 套件共用：安装流程、
   host env 组装、loud-skip 门禁、装箱面），不要在 spec 里各写一套。
 
 ### 工具面断言的正确写法
@@ -303,6 +303,16 @@ const declaredTools = firstBody.tools ?? []
 const names = declaredTools.map(t => t.name)
 check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 ```
+
+**工具存在 ≠ 工具能用（#148 口径）**：`tools` 数组里有名字只证明「在面上」；
+新增工具必须在真实例的 tool loop 里被**驱动一次**（mock LLM 即可，不必真实计费环 ——
+现例 `tests/e2e-pty-loop-machine.spec.ts`），断言取自实例回灌的 `tool_result` 字节，
+不是本地函数返回值。单元档直接调 `execute` 绕开 registry 派发、machine 档走 core
+不走工具面 —— 都替不了这一次真驱动。
+
+**会话边界事实（#119 实测）**：**已经跑着的 DSH 会话不会获得新工具** —— 同一会话里调
+新工具直接报 `unknown tool`。dogfooding 新工具的必要条件 = **把当前 bundle 重装进
+profile + 起新会话**，不是重试；e2e 挂具每次全新安装 + 全新实例，天然满足。
 
 ## 真实层门禁（opt-in）
 
@@ -431,6 +441,7 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 | `tests/doc-references.spec.ts` | ①② | 引用腐烂：注释里的仓内路径必须存在；本仓脚本一律写 `node --run`（历史提及在该注释/该行标 `[History: …]`） | 无 |
 | `tests/evidence-citations.spec.ts` | ①（本机） | 证据引用守卫（`#132`）：`.scratch/` 落地文档 / 批次状态 / retro 里的「证据单元格 × 退出码声称」—— 被引载体必须存在，读数不得与声称**矛盾**（「无读数」不算矛盾，一律 `!! SKIP (loud)` 声明不判） | 有 `.scratch/` 才判（干净 clone / 部署副本 / pre-push 车道恒响亮跳过 ⇒ `PASS*`） |
 | `tests/e2e-tool-call-machine.spec.ts` | **mock 层** | 官方安装（`--from-default-profile` + `dsh plugin add` 源目录）→ 配置（组合树含三行、无 pending）→ 启动（真实 `dsh web`，OS 临时端口，stderr 干净）→ `session/create` → `prompt` → mock provider 要求 `pty_open` → 实例执行 → `tool_result` 回灌 | 插件树 + 宿主树 + pnpm shim（缺失则响亮跳过） |
+| `tests/e2e-pty-loop-machine.spec.ts` | **mock 层（dogfooding，#148）** | 真实例 tool loop **真驱动** `pty_list` / `pty_signal` 各一次：`pty_open` 长驻无名进程 → `pty_list` 在列且 running → `pty_signal` 按平台实况（win32：拒绝 + 错误原文 + 会话仍 running；POSIX：真投递 + `pty_tail` 见 trap 输出；另一分支 `!! SKIP (loud)`）→ `pty_close` 后列表回收；断言取自实例回灌的 `tool_result` 字节 | 插件树 + 宿主树 + pnpm shim（缺失则响亮跳过） |
 | `tests/e2e-tarball-machine.spec.ts` | **mock 层（装箱交付，#89）** | **同一条链，起点换成现场 `npm pack` 的 tarball**：环 1 打包并断言**产物**里有 `cordis.patch.yml`（#88 的运行期版本）→ 环 2 官方安装且注册记录指向 `.tgz`（不是源目录）→ 环 3–5 同上；目录安装不经过 `files`，所以这条链是唯一能看到打包漏项的那条 | 上述 + 插件树有 `cordis.patch.yml` + 本机有可用打包器（缺失则响亮跳过） |
 | `tests/e2e-real-llm-machine.spec.ts` | **真实层**（opt-in） | 同一链路打**真实端点**：供应商接受（计费 usage）、真实模型行为、真实凭据路径；环级报告含 `Z cleanup` 两条读数（实例停 + 临时树删，**失败路径同样出读数**，#97） | 上述 + `DEEPSEEK_API_KEY` 或含 `deepseek-account-platform/*` 的凭据源（缺失则响亮跳过） |
 
@@ -439,9 +450,9 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 > Windows 读数面随之变大。这是既有约定、不是可选风格：写「新增独立车道」的票时把它算进 touch-set 与
 > 读数预算（`#144` 的 POSIX 车道即如此）。
 
-三个 e2e 套件都在 **machine 车道**（串行，`fileParallelism` off），隔离用临时
+四个 e2e 套件都在 **machine 车道**（串行，`fileParallelism` off），隔离用临时
 `DSH_HOME`（`os.tmpdir`）+ `--port 0`，**不占任何固定端口**（19387 / 19501 / 19502）。
-三个 e2e 套件共用**同一份链挂具** `tests/helpers/e2e-chain.ts`（`#89` 抽出机制、
+四个 e2e 套件共用**同一份链挂具** `tests/helpers/e2e-chain.ts`（`#89` 抽出机制、
 `#100` 收全，此前真实层只共用 `MY_ROWS` 与 `stopChild()`）：mock provider、实例启动
 `startInstance()` 与收尾 `stopChild()`、launch URL 的 token→cookie 交换
 `exchangeToken()`、端口 `portOf()`，以及 typert RPC 信封。信封**只有一种写法**
@@ -454,7 +465,7 @@ check('实例的 tools 数组含 pty_open', names.includes('pty_open'))
 （装箱交付档多两件：`packTarball()` / `tarballFiles()`）。
 
 可选 env：`DSH_E2E_PLUGIN_DIR` / `DSH_E2E_HOST_DIR` / `DSH_E2E_NODE` /
-`DSH_E2E_PNPM_DIR`（三套件），
+`DSH_E2E_PNPM_DIR`（四套件），
 `DSH_E2E_REAL_CREDENTIALS_SOURCE` / `DSH_E2E_REAL_PROVIDER` / `DSH_E2E_REAL_MODEL` /
 `DSH_E2E_REAL_PROMPT`（真实层）。
 

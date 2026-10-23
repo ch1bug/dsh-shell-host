@@ -43,6 +43,9 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // pty-oneshot-machine (#146) must observe a REAL ConPTY exit event (one-shot
 // exit code) and a REAL CreateProcess failure (the readable diagnostic) — a
 // fake spawner cannot produce either, so the suite is serial like its peers.
+// e2e-pty-loop-machine (#148) drives pty_list / pty_signal through a REAL
+// instance's tool loop over a REAL long-lived PTY process: the same
+// boot-a-real-instance cost as its e2e peers, so it is serial too.
 const machineLane = [
   'tests/ssh-pty-live.spec.ts',
   'tests/terminal-machine.spec.ts',
@@ -57,6 +60,8 @@ const machineLane = [
   'tests/e2e-tool-call-machine.spec.ts',
   'tests/e2e-real-llm-machine.spec.ts',
   'tests/e2e-tarball-machine.spec.ts',
+  // #148：真实例 tool loop 真驱动 pty_list / pty_signal（dogfooding 证据）。
+  'tests/e2e-pty-loop-machine.spec.ts',
 ]
 // #123: the WRITER lane. `tests/clean-lib.spec.ts` really runs `node --run build`
 // twice, and each build first DELETES lib/'s four entry directories plus the

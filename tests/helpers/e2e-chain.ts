@@ -42,6 +42,46 @@ import { HOST_DIR, NODE, hostEnv } from "./e2e-install.ts";
  * workspace pair (`remote` → `remote-fs`, ADR-0016 decision 1). */
 export const MY_ROWS = ["pty", "ssh", "terminal", "remote", "remote-fs"];
 
+/** One scripted agent turn for the tool-loop tiers (#148): on its nth agent
+ * request the mock demands this tool call. `input` may read the tool_result
+ * texts the instance fed back SO FAR (the loop's own bytes), so a step can
+ * address the session an earlier step opened — the script never hard-codes
+ * an id it did not read off the wire. */
+export interface MockToolStep {
+  readonly name: string;
+  readonly input: (toolResults: readonly string[]) => Record<string, unknown>;
+}
+
+export interface WireToolResult {
+  readonly toolUseId: string;
+  /** True only when the block carries `is_error: true`; absent on success. */
+  readonly isError?: boolean;
+  /** The block's text content joined (the wire carries the tool's
+   * `jsonRender` output for success, `Error: <message>` for a tool error). */
+  readonly text: string;
+}
+
+/** Every `tool_result` block in a request body, in order — the instance's OWN
+ * bytes, read by the scripted mock (to steer the next call) and by the tier's
+ * assertions (to judge the execution). Never a second parser in a spec. */
+export function toolResultsOf(body: Record<string, any>): WireToolResult[] {
+  const out: WireToolResult[] = [];
+  for (const message of Array.isArray(body?.messages) ? body.messages : []) {
+    for (const block of Array.isArray(message?.content) ? message.content : []) {
+      if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+      const parts: string[] = [];
+      if (typeof block.content === "string") parts.push(block.content);
+      else if (Array.isArray(block.content)) {
+        for (const inner of block.content) {
+          if (typeof inner?.text === "string") parts.push(inner.text);
+        }
+      }
+      out.push({ toolUseId: block.tool_use_id, isError: block.is_error === true ? true : undefined, text: parts.join("\n") });
+    }
+  }
+  return out;
+}
+
 /** Anthropic-style SSE frames — the shape the host's Messages client parses. */
 export function sseFrames(content: Record<string, unknown>, stopReason: string): string {
   return [
@@ -60,8 +100,14 @@ interface Captured {
   readonly isAgent: boolean;
 }
 
-/** Local mock provider. Turn 1 (agent) demands a tool call; turn 2 answers. */
-export async function startMockLlm() {
+/** Local mock provider. Turn 1 (agent) demands a tool call; turn 2 answers.
+ *
+ * With `script` (#148) the agent turns are SCRIPTED instead: turn n demands
+ * `script[n-1]` until the script runs out, then answers `done` — a multi-step
+ * tool loop (open → list → signal → close → list) without a second mock
+ * server. Without a script the behavior is exactly the historical one-turn
+ * `pty_open` demand, so the existing tiers are untouched. */
+export async function startMockLlm(script?: readonly MockToolStep[]) {
   const captured: Captured[] = [];
   const sockets = new Set<import("node:net").Socket>();
   let agentTurns = 0;
@@ -79,7 +125,18 @@ export async function startMockLlm() {
       let stopReason: string;
       if (isAgent) {
         agentTurns += 1;
-        if (agentTurns === 1) {
+        if (script !== undefined && agentTurns <= script.length) {
+          // #148: the scripted step reads the tool_result texts the instance
+          // has fed back so far — ids come off the wire, never from here.
+          const step = script[agentTurns - 1]!;
+          content = {
+            type: "tool_use",
+            id: `toolu_e2e_s${String(agentTurns)}`,
+            name: step.name,
+            input: step.input(toolResultsOf(body).map((r) => r.text)),
+          };
+          stopReason = "tool_use";
+        } else if (agentTurns === 1) {
           // pty_open's REQUIRED argument is `command` (shell_open's is `preset`).
           // pty_open is chosen deliberately: since #102 it DOES pass the host
           // policy gate, but under the default `workspace-write` composition an
