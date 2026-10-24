@@ -191,10 +191,15 @@ Gotchas (learned the hard way):
   提交后再核 `git show --stat` 的清单是否恰好等于你的改动面。
 - **而且别人可能已经把改动放进了暂存区**（`git status --short` 第一列是 `M`）—— 此时
   `git add <你的路径>` **挡不住**它，`git commit` 会把**整份索引**一起提交（本仓第二次踩到：
-  修本条 gotcha 的提交自己就把对方已 staged 的 `tests/verify-pack.spec.ts` 收进去了）。
-  ⇒ 提交前看 `git diff --staged --name-only`；发现别人的条目就先
-  `git restore --staged <path>`（工作树内容不动、对方不丢东西），或者干脆**带 pathspec 提交**：
-  `git commit -F <msg> -- <你的路径>`（只提交该路径，索引里其余条目原样留着）。
+  修本条 gotcha 的提交自己就把对方已 staged 的 `tests/verify-pack.spec.ts` 收进去了；
+  2026-10-24 深夜批第三次实测 16 files，见 `.githooks/pre-commit` 的 reminder）。
+  ⇒ **共享工作树上的提交一律 pathspec 形式**：`git commit -m <msg> -- <你的路径>`
+  （走临时 index，只提交该路径、索引里其余条目原样留着；与 preset 仓
+  `dsh-matt-preset#103` 的暂存纪律同族，两仓互指）。add/commit 清单只含仓内产物，
+  证据/落地文档（`.scratch/`，gitignored）不进清单——含 gitignored 路径的 add 会整条 exit 1。
+  提交前看 `git diff --staged --name-only`、提交后核 `git show --stat` 清单；发现卷入他方内容
+  立即 `git reset --soft` 回退重做（未 push 即无远端污染；`git restore --staged <path>`
+  注意：若对方 staged 版本与其工作树版本不同，unstage 后该版本无 git 级副本，先取副本再 restore）。
 - **共享工作树还会让 pre-push 车道互相阻塞**：`.githooks/pre-push` 跑车道前要求**权威树工作树
   干净** —— 只要另一个会话还有未提交改动（哪怕与你无关），推送就会被拒（实测：一次纯文档提交
   因此推不上去）。这是**前置未满足，不是产品红**：等对方收尾，或确认自己的提交面已单独验过
