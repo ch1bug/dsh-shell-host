@@ -57,6 +57,9 @@ const machineLane = [
   'tests/remote-fs-machine.spec.ts',
   // #139：真实多请求原子写/分块上传，串行避免MSYS进程启动负载污染。
   'tests/remote-write-machine.spec.ts',
+  // #141：真实 ssh 活体往返（DSH_SSH_LIVE_HOST 优先，否则 Docker sshd 挂具），
+  // 真实网络 + 容器生命周期，墙钟成本高，串行同 ssh-pty-live。
+  'tests/remote-roundtrip-live.spec.ts',
   'tests/e2e-tool-call-machine.spec.ts',
   'tests/e2e-real-llm-machine.spec.ts',
   'tests/e2e-tarball-machine.spec.ts',

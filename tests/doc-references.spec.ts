@@ -167,9 +167,10 @@ export function runnerRefsIn(
 /**
  * 引用哈希的**允许清单**：跨仓引用，本仓历史里必然解析不到，故显式留档。
  * `687f282e` = **宿主**仓现锚 `dsh-v0.2.1-rc.2`；`1600d8a1` = 前一锚 `dsh-v0.2.1-rc.1`；
- * `639ed015` / `639ed01539` = 旧锚 `dsh-v0.2.0-rc.2`（历史引用仍在，见 dev-environment.md §2）。
+ * `639ed015` / `639ed01539` = 旧锚 `dsh-v0.2.0-rc.2`（历史引用仍在，见 dev-environment.md §2）；
+ * `ed25519` = SSH 密钥类型名（Ed25519），非提交哈希——7 位全 hex 被 :177 的正则误捕（#141 实测）。
  */
-export const HASH_ALLOWLIST = new Set(["687f282e", "1600d8a1", "639ed015", "639ed01539"]);
+export const HASH_ALLOWLIST = new Set(["687f282e", "1600d8a1", "639ed015", "639ed01539", "ed25519"]);
 
 /** 文本块里的提交哈希引用（7–40 位 hex；纯数字的版本号片段 / 权限位不算）。 */
 export function hashRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
