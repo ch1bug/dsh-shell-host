@@ -65,7 +65,7 @@ describe("入口自面：name / inject / Config / apply 与服务面", () => {
     const boot = bootRemote();
     expect(remoteName).toBe("dsh-shell-host-remote");
     // `remote_open` 走宿主权限门 ⇒ 两个权限服务是真依赖（fail closed）。
-    expect(remoteInject).toEqual(["tools", "sandboxPolicy", "approval"]);
+    expect(remoteInject).toEqual(["tools", "pty", "sandboxPolicy", "approval"]);
     for (const tool of ["remote_open", "remote_list", "remote_status"]) expect(boot.tool(tool).name).toBe(tool);
     expect(boot.provided.get("remote")).toBeTruthy();
     expect(boot.provided.get("remoteFs")).toBeTruthy();

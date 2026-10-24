@@ -9,7 +9,7 @@ import type { RemoteWorkspaceService, RemoteWorkspaceStatus } from '../src/remot
 import type { RemoteResult } from '../src/remote/channel.ts'
 
 function row(id = 'one', root = '/srv/app', anchor = '/local/one'): RemoteWorkspaceStatus {
-  return { workspaceId: id, host: id, root, anchor, state: 'ready', channel: { host: id, state: 'ready', transport: { shape: 'per-session-connection', controlMasterUsable: false }, users: 1, reconnects: 0, pending: 0 } }
+  return { workspaceId: id, host: id, root, anchor, sessions: [], connectionId: 'fixture-files', state: 'ready', channel: { host: id, state: 'ready', transport: { shape: 'per-session-connection', controlMasterUsable: false }, users: 1, reconnects: 0, pending: 0 } }
 }
 function result(exitCode = 0, stdout = '', stderr = ''): RemoteResult {
   return { exitCode, stdout: Buffer.from(stdout), stderr: Buffer.from(stderr) }
@@ -21,6 +21,8 @@ function harness(rows = [row()]) {
     require: id => { const r = rows.find(r => r.workspaceId === id); if (!r) throw new Error('unknown workspace'); return r },
     workspaceForAnchor: cwd => rows.filter(r => cwd === r.anchor || cwd.startsWith(r.anchor + '/')).sort((a,b) => b.anchor.length-a.anchor.length)[0],
     exec, open: async () => rows[0]!, dispose: async () => {},
+    openSession: async () => { throw new Error('file fixture has no PTY') },
+    closeWorkspace: async () => ({ closed: false, sessionIds: [] }),
   }
   return { remote, exec, fs: createRemoteFileSystem(remote) }
 }

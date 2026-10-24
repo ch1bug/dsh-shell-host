@@ -29,6 +29,8 @@ function remote(): RemoteWorkspaceService {
     list: () => [row], workspace: () => row, require: () => row,
     workspaceForAnchor: path => path === row.anchor || path.startsWith(row.anchor + '/') ? row : undefined,
     exec: (_id, command) => run(command), open: async () => row, dispose: async () => {},
+    openSession: async () => { throw new Error('file fixture has no PTY') },
+    closeWorkspace: async () => ({ closed: false, sessionIds: [] }),
   }
 }
 describe.skipIf(!bash)('真实 bash 文件系统契约（#137）', () => {
@@ -39,7 +41,7 @@ describe.skipIf(!bash)('真实 bash 文件系统契约（#137）', () => {
     expect(root).toMatch(/^\/tmp\/dsh-fs-137-[\w]+$/)
     const fixture = await run(`mkdir -p ${quote(root + '/real/sub')}; printf abc > ${quote(root + '/real/file')}; ln -s real ${quote(root + '/alias')} && test -L ${quote(root + '/alias')} || exit 19; printf x > ${quote(root + '/plain')}`)
     expect(fixture.exitCode).toBe(0)
-    row = { workspaceId: 'test-workspace', host: 'opaque-alias', root, anchor: '/local-anchor', state: 'ready', channel: { host: 'opaque-alias', state: 'ready', users: 1, reconnects: 0, pending: 0, transport: { shape: 'per-session-connection', controlMasterUsable: false } } }
+    row = { workspaceId: 'test-workspace', host: 'opaque-alias', root, anchor: '/local-anchor', sessions: [], connectionId: 'fixture-files', state: 'ready', channel: { host: 'opaque-alias', state: 'ready', users: 1, reconnects: 0, pending: 0, transport: { shape: 'per-session-connection', controlMasterUsable: false } } }
   })
   afterAll(async () => {
     // 精确检查由本用例 mktemp 创建的路径，再清它自己的夹具。

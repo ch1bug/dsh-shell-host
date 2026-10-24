@@ -78,6 +78,18 @@ export function remoteError(code: string, message: string, extra: Record<string,
   return Object.assign(new Error(message), { code, ...extra })
 }
 
+/** 文件通道和交互会话各自采样，只共享POSIX事实的判定规则。 */
+export function validateRemoteShell(host: string, uname: string, shell: string): void {
+  if (uname === '' || shell === '') throw remoteError(REMOTE_CHANNEL_ERRORS.SHELL_UNPROBED,
+    `remote ${host} refused: POSIX probe did not establish both uname and SHELL (uname=${JSON.stringify(uname)}, SHELL=${JSON.stringify(shell)}; ADR-0017 decision 6).`)
+  const allowed = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ksh93', 'ash', 'fish', 'mksh', 'yash'])
+  if (/mingw|msys|cygwin|windows_nt/iu.test(uname) || !allowed.has(posixPath.basename(shell))) {
+    throw remoteError(REMOTE_CHANNEL_ERRORS.NON_POSIX_SHELL,
+      `remote ${host} refused: its login shell is not POSIX-family (uname=${JSON.stringify(uname)}, SHELL=${JSON.stringify(shell)}). ` +
+      'ADR-0017 decision 6 requires a POSIX-family login shell; Windows remotes are out of scope for v1.')
+  }
+}
+
 /** One decoded response's payload: the remote command's own exit code and bytes. */
 export interface RemoteResult {
   readonly exitCode: number
@@ -506,16 +518,7 @@ export class RemoteChannel {
     const uname = (bar < 0 ? text : text.slice(0, bar)).trim()
     const shell = (bar < 0 ? '' : text.slice(bar + 1)).trim()
     this.remoteShell = { uname, shell }
-    if (uname === '' || shell === '') throw remoteError(REMOTE_CHANNEL_ERRORS.SHELL_UNPROBED,
-      `remote ${this.options.host} refused: POSIX probe did not establish both uname and SHELL (uname=${JSON.stringify(uname)}, SHELL=${JSON.stringify(shell)}; ADR-0017 decision 6).`)
-    // ADR-0017 names fish too. Basename matching is exact: pwsh, command text,
-    // wrapper names and an arbitrary non-.exe string are never proof of POSIX.
-    const allowed = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ksh93', 'ash', 'fish', 'mksh', 'yash'])
-    if (/mingw|msys|cygwin|windows_nt/iu.test(uname) || !allowed.has(posixPath.basename(shell))) {
-      throw remoteError(REMOTE_CHANNEL_ERRORS.NON_POSIX_SHELL,
-        `remote ${this.options.host} refused: its login shell is not POSIX-family (uname=${JSON.stringify(uname)}, SHELL=${JSON.stringify(shell)}). ` +
-        'ADR-0017 decision 6 requires a POSIX-family login shell; Windows remotes are out of scope for v1.')
-    }
+    validateRemoteShell(this.options.host, uname, shell)
   }
 
   private fail(code: string, message: string): void {

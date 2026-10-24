@@ -53,6 +53,7 @@ Single-context: `GLOSSARY.md` + `docs/adr/` at the repo root. See
 
 ### 环境与安装（细节见文档，勿在此复述）
 
+- **文件工具**：文本读取用 `read`，局部修改用 `edit`，创建或完整替换用 `write`；编辑已有文件前先读取，局部修改优先 `edit`。工具参数错误应修正原调用，不改用 `str_replace_editor` 或终端绕行。当前会话禁用权限升级时，省略 `sandbox_permissions` 与 `justification`，不为常规文件操作附带升级参数。
 - **agent 解释器边界（human 明确要求）**：禁止使用 `cmd.exe`；PowerShell（含 `pwsh` 工具、`pwsh` / `powershell` 解释器）**仅允许执行 git 和 gh 操作**，其他用途禁止。其他环境不限制，也不强制使用 MSYS2；human说明UCRT已装gh、MSYS已装git，也可按实际PATH使用。文件读取、编辑、搜索仍优先专用工具；测试仍走PTY并选择允许的解释器。此约束针对 agent 的执行方式，不改变产品已有功能；历史 cmd/pwsh 示例不扩展上述许可。
 - **权威工作树**：`<repo>`（本仓检出，唯一提交处）；msys2 侧检出（如
   `~/dsh-shellhost-src`，跑 19502 实例）是**只读部署副本**，

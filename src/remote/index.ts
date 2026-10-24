@@ -13,10 +13,9 @@
  *   - the remote FILE face is `./remote-fs` (`ctx.remoteFs` + `remote_ls`),
  *     which reaches the remote only through `ctx.remote.exec` (ADR-0016
  *     decision 10: the channel and the framing stay behind the service);
- *   - multi-session orchestration (openSession / list / closeWorkspace) is #140;
- *   - interactive ssh sessions stay `./ssh` — this entry opens no PTY session at
- *     all, because the framed channel is a TRANSPORT (`src/remote/channel.ts`
- *     explains why it is not a PTY).
+ *   - #140 的 openSession / list / closeWorkspace 编排同一PTY核心的独立shell；
+ *     文件通道仍是非PTY传输，交互会话由 sessions.ts 启动。
+ *   - 原有 ssh_* 工具留在 ./ssh，不导入姐妹入口。
  *
  * Prewarm (AC: "组合装载时预热"): the `workspaces` setting is connected at
  * composition load — `apply` STARTS the connect and never awaits it, so a
@@ -46,7 +45,10 @@ import {
   type RemoteWorkspaceDeclaration,
   type RemoteWorkspaceService,
   type RemoteWorkspaceStatus,
+  type RemoteSessionKind,
+  type RemoteSessionStatus,
 } from './service.ts'
+import { openRemoteSession, type RemoteSessionCore } from './sessions.ts'
 import { REMOTE_CHANNEL_ERRORS, RemoteChannel, remoteError, workspaceTransport, type ChannelOptions, type RemoteResult } from './channel.ts'
 import {
   SANDBOX_EXECUTION_SEMANTICS,
@@ -62,7 +64,7 @@ const name = 'dsh-shell-host-remote'
 // #102: `remote_open` spawns ssh and writes the anchor, so both host permission
 // services are REAL dependencies (the gate fails closed without them) — the
 // same posture as `./pty` / `./ssh` / `./terminal`.
-const inject = ['tools', 'sandboxPolicy', 'approval']
+const inject = ['tools', 'pty', 'sandboxPolicy', 'approval']
 
 /** Idle keepalive period (an idle channel must not look alive while it is dead). */
 export const REMOTE_KEEPALIVE_DEFAULT = 30_000
@@ -79,7 +81,7 @@ export const ANCHOR_MARKER_FILE = '.dsh-remote-workspace.json'
 /** The sentence `remote_open` returns (AC: the result says to use `remote_*`). */
 export const REMOTE_WORKSPACE_HINT =
   'This directory is a LOCAL ANCHOR, not a copy: it holds only the marker file, and the files live on the remote host. ' +
-  'Use the remote_* tools for this workspace (remote_ls today; remote_read / remote_write follow in the next increments) — ' +
+  'Use remote_ls / remote_read / remote_write / remote_edit for files, and remote_open_session for an interactive shell (then pty_send / pty_tail / pty_close) — ' +
   'the local read / write / edit tools see the anchor as empty, which is expected (ADR-0016 decision 9).'
 
 /** Runtime configuration — the `./remote` entry's own settings namespace. */
@@ -193,6 +195,8 @@ interface WorkspaceRecord {
   error?: { code: string; message: string }
   /** True once this record took its ref-count slot on the channel. */
   bound: boolean
+  closing?: boolean
+  sessions: Map<string, { owner: unknown; kind: RemoteSessionKind; cwd: string; connectionId: string; transport: RemoteSessionStatus['transport']; remoteShell?: { uname: string; shell: string } }>
 }
 
 /**
@@ -205,6 +209,16 @@ export function createRemoteWorkspaceService(ctx: RemoteCtx, config: RemoteConfi
   const channels = new Map<string, RemoteChannel>()
   const connections = new Map<string, string>()
   let disposed = false
+  const core = ctx.get('pty') as RemoteSessionCore | undefined
+  const gate = createPermissionGate(ctx)
+  const requireCore = () => {
+    if (core === undefined) throw new Error('remote: pty service is missing — mount ./pty for workspace sessions')
+    return core
+  }
+  const usable = (record: WorkspaceRecord) => {
+    active()
+    if (record.closing) throw remoteError(REMOTE_CHANNEL_ERRORS.CLOSED, `remote workspace ${record.workspaceId} is closing`)
+  }
   // 注册与锚点写入共用队列；同一身份不能在 await 后被另一次注册覆盖。
   let operations: Promise<unknown> = Promise.resolve()
   const active = () => {
@@ -219,14 +233,26 @@ export function createRemoteWorkspaceService(ctx: RemoteCtx, config: RemoteConfi
     const e = error as { code?: unknown; message?: unknown }
     return { code: typeof e?.code === 'string' ? e.code : REMOTE_CHANNEL_ERRORS.DEAD, message: typeof e?.message === 'string' ? e.message : String(error) }
   }
-  const statusOf = (record: WorkspaceRecord): RemoteWorkspaceStatus => {
+  const connectionIdOf = (record: WorkspaceRecord) => `${record.declaration.host}:files:${record.channel.status().pid ?? 'pending'}:${record.channel.status().reconnects}`
+  const sessionsOf = (record: WorkspaceRecord, owner?: unknown): RemoteSessionStatus[] => {
+    const rows: RemoteSessionStatus[] = []
+    for (const [id, session] of record.sessions) {
+      if (owner !== undefined && session.owner !== owner) continue
+      const live = core?.list(session.owner).find((row) => row.id === id)
+      if (live === undefined) continue // pty_close/idle回收后不能编造仍存活的id。
+      const { owner: _owner, ...metadata } = session
+      rows.push({ ...live, ...metadata, reconnectPolicy: 'manual' })
+    }
+    return rows
+  }
+  const statusOf = (record: WorkspaceRecord, owner?: unknown): RemoteWorkspaceStatus => {
     const channel = record.channel.status()
-    const state = channel.state === 'closed' ? 'unavailable' : channel.state
+    const state = record.closing || channel.state === 'closed' ? 'unavailable' : channel.state
     const error = channel.lastError ?? (state === 'unavailable' ? record.error : undefined)
     return {
       workspaceId: record.workspaceId, host: record.declaration.host, root: record.declaration.root, anchor: record.anchor,
       ...(record.declaration.title === undefined ? {} : { title: record.declaration.title }),
-      state, channel, ...(error === undefined ? {} : { error }),
+      state, channel, connectionId: connectionIdOf(record), sessions: sessionsOf(record, owner), ...(error === undefined ? {} : { error }),
     }
   }
   const channelFor = (d: RemoteWorkspaceDeclaration, cwd?: string) => {
@@ -242,11 +268,11 @@ export function createRemoteWorkspaceService(ctx: RemoteCtx, config: RemoteConfi
     return created
   }
   const settle = async (record: WorkspaceRecord) => {
-    active()
+    usable(record)
     try {
       if (record.bound) await record.channel.ensureReady()
       else { record.bound = true; await record.channel.acquire() }
-      active()
+      usable(record)
       record.error = undefined
     } catch (error) { record.error = coded(error); throw error }
   }
@@ -314,7 +340,7 @@ export function createRemoteWorkspaceService(ctx: RemoteCtx, config: RemoteConfi
     if (registry !== undefined) { await registry.create(anchor, d.title); active() }
     if (found !== undefined) return found
     connections.set(d.host, connection)
-    const record: WorkspaceRecord = { workspaceId: id, declaration: d, anchor, channel: channelFor(d, options.spawnCwd), bound: false }
+    const record: WorkspaceRecord = { workspaceId: id, declaration: d, anchor, channel: channelFor(d, options.spawnCwd), bound: false, sessions: new Map() }
     records.set(id, record)
     return record
   }
@@ -325,9 +351,86 @@ export function createRemoteWorkspaceService(ctx: RemoteCtx, config: RemoteConfi
       // 只串行注册/锚点IO；各主机握手并行，坏主机不能阻塞其他预热。
       return registered.then(async (record) => { await settle(record); return statusOf(record) })
     },
-    list: () => [...records.values()].map(statusOf),
+    list: (owner) => [...records.values()].map((record) => statusOf(record, owner)),
+    openSession(id, kind, options) {
+      const opening = operations.then(async () => {
+        active()
+        const record = records.get(id)
+        if (record === undefined) throw unknownWorkspace(id, [...records.keys()])
+        usable(record)
+        if (options?.owner === undefined || options.owner === null) throw remoteError('NO_AGENT', 'remote sessions require an owning agent')
+        const authorization = await gate.authorizeSpawn({
+          toolName: 'remote_open_session', agent: options.owner, session: sessionOf(options.owner),
+          callId: options.callId, signal: options.signal, sandboxPermissions: options.sandboxPermissions,
+          justification: options.justification, subject: 'command',
+        })
+        usable(record)
+        // master必须先就绪；独立PTY永不借文件通道的POSIX探测当自己的证据。
+        await settle(record)
+        const transport = record.channel.status().transport
+        let expectedConnection: string | undefined
+        if (transport.shape === 'control-master') {
+          const measured = await record.channel.request('# dsh-connection\nprintf "%s" "${SSH_CONNECTION:-}"')
+          const value = measured.stdout.toString()
+          if (measured.exitCode !== 0 || !/^\S+ \d+ \S+ \d+$/u.test(value)) {
+            throw remoteError('REMOTE_SESSION_CONNECTION_UNPROBED', 'master did not report a usable SSH_CONNECTION; refusing unverified sharing')
+          }
+          expectedConnection = value
+        }
+        usable(record)
+        const metadata = {
+          owner: options.owner, kind, cwd: options.cwd ?? record.declaration.root,
+          connectionId: transport.shape === 'control-master' ? connectionIdOf(record) : '', transport,
+        }
+        try {
+          const opened = await openRemoteSession(requireCore(), options.owner, {
+            declaration: record.declaration, kind, cwd: options.cwd, env: options.env,
+            spawnCwd: authorization.cwd, authorizedMode: authorization.grantedMode,
+            signal: options.signal, platform: deps.platform, timeoutMs: config.requestTimeoutMs, expectedConnection,
+          })
+          const connectionId = opened.transport.shape === 'control-master' ? metadata.connectionId : `${record.declaration.host}:session:${opened.sessionId}`
+          record.sessions.set(opened.sessionId, { ...metadata, connectionId, transport: opened.transport, remoteShell: opened.remoteShell })
+          if (disposed || record.closing) {
+            await requireCore().close(options.owner, opened.sessionId)
+            record.sessions.delete(opened.sessionId)
+            usable(record)
+          }
+          return { ...opened, connectionId, sandboxMode: authorization.grantedMode }
+        } catch (error) {
+          // 探测失败且close也失败时，不能丢掉下次closeWorkspace的重试责任。
+          const failedId = (error as { sessionId?: string }).sessionId
+          if (failedId !== undefined && !record.sessions.has(failedId)) record.sessions.set(failedId, { ...metadata, connectionId: metadata.connectionId || `${record.declaration.host}:session:${failedId}` })
+          throw error
+        }
+      })
+      operations = opening.catch(() => {})
+      return opening
+    },
+    closeWorkspace(id) {
+      const closing = operations.then(async () => {
+        active()
+        const record = records.get(id)
+        if (record === undefined) return { closed: false, sessionIds: [] }
+        record.closing = true
+        const sessionIds = [...record.sessions.keys()]
+        const failures: unknown[] = []
+        for (const [sessionId, session] of record.sessions) {
+          try { await requireCore().close(session.owner, sessionId); record.sessions.delete(sessionId) }
+          catch (error) { failures.push(error) }
+        }
+        if (failures.length > 0) throw new AggregateError(failures, `remote workspace ${id}: session cleanup failed; retry closeWorkspace`)
+        if (record.bound) { record.channel.release(); record.bound = false }
+        records.delete(id)
+        if (![...records.values()].some((r) => r.declaration.host === record.declaration.host)) {
+          channels.delete(record.declaration.host); connections.delete(record.declaration.host)
+        }
+        return { closed: true, sessionIds }
+      })
+      operations = closing.catch(() => {})
+      return closing
+    },
     workspace(id) { const record = records.get(id); return record === undefined ? undefined : statusOf(record) },
-    require(id) { const record = records.get(id); if (record === undefined) throw unknownWorkspace(id, [...records.keys()]); return statusOf(record) },
+    require(id, owner) { const record = records.get(id); if (record === undefined) throw unknownWorkspace(id, [...records.keys()]); return statusOf(record, owner) },
     workspaceForAnchor(path) {
       const candidate = resolvePath(path)
       const found = [...records.values()].filter((r) => isInsideWorkspace(candidate, r.anchor)).sort((a, b) => b.anchor.length - a.anchor.length)[0]
@@ -337,6 +440,7 @@ export function createRemoteWorkspaceService(ctx: RemoteCtx, config: RemoteConfi
       active()
       const record = records.get(id)
       if (record === undefined) throw unknownWorkspace(id, [...records.keys()])
+      usable(record)
       return record.channel.request(command)
     },
     async dispose() {
@@ -345,6 +449,14 @@ export function createRemoteWorkspaceService(ctx: RemoteCtx, config: RemoteConfi
       for (const channel of channels.values()) channel.close()
       await operations
       for (const channel of channels.values()) channel.close()
+      const failures: unknown[] = []
+      for (const record of records.values()) {
+        for (const [id, session] of record.sessions) {
+          try { await requireCore().close(session.owner, id); record.sessions.delete(id) }
+          catch (error) { failures.push(error) }
+        }
+      }
+      if (failures.length > 0) throw new AggregateError(failures, 'remote: session cleanup failed during dispose')
       records.clear(); channels.clear(); connections.clear()
     },
   }
@@ -363,7 +475,11 @@ const WORKSPACE_ROW_PROPERTIES = {
   root: { type: 'string', required: true, description: 'The remote working root (absolute POSIX path).' },
   anchor: { type: 'string', required: true, description: 'The LOCAL anchor directory — its marker names host + remote root.' },
   title: { type: 'string', description: 'Human-facing label, when the declaration carried one.' },
-  state: { type: 'string', required: true, description: '"connecting" / "ready" / "unavailable" — the connection state, never a guess.' },
+  state: { type: 'string', required: true, description: '"connecting" / "ready" / "unavailable" — the file connection state, never a guess.' },
+  connectionId: { type: 'string', required: true, description: 'File connection identity. A shared-master session carries the same identity; independent sessions carry their own.' },
+  sessions: { type: 'array', required: true, items: { type: 'object', additionalProperties: true }, description: 'Current owner’s PTY rows: id, kind, cwd, status (running/exited), transport, connectionId, remoteShell, reconnectPolicy=manual. Other owners are not exposed.' },
+  reconnectScope: { type: 'string', required: true, description: "'shared-master' when interactive sessions ride the file connection's ControlMaster; 'file-connection-only' when each session pays its own connection (e.g. Windows)." },
+  sessionReconnectPolicy: { type: 'string', required: true, description: "'manual' — interactive sessions are never auto-reconnected; a dropped session reports exited and a new one must be opened." },
 } as const
 
 /**
@@ -384,6 +500,10 @@ function statusRow(status: RemoteWorkspaceStatus): any {
     anchor: status.anchor,
     ...(status.title === undefined ? {} : { title: status.title }),
     state: status.state,
+    sessions: status.sessions,
+    connectionId: status.connectionId,
+    reconnectScope: channel.transport.shape === 'control-master' ? 'shared-master' : 'file-connection-only',
+    sessionReconnectPolicy: 'manual',
     transport: { shape: channel.transport.shape, controlMasterUsable: channel.transport.controlMasterUsable },
     users: channel.users,
     reconnects: channel.reconnects,
@@ -398,6 +518,55 @@ function statusRow(status: RemoteWorkspaceStatus): any {
 /** Register the three workspace tools over the service. */
 function registerRemoteTools(ctx: RemoteCtx, service: RemoteWorkspaceService): void {
   const gate: PermissionGate = createPermissionGate(ctx)
+
+  ctx.tools.register(defineTool({
+    name: 'remote_open_session',
+    description: 'Open a separate remote POSIX shell for a registered workspace. kind (shell/build/test) labels its purpose; every kind starts its own shell. cwd and env apply ONLY on the remote, never to the local ssh process. Returns a real PTY sessionId for pty_send / pty_tail / pty_close; shares their owner registry and soft cap. A dropped session is exited and never auto-reconnected; open a new one. ' + SANDBOX_EXECUTION_SEMANTICS,
+    parameters: {
+      workspaceId: { type: 'string', required: true, description: 'Workspace id from remote_open.' },
+      kind: { type: 'string', required: true, enum: ['shell', 'build', 'test'], description: 'Purpose label only, not an automatic command.' },
+      cwd: { type: 'string', description: 'Absolute remote POSIX path; defaults to workspace root.' },
+      env: { type: 'object', additionalProperties: true, description: 'Remote shell environment only (POSIX variable names, string values).' },
+      ...sandboxPermissionParameters('command'),
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {
+        sessionId: { type: 'string', required: true },
+        status: { type: 'object', additionalProperties: true },
+        initialOutput: { type: 'string' },
+        transport: { type: 'object', additionalProperties: true },
+        connectionId: { type: 'string', required: true },
+        remoteShell: { type: 'object', additionalProperties: true },
+        sandboxMode: { type: 'string', required: true },
+      } },
+      render: jsonRender as any,
+    },
+    async execute(args: { workspaceId: string; kind: RemoteSessionKind; cwd?: string; env?: Record<string, string>; sandbox_permissions?: string; justification?: string }, exec: { agent?: unknown; signal?: AbortSignal; callId?: string }) {
+      const owner = requireAgentFor('remote', exec)
+      const opened = await service.openSession(args.workspaceId, args.kind, {
+        owner, cwd: args.cwd, env: args.env, signal: exec.signal, callId: exec.callId,
+        sandboxPermissions: args.sandbox_permissions, justification: args.justification,
+      })
+      return { ...opened, transport: { ...opened.transport } }
+    },
+    presentCall: (args: { workspaceId: string; kind: string }) => ({ card: 'terminal' as const, title: `remote_open_session ${args.workspaceId} ${args.kind}` }),
+  }))
+  ctx.tools.register(defineTool({
+    name: 'remote_close_workspace',
+    description: 'Close a registered remote workspace and reclaim ALL its PTY sessions, including other owners’ sessions. This is workspace-wide cleanup, not pty_close. Waits for queued opens and cleanup, then unregisters the workspace; the local anchor is retained. Other workspaces and unrelated PTYs are untouched. Idempotent when already closed.',
+    parameters: { workspaceId: { type: 'string', required: true, description: 'Workspace id to close as a whole.' } },
+    output: {
+      schema: { type: 'object', additionalProperties: true, properties: {
+        closed: { type: 'boolean', required: true },
+        sessionIds: { type: 'array', required: true, items: { type: 'string' } },
+      } }, render: jsonRender as any,
+    },
+    async execute(args: { workspaceId: string }, exec: { agent?: unknown }) {
+      requireAgentFor('remote', exec)
+      return service.closeWorkspace(args.workspaceId)
+    },
+    presentCall: (args: { workspaceId: string }) => ({ card: 'generic' as const, title: `remote_close_workspace ${args.workspaceId}` }),
+  }))
 
   ctx.tools.register(defineTool({
     name: 'remote_open',
@@ -470,7 +639,7 @@ function registerRemoteTools(ctx: RemoteCtx, service: RemoteWorkspaceService): v
         ...(authorization.grantedMode === 'workspace-write' ? { anchorBoundary: authorization.cwd } : {}),
       })
       return {
-        ...statusRow(status),
+        ...statusRow(service.require(status.workspaceId, owner)),
         sandboxMode: authorization.grantedMode,
         hint: REMOTE_WORKSPACE_HINT,
       }
@@ -499,8 +668,8 @@ function registerRemoteTools(ctx: RemoteCtx, service: RemoteWorkspaceService): v
       },
     },
     async execute(_args: Record<string, never>, exec: { agent?: unknown }) {
-      requireAgentFor('remote', exec)
-      return { workspaces: service.list().map(statusRow) }
+      const owner = requireAgentFor('remote', exec)
+      return { workspaces: service.list(owner).map(statusRow) }
     },
     presentCall: () => ({ card: 'generic' as const, title: 'remote_list' }),
   }))
@@ -525,8 +694,8 @@ function registerRemoteTools(ctx: RemoteCtx, service: RemoteWorkspaceService): v
       render: jsonRender as any,
     },
     async execute(args: { workspaceId?: string }, exec: { agent?: unknown }) {
-      requireAgentFor('remote', exec)
-      const workspaces = args.workspaceId === undefined ? service.list() : [service.require(args.workspaceId)]
+      const owner = requireAgentFor('remote', exec)
+      const workspaces = args.workspaceId === undefined ? service.list(owner) : [service.require(args.workspaceId, owner)]
       return { workspaces: workspaces.map(statusRow) }
     },
     presentCall: (args: { workspaceId?: string }) => ({ card: 'generic' as const, title: `remote_status ${args.workspaceId ?? '(all)'}` }),

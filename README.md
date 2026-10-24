@@ -2,7 +2,7 @@
 
 DSH bundle: **a tools-only plugin (ADR-0012/0013)** — persistent PTY sessions
 (`./pty`), interactive ssh sessions (`./ssh`), launcher-preset terminals
-(`shell_open`, `./terminal`), 远程工作区与文件服务（`./remote` / `./remote-fs`），以及 WSL bridge tools (`./wsl`). No shell executor,
+(`shell_open`, `./terminal`), 远程工作区与文件服务（`./remote` / `./remote-fs`），以及 WSL bridge tools (`./wsl`, 默认关闭). No shell executor,
 no `ctx.shell` provider, no upstream loader-row takeover: every row in
 `cordis.patch.yml` is an own-id insert, and the shell seam belongs to the
 platform shell executors alone.
@@ -17,14 +17,47 @@ platform shell executors alone.
 
 ## The bundle patch
 
-`cordis.patch.yml` 挂载五条自有 id 行，不接管上游行：
+`cordis.patch.yml` 挂载六条自有 id 行，不接管上游行（#143 起 `wsl` 随 bundle 挂载但默认关闭）：
 
 1. `pty` (`dsh-shell-host/pty`) — the persistent session core.
 2. `ssh` (`dsh-shell-host/ssh`) — the interactive ssh instance (`ssh_start` /
    `ssh_tail` / `ssh_send` / `ssh_close`), over the `pty` core (#136).
 3. `terminal` (`dsh-shell-host/terminal`) — the `shell_open` launcher surface.
 4. `remote` (`dsh-shell-host/remote`) — 远程工作区登记、预热与长驻连接（#137）。
-5. `remote-fs` (`dsh-shell-host/remote-fs`) — 加性 `ctx.remoteFs`、`remote_ls` 与 `remote_read`（#137/#138），依赖前一行。
+5. `remote-fs` (`dsh-shell-host/remote-fs`) — 加性 `ctx.remoteFs` 与消费它的 `remote_*`
+   文件工具（`remote_ls` / `remote_read` / `remote_write` / `remote_edit`，#137–#139），
+   依赖前一行（行序即依赖）。
+6. `wsl` (`dsh-shell-host/wsl`, `disabled: true`) — Windows 互操作工具（`win_*` 七个，
+   #143）。行在挂载面上、默认关闭 —— 开启方式见 *The `./wsl` entry*。
+
+### 怎么装、怎么加行（#142）
+
+装 bundle = 把上面六条 `- insert` 行并进你 profile 的 patch
+（`$DSH_HOME/profiles/<name>/cordis.patch.yml`；宿主在启动时组合一次树，
+机制见 `docs/agents/profile-install.md`）。只想加某一项能力，就抄对应的行
+—— `cordis.patch.yml` 本身就是六行的完整可抄来源（`wsl` 行记得连同
+`disabled: true` 一起抄，除非你就是要开启它，见 *The `./wsl` entry*）；
+下文 `./ssh`（迁移节）/ `./remote` / `./wsl` 各节另有可粘贴的 insert 片段，
+`pty` / `terminal` / `remote-fs` 三行照本节清单或 `cordis.patch.yml` 抄即可。
+
+**老 profile 迁移（一句话）**：只挂过 `pty` + `terminal` 的，补一行 `ssh`
+（`#136` 起 `ssh_*` 四工具搬进了 `./ssh`，不补就消失 —— 面收窄细节见
+*The `./ssh` entry* 的迁移节）；要**远端文件面**再补 `remote` + `remote-fs`
+两行。
+
+**两套文件词汇，别混用（Q14 纠正，放显眼处）**：本包**不替换上游 `ctx.fs`**，
+上游 `read` / `write` / `edit` / `glob` / `grep` 行为**完全不变**
+（ADR-0016 决策 1/2/9：本包做的是**加性** `ctx.remoteFs`，上游一字不动）。
+进入远程工作区后，文件操作一律用 **`remote_*`**：工作区目录只是一个
+**本地锚点** —— 只含 `.dsh-remote-workspace.json` 标记文件、不镜像任何远端文件，
+**对本地上游文件工具就是空目录**；本地 `read` / `write` / `edit`
+看到的是锚点，不是远端文件。
+
+**`./ssh` 与 `./wsl` 的区别（一句话：方向）**：`./ssh` 是**远端通道** ——
+从本机连到远端 POSIX 主机（交互会话 `ssh_start`，远程工作区的文件通道也走它）；
+`./wsl` 是 **Windows 互操作** —— 给**跑在 WSL 里**的 agent 访问 Windows 侧
+（`win_*` 七个工具），**不是**远程访问，且随 bundle 挂载但**默认关闭**
+（`disabled: true`，opt-in 开启，见 *The `./wsl` entry*）。
 
 The platform executors (`pwsh-sandbox` / `bash-sandbox`) keep their DSH-native
 posture untouched; the one-shot `bash`/`pwsh` tool faces are the platform's own
@@ -262,7 +295,7 @@ path).
 **迁移（只挂 `pty` 的老 profile 会失去 ssh 工具）**：`#136` 之前四个 `ssh_*` 工具是
 `./pty` 行的一部分；现在只有挂 `ssh` 行才有它们。只挂 `pty` 的老 profile 升级后
 **`ssh_*` 全部消失**（`pty_*` 不变）—— 在自己的 profile patch 里补一行
-（迁移总说明统一在 T7 —— 见父票 `#135` 的 tickets 拆分；本票只写必须知道的这一句）：
+（迁移总说明统一在 *The bundle patch* 的「怎么装、怎么加行」（#142）；本节写必须知道的细节）：
 
 ```yaml
 - insert:
@@ -339,8 +372,8 @@ and skips loudly when unset — no network in the default test lanes.
 
 这两个是兄弟入口：前者提供 `ctx.remote`，负责工作区登记与连接生命周期；后者提供
 `ctx.remoteFs`，文件工具只经这个服务访问远端。它们不替换上游 `ctx.fs`，也不新增
-`ctx.shell` 执行器。只挂 `pty` 的旧 profile 仍须先补上 `ssh` 行；需要远程工作区时再补
-`remote` → `remote-fs` 两行，完整 bundle 已包含五行。
+`ctx.shell` 执行器。老 profile 的迁移路径（补 `ssh` / `remote` / `remote-fs`）
+统一写在 *The bundle patch* 的「怎么装、怎么加行」（#142），此处不重复。
 
 ### 预热配置与工具
 
@@ -362,7 +395,7 @@ and skips loudly when unset — no network in the default test lanes.
 `remote_list` 查看登记项，`remote_status({ workspaceId? })` 查看实际启动形态、远端 shell
 探测值、引用计数、重连次数、在飞请求及最后错误。同一 host 的工作区共享文件通道；若
 port/jump/options 不同，明确拒绝复用，须使用不同 OpenSSH host alias，避免静默访问错误主机。
-动态登记保留到组件卸载；需在重启后预热的工作区写入上面的 `workspaces` 配置。
+动态登记保留到 `remote_close_workspace` 或组件卸载；需在重启后预热的工作区写入上面的 `workspaces` 配置。
 
 `remote_open` 创建本地锚点目录，内含 `.dsh-remote-workspace.json`（host + 远端 root
 与连接指纹，不含凭据）。默认位于 `anchorRoot` 下；未配置时使用本次会话工作区根下的
@@ -395,6 +428,34 @@ create 使用原子 no-clobber，替换使用 `mv`；provider 内同目标串行
 写工具每次重新解析调用方会话策略，只有 `danger-full-access` 可写；降级、缺少策略服务均在远端请求前拒绝。
 直接调用服务并传入受限本机 `sandboxPolicy` 同样返回 `FS_SANDBOX_DENIED`，工具不提供虚假的提权参数。
 
+### 多会话编排（#140）
+
+`remote_open_session({ workspaceId, kind, cwd?, env? })` 在已登记工作区打开独立远端 shell，
+返回的 `sessionId` 就是同一 PTY 核心的 id，后续直接用同一 agent 的 `pty_send` / `pty_tail` /
+`pty_close`。`kind` 只标注 `shell` / `build` / `test` 用途，不会自动运行构建或测试命令；
+三种用途都拥有自己的交互 `sh`，一条中的 `cd` 不改变另一条。
+
+`cwd` 是远端绝对 POSIX 路径，默认工作区 `root`；`env` 仅注入远端 shell，本地 SSH 进程的
+cwd 仍取本次宿主权限门的授权值。每次打开均重新解析权限，将真实 grant 写入 PTY，后续
+`pty_send` 保留降级拒写；已连接不等于永久授权，也不宣称本机沙箱能监禁远端。
+每条会话在自己的连接内实测 POSIX 登录 shell，并确认 cwd/env 初始化成功后才发布 id；
+探测还要求宿主具备文件帧协议的 coreutils（`base64` / `mktemp`，ADR-0016 decision 3）——
+同一宿主同时承载文件通道，缺一件在探测期就 fail closed，而不是让会话起来后文件面逐请求失败。
+失败、超时、中止均尝试回收，清理失败保留 id 供工作区关闭重试。
+
+`remote_list` / `remote_status` 增加当前 agent 的 `sessions`（id、kind、cwd、运行/退出状态、
+实测 shell、传输形态、connectionId）。工作区 `state` 指文件通道，不冒充交互会话状态。
+POSIX 交互会话以 slave 加入已有 master（同一 `connectionId`）；master 丢失不能偷偷直连。
+Windows 或明确禁共享时每条会话有独立连接和 id；文件连接的重连只影响文件连接。
+交互 shell **不自动重连**，断线由 PTY 报 `exited`，需新开会话；POSIX master 丢失会影响
+其下所有 channel。未实现 WSL/tmux 路径，状态不伪造这些形态。
+
+软上限完全沿用 PTY owner 注册表，与本地 PTY、SSH、launcher 会话共用计数；退出未关闭仍占位，
+超限使用核心的响亮错误与当前会话清单。没有第二套工作区配额。
+`remote_close_workspace({ workspaceId })` 是**整个工作区**的收尾，会关闭其全部 owner 的
+关联 id，并解除工作区登记；不触碰其他工作区、本地 PTY或本地锚点。它等待排队的打开操作，
+重复关闭幂等；失败保留重试责任。列表不公开其他 agent 的会话明细，这不缩小整批关闭范围。
+
 ### 传输与本期边界
 
 - POSIX 客户端明确启用 ControlMaster；Windows 明确禁用它，绝不先试 master 再回退。
@@ -407,7 +468,7 @@ create 使用原子 no-clobber，替换使用 `mv`；provider 内同目标串行
   先协商协议版本与 `clientId`，异版或身份不匹配响亮拒绝；子命令与协议 stdin 隔离，
   响应帧有 8 MiB 上限。这是文件传输通道，不是第二份 PTY 核心。
 - 本期真正实现 `resolve` / `stat` / `listDir` 与 #138 的 `lstat` / `readText` / `streamText` /
-  `readBytes` / `readByteRange`，以及 #139 的 `writeText` / `editText`；工作区多会话编排仍由 #140 承接。
+  `readBytes` / `readByteRange`，以及 #139 的 `writeText` / `editText`；#140 提供工作区多会话编排（见上节）。
 - 无活体 ssh 主机的环境中，真实 bash 循环与注入通道覆盖不等于 ssh 活体验收；验证报告须
   明说 `not run locally: remote live`，不能用假通道绿灯代替真实网络证据。
 
@@ -477,31 +538,37 @@ layer (`src/wsl-bridge.ts`) are gone — this entry is self-contained now.]
 import * as wsl from 'dsh-shell-host/wsl'   // { name, inject, apply }
 ```
 
-`./wsl` is **exported but deliberately NOT bundle-mounted** (ADR-0013): the
-bundle patch mounts five rows (`pty`, `ssh`, `terminal`, `remote`, `remote-fs` — see *The bundle
-patch* above), so installing the bundle does NOT give you the `win_*` tools.
-That is
-by design — the row was never in the patch, so its absence is not a regression.
-The tools exist for an agent hosted **inside WSL** reaching the Windows side;
-with DSH running natively on Windows the semantics do not hold (path
-normalization is redundant, and `win_run`'s temp `.bat`/`.ps1` staging under
-`C:\Windows\Temp` has no point).
+As of #143 (human's 2026-10-19 ruling, revising #134's "deliberately not
+mounted" call), `./wsl` **is bundle-mounted but dormant by default**: the bundle
+patch carries the row with `disabled: true` — the row stays on the loader tree
+(visible as a component in the plugin face; a disabled entry is not activated,
+so nothing resolves its `inject` and the tools cost nothing until enabled), and
+the `win_*` tools do NOT appear on an agent's tool face until you turn it on.
+Before #143 the bundle patch mounted five rows (`pty`, `ssh`, `terminal`,
+`remote`, `remote-fs` — see *The bundle patch* above) and `./wsl` was not among
+them at all; that absence is what this change replaces (single source of truth —
+the old "exported but deliberately NOT bundle-mounted" claim is gone).
 
-To use it, add the row to your own profile patch —
+The tools exist for an agent hosted **inside WSL** reaching the Windows side;
+with DSH running natively on Windows the semantics mostly do not hold (path
+normalization is redundant, and `win_run`'s temp `.bat`/`.ps1` staging under
+`C:\Windows\Temp` has no point) — that is why the row ships disabled rather
+than absent, and why you opt in per profile.
+
+To enable it, override the row in your own profile patch —
 `$DSH_HOME/profiles/<name>/cordis.patch.yml` — then restart the profile (the
 host composes the tree once at startup; see `docs/agents/profile-install.md`):
 
 ```yaml
-- insert:
-    - id: wsl
-      name: dsh-shell-host/wsl
+- id: wsl
+  disabled: false
 ```
 
-The row's `name` is the module specifier that decides which entry loads (`id`
-is just the row identity); the source repo's old plugin name `dsh-wsl-bridge`
-no longer resolves post-absorption. Plugin-LAYER entry (ADR-0007 "Entry form
-differences"): built on `defineTool` + `ctx.tools`, registers model tools —
-never an execution backend.
+(the override targets the already-mounted row by its `id`; the source repo's old
+plugin name `dsh-wsl-bridge` no longer resolves post-absorption). After the
+restart the seven `win_*` tools register on the tool face of agents in that
+profile. Plugin-LAYER entry (ADR-0007 "Entry form differences"): built on
+`defineTool` + `ctx.tools`, registers model tools — never an execution backend.
 
 ## Division of labor with the official optional bundles
 
@@ -600,6 +667,8 @@ source deployment and build gotchas.
   `@lydell/node-pty` + `diff`（#139 的上下文 diff 卡片，沿上游版本）；tooling
   (typescript/vitest/tsdown) comes from npm.
 
-Status: v0.2.1-rc.2-r1, tools-only (ADR-0012/0013): `./pty` + `./ssh` +
-`./terminal` + `./wsl`; remote one-shot via the standalone `dsh-shell-remote`
-plugin.
+Status: v0.2.1-rc.2-r1, tools-only (ADR-0012/0013): the bundle mounts six rows
+(`pty` / `ssh` / `terminal` / `remote` / `remote-fs` / `wsl`); `./wsl` ships
+mounted but dormant (`disabled: true`, #143 — see *The `./wsl` entry*). Remote one-shot is
+`dsh-ssh`'s `ssh_exec` (ADR-0016); the standalone `dsh-shell-remote` plugin was
+the historical route-C predecessor.

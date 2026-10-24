@@ -32,6 +32,33 @@ import { posix as posixPath } from 'node:path'
 import type { SshOptionInput } from '../ssh/compose.ts'
 import type { SshTransport } from '../ssh/transport.ts'
 import type { ChannelStatus, RemoteResult } from './channel.ts'
+import type { OpenResult, SessionSummary } from '../pty/session-core.ts'
+
+/** #140：kind仅标注用途，各用途都打开自己的交互shell。 */
+export type RemoteSessionKind = 'shell' | 'build' | 'test'
+export type RemoteSessionStatus = SessionSummary & {
+  kind: RemoteSessionKind
+  cwd: string
+  connectionId: string
+  transport: SshTransport
+  reconnectPolicy: 'manual'
+  remoteShell?: { uname: string; shell: string }
+}
+export interface RemoteSessionOptions {
+  owner: unknown
+  cwd?: string
+  env?: Record<string, string>
+  signal?: AbortSignal
+  callId?: string
+  sandboxPermissions?: string
+  justification?: string
+}
+export type RemoteSessionResult = OpenResult & {
+  transport: SshTransport
+  remoteShell: { uname: string; shell: string }
+  connectionId: string
+  sandboxMode: string
+}
 
 /** The stable codes the WORKSPACE layer reports (channel codes live in `channel.ts`). */
 export const REMOTE_WORKSPACE_ERRORS = {
@@ -79,6 +106,9 @@ export interface RemoteWorkspaceStatus {
   readonly state: RemoteWorkspaceState
   /** The channel facts: transport shape (ADR-0017), users, reconnects, last error. */
   readonly channel: ChannelStatus
+  /** #140：PTY注册表派生状态；工具视图仅含当前owner的会话。 */
+  readonly sessions: RemoteSessionStatus[]
+  readonly connectionId: string
   /** Set only when the workspace is not ready — the coded reason. */
   readonly error?: { readonly code: string; readonly message: string }
 }
@@ -132,11 +162,15 @@ export interface RemoteWorkspaceService {
    * channel's ssh spawn, first channel creation wins. */
   open(declaration: RemoteWorkspaceDeclaration, options?: { spawnCwd?: string; anchorBoundary?: string }): Promise<RemoteWorkspaceStatus>
   /** Every registered workspace, registration order. */
-  list(): RemoteWorkspaceStatus[]
+  list(owner?: unknown): RemoteWorkspaceStatus[]
+  /** 每次解析调用方当前权限；返回同一个PTY核心的id。 */
+  openSession(workspaceId: string, kind: RemoteSessionKind, options: RemoteSessionOptions): Promise<RemoteSessionResult>
+  /** 工作区级整批收尾（包含所有owner）；不删除本地锚点。 */
+  closeWorkspace(workspaceId: string): Promise<{ closed: boolean; sessionIds: string[] }>
   /** One workspace by id (`undefined` when unknown — `require` is the loud form). */
   workspace(workspaceId: string): RemoteWorkspaceStatus | undefined
   /** One workspace by id, throwing `REMOTE_WORKSPACE_UNKNOWN` when absent. */
-  require(workspaceId: string): RemoteWorkspaceStatus
+  require(workspaceId: string, owner?: unknown): RemoteWorkspaceStatus
   /** The workspace whose LOCAL ANCHOR contains `anchorPath` (ADR-0016 decision 6:
    * a session's cwd is the anchor, so the anchor is how a call names its
    * workspace). */

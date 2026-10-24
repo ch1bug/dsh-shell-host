@@ -25,8 +25,8 @@ function run(command: string): Promise<RemoteResult> {
 }
 let root = ''
 function remote(): RemoteWorkspaceService {
-  const row: RemoteWorkspaceStatus = { workspaceId: 'test-write', host: 'write-host', root, anchor: '/local-write', state: 'ready', channel: { host: 'write-host', state: 'ready', users: 1, reconnects: 0, pending: 0, transport: { shape: 'per-session-connection', controlMasterUsable: false } } }
-  return { list: () => [row], workspace: () => row, require: () => row, workspaceForAnchor: () => row, exec: (_id, command) => run(command), open: async () => row, dispose: async () => {} }
+  const row: RemoteWorkspaceStatus = { workspaceId: 'test-write', host: 'write-host', root, anchor: '/local-write', sessions: [], connectionId: 'fixture-files', state: 'ready', channel: { host: 'write-host', state: 'ready', users: 1, reconnects: 0, pending: 0, transport: { shape: 'per-session-connection', controlMasterUsable: false } } }
+  return { list: () => [row], workspace: () => row, require: () => row, workspaceForAnchor: () => row, exec: (_id, command) => run(command), open: async () => row, dispose: async () => {}, openSession: async () => { throw new Error('file fixture has no PTY') }, closeWorkspace: async () => ({ closed: false, sessionIds: [] }) }
 }
 describe.skipIf(!bash)('真实远程写与编辑公共契约（#139）', () => {
   beforeAll(async () => {

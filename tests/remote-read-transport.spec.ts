@@ -28,8 +28,8 @@ function harness(mode: 'split' | 'dead' | 'timeout' | 'short' | 'changed' = 'spl
     return undefined
   } })
   const channel = new RemoteChannel({ host: 'test', requestTimeoutMs: 100, keepaliveMs: 0, reconnectMax: 0, reconnectBaseMs: 1, spawner: wire.spawner })
-  const row: RemoteWorkspaceStatus = { workspaceId: 'w', host: 'test', root: '/srv', anchor: '/anchor', state: 'ready', channel: channel.status() }
-  const remote: RemoteWorkspaceService = { list: () => [row], workspace: () => row, require: () => row, workspaceForAnchor: () => row, exec: (_id, command) => channel.request(command), open: async () => row, dispose: async () => { channel.close() } }
+  const row: RemoteWorkspaceStatus = { workspaceId: 'w', host: 'test', root: '/srv', anchor: '/anchor', sessions: [], connectionId: 'fixture-files', state: 'ready', channel: channel.status() }
+  const remote: RemoteWorkspaceService = { list: () => [row], workspace: () => row, require: () => row, workspaceForAnchor: () => row, exec: (_id, command) => channel.request(command), open: async () => row, dispose: async () => { channel.close() }, openSession: async () => { throw new Error('file fixture has no PTY') }, closeWorkspace: async () => ({ closed: false, sessionIds: [] }) }
   const target = { targetKey: 'test\0/srv/data' as import('../src/remote-fs/contract.ts').FsTargetKey, displayPath: '/srv/data' }
   return { channel, fs: createRemoteFileSystem(remote), target }
 }
