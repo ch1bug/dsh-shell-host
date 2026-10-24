@@ -39,8 +39,9 @@ import { HOST_DIR, NODE, hostEnv } from "./e2e-install.ts";
 /** The bundle's own loader rows (ADR-0007/0012): a failure must never blame
  * these — they are the rows this repo adds (TESTING.md failure attribution).
  * #136 added the `ssh` row (the ssh family left `./pty`); #137 added the remote
- * workspace pair (`remote` → `remote-fs`, ADR-0016 decision 1). */
-export const MY_ROWS = ["pty", "ssh", "terminal", "remote", "remote-fs"];
+ * workspace pair (`remote` → `remote-fs`, ADR-0016 decision 1); #143 added the
+ * dormant `wsl` row (mounted but `disabled: true` by default). */
+export const MY_ROWS = ["pty", "ssh", "terminal", "remote", "remote-fs", "wsl"];
 
 /** One scripted agent turn for the tool-loop tiers (#148): on its nth agent
  * request the mock demands this tool call. `input` may read the tool_result

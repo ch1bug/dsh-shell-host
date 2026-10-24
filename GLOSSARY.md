@@ -190,7 +190,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   等价（单源：`src/pty/session-core.ts` 的 `PTY_SIGNAL_SEMANTICS`）；② 无
   `run_in_background`（官方走 `ctx.jobs`）—— **已被 `#120` 决策改变**（接入，见下「#120 grill 共识」）；③ 无 `presentationMeta` / `presentResult` /
   `finalizeContent` 字节上限。
-- **`./wsl` entry**：默认 bundle patch 不挂 ⇒ SDK 里不会出现 `win_*`（opt-in entry 的预期行为，非缺陷）。
+- **`./wsl` entry**：随 bundle 挂载但**默认关闭**（#143 起 patch 里该行 `disabled: true`，对 #134「刻意不挂」的改判）⇒ 默认下 SDK 里不会出现 `win_*`；行在 loader 树上可见（disabled 条目不激活、不解析 inject），开启 = 用户侧把该行 `disabled` 置 false 后重启（profile patch 覆盖行；插件页的行级开关粒度未核实，不声称）。
 
 ## #68 POSIX launcher 预设行事实(2026-10-11)
 
@@ -203,7 +203,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
   `src/core/`、`src/backends*`、`src/types|timeout|subprocess-context|wsl-bridge`、
   client 设置卡、`./remote` entry)全部删除;`ctx.shell` 只由平台 shell 执行器
   提供。理由:B 路径(执行器注册/缝组装)已被实证会直接报错。
-- **挂载面 = 五个自有 id 行**（`#137` 起；`#136` 阶段为三行）:`pty` + `ssh` + `terminal` + `remote` + `remote-fs`;entry 面 = `./pty`(持久
+- **挂载面 = 六个自有 id 行**（`#143` 起；`#137`–`#139` 期间为五行使能行）:`pty` + `ssh` + `terminal` + `remote` + `remote-fs` + `wsl`(`disabled: true` 默认关闭,#143);entry 面 = `./pty`(持久
   PTY 会话核心)、`./ssh`(ssh 四工具 + 通道合成，`#136` 从 `./pty` 抽出)、`./terminal`(shell_open launcher 预设)、`./wsl`(WSL 桥
   工具)、`./remote`（工作区登记与文件通道）、`./remote-fs`（加性文件服务；本期 resolve/stat/listDir + remote_ls）。`launchers.ts` 吸收了原 backends 的 argv/prefix 常量
   (`*_INTERACTIVE_ARGV`、`msys2PathPrefix`、`parseWslDistroList`)。
@@ -249,7 +249,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 - **远程 one-shot 便捷工具(哨兵法)不在本 ADR**:留独立决定。
 - **supersede 范围**:仅覆盖 ADR-0013 的「Remote one-shot goes route C」一节。
 
-## D12 (#ADR-0012, 2026-10-16, human 拍板:只保留独立插件注册)【行清单已被 D13 收窄:现挂载面 = `pty` + `terminal`,无 `shell-host`;又被 D14 扩到 5 行】
+## D12 (#ADR-0012, 2026-10-16, human 拍板:只保留独立插件注册)【行清单已被 D13 收窄:现挂载面 = `pty` + `terminal`,无 `shell-host`;又被 D14 扩到 5 行,再扩到 6 行(#143,`wsl` 默认 `disabled: true`)]
 
 - **改上游路径全部摒弃,挂载形态 = 自有 id 插件行**:patch 只允许自有 id 的
   insert 行(`shell-host` / `pty` / `terminal`);同 id 接管上游 loader 行、

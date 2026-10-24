@@ -16,6 +16,11 @@
 # #137:远程工作区 ./remote(工作区登记 + 每主机一条长驻通道)与它的文件姐妹
 # ./remote-fs(ctx.remoteFs + remote_ls,ADR-0016 决策 1)。remote-fs 的
 # inject 含 remote,故 remote 行必须先于 remote-fs 行(顺序即依赖)。
+# #143(对 #134「刻意不挂」的改判):./wsl 随 bundle 挂载但默认关闭 ——
+# disabled: true 的行留在 loader 树上(插件面可见、可开启),disabled 条目不激活
+# 插件、不去解析 inject,故默认零开销;用户侧把该行 disabled 置 false 后重启
+# 即注册 win_* 七个 Windows 互操作工具。形状守卫:tests/patch-shape.spec.ts
+# (行 id 棘轮 + wsl 行必须 disabled: true 的断言)。
 - insert:
     - id: pty
       name: dsh-shell-host/pty
@@ -33,3 +38,7 @@
 - insert:
     - id: remote-fs
       name: dsh-shell-host/remote-fs
+- insert:
+    - id: wsl
+      name: dsh-shell-host/wsl
+      disabled: true

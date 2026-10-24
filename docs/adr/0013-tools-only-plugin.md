@@ -29,9 +29,12 @@ Removed:
 
 What remains (plugin-layer entries only): `./pty` (persistent PTY session
 core), `./terminal` (`shell_open` launcher presets), `./wsl` (WSL bridge
-tools). `cordis.patch.yml` mounts exactly two own-id rows: `pty`, `terminal`;
-`./wsl` is deliberately NOT among them — Windows-interop tools only make
-sense for an agent hosted inside WSL (issue #134).
+tools). [History: at decision time `cordis.patch.yml` mounted exactly two
+own-id rows, `pty` + `terminal`, and `./wsl` was deliberately not among them —
+Windows-interop tools only make sense for an agent hosted inside WSL
+(issue #134). Both the row count (stale since #136/#137) and the `./wsl`
+absence (superseded 2026-10-19, amendment below) no longer describe the
+current mount face.]
 
 ## Remote one-shot goes route C
 
@@ -40,6 +43,20 @@ Remote one-shot execution is owned by the standalone `dsh-shell-remote` plugin
 independently at the time. **Superseded by ADR-0016**: the remote workspace
 moves back into this package and the plugin is no longer required (its
 "installed" claim was true only as of 2026-10-16 — issue #134).
+
+## Amendment (2026-10-19, #143): `./wsl` mounts dormant
+
+Human's ruling revises the #134 "deliberately not mounted" call above: the
+`wsl` row IS on the bundle's mount face — `cordis.patch.yml` inserts it with
+`disabled: true` (own id + `dsh-shell-host/` name prefix, so the ADR-0012
+shape is unchanged). The row stays on the loader tree and shows up as a
+component in the plugin face, but a disabled entry is never activated, its
+`inject` is never resolved, and the `win_*` tools stay off every agent's tool
+face until the user turns it on (override the row with `disabled: false` in
+the profile patch, then restart — the verified route; a Plugins-page per-row
+switch is unverified and not claimed here). Enabling does
+not reintroduce an executor: `./wsl` remains a plugin-layer entry running
+every `win_*` call through the platform shell seam.
 
 ## Superseded scope
 
