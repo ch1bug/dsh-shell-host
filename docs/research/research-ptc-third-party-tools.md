@@ -395,7 +395,7 @@ PTC 可用性的充分必要条件是「已注册 + 对该 agent 可见 + `outpu
 | P1 | 无 `presentResult` | 同上（官方仅 `terminal_send` 有） | 可选 |
 | P2 | 无 `run_in_background` / `ctx.jobs` | 能力面差异；本仓以 `autoClose` / `idleTimeoutMs` 覆盖部分语义 | 依 ADR-0013 现状**不动** |
 | P2 | 文档口径 | 本仓 `GLOSSARY.md` / `docs/` 没有一条写明"PTC 可用性由 `register()`+`output.schema` 决定，`presentationMeta` 纯展示" | 建议加一句结论，防止后人误判 |
-| P2 | `./wsl` entry | 默认 bundle patch **不挂** `win_*`（opt-in entry） | 无需动作，仅记录 |
+| P2 | `./wsl` entry | 【#143 改判，2026-10-19 human 裁决】随 bundle 挂载但默认 `disabled: true`（本行快照记录的是 #143 前的「不挂」状态）——默认下 `win_*` 仍不出现，开启 = profile patch 覆盖该行后重启（README *The `./wsl` entry*） | 已随 #143 落实 |
 
 ### 4.3 未确证面
 
