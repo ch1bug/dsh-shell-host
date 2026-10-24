@@ -15,8 +15,6 @@
 
 import { describe, expect, it, onTestFinished } from "vitest";
 import { execFileSync } from "node:child_process";
-import { apply as applyPty } from "../src/pty/index.ts";
-import { apply as applyTerminal } from "../src/terminal/index.ts";
 import { resolveLaunchers } from "../src/launchers.ts";
 import {
   CMD_PROBE,
@@ -26,36 +24,18 @@ import {
   matchesNeedle,
   type ProbeNeedle,
 } from "./helpers/probe-needle.ts";
-import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
+import { bootTerminal } from "./helpers/fake-terminal.ts";
+import type { CustomLauncherConfig } from "../src/launchers.ts";
 
 const AGENT = { name: "terminal-machine" };
 
-/** Boot the pty + terminal entries on the REAL self-managed core (#61,
- * ADR-0010): the default spawner IS real @lydell/node-pty (Windows ConPTY)
- * running each launch command under the platform-shell wrapper — the
- * production shape, no fake in the loop. Config is the terminal entry's
- * settings namespace. */
-function boot(config: { custom?: unknown[] } = {}) {
-  const registered: any[] = [];
-  const provided = new Map<string, unknown>();
-  // #102: the gate fails closed without the host permission services; this
-  // machine lane tests the launcher/preset layer, so it mounts the permissive
-  // fakes (the gate's own verdicts live in tests/permission-gate.spec.ts).
-  const permissions = fakePermissionServices();
-  const ctx = {
-    provide: (name: string, value: unknown) => provided.set(name, value),
-    effect: () => () => Promise.resolve(),
-    tools: { register: (t: unknown) => registered.push(t) },
-    get: permissionServiceLookup(permissions, (name) => provided.get(name)),
-  };
-  applyPty(ctx as any, {});
-  applyTerminal(ctx as any, config);
-  const tool = (name: string) => {
-    const t = registered.find((x: any) => x.name === name);
-    if (!t) throw new Error(`tool not registered: ${name}`);
-    return t;
-  };
-  return { tool };
+/** Boot the pty + terminal entries through the SHARED harness (#156 — the
+ * hand-rolled ctx is gone; bootTerminal leaves `deps`/`fakeSpawn` at their
+ * defaults: the REAL launcher probing and the REAL node-pty spawner
+ * (#61, ADR-0010) — the production shape, no fake in the loop). `config` is
+ * the terminal entry's settings namespace. */
+function boot(config: { custom?: CustomLauncherConfig[] } = {}) {
+  return bootTerminal(config);
 }
 
 /** Poll pty_tail until `needle` (string or RegExp) shows up (or the budget

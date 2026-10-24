@@ -8,10 +8,7 @@
  */
 
 import { describe, it, expect, onTestFinished } from "vitest";
-import { spawn as spawnPty } from "@lydell/node-pty";
-import { apply as applyPty } from "../src/pty/index.ts";
-import { apply as applySsh } from "../src/ssh/index.ts";
-import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
+import { bootPlugin } from "./helpers/fake-pty.ts";
 
 // The host value may carry a user@ prefix — the composition passes it to
 // ssh verbatim, and key auth on the live host is provisioned per user
@@ -21,43 +18,18 @@ const HOST = process.env.DSH_SSH_LIVE_HOST;
 const JUMP = process.env.DSH_SSH_LIVE_JUMP;
 const hasLiveSsh = !!HOST;
 
-function boot() {
-  // #61 (ADR-0010): the live suite drives the REAL self-managed core — the
-  // default spawner IS @lydell/node-pty (ConPTY) running the ssh composition
-  // directly as the spawned process. Byte flow follows real PTY semantics
-  // (full duplex, echo by the pty line discipline); kill is conpty close,
-  // taking down the whole local ssh <- remote chain.
-  const registered: any[] = [];
-  const provided = new Map<string, unknown>();
-  // #102: the gate fails closed without the host permission services; this
-  // live round-trip is about the ssh surface, so mount the permissive fakes.
-  const permissions = fakePermissionServices();
-  const ctx = {
-    provide: (name: string, value: unknown) => provided.set(name, value),
-    effect: () => () => Promise.resolve(),
-    tools: { register: (t: unknown) => registered.push(t) },
-    get: permissionServiceLookup(permissions, (name) => provided.get(name)),
-  };
-  applyPty(ctx as any, {});
-  // #136: the ssh family is the `./ssh` entry now — mounted on the same context
-  // so it consumes the pty service above (one registry: `core.active` sees both).
-  applySsh(ctx as any, {});
-  const tool = (name: string) => {
-    const t = registered.find((x) => x.name === name);
-    if (!t) throw new Error(`tool not registered: ${name}`);
-    return t;
-  };
-  const core = provided.get("pty") as { active(owner: unknown): string[] };
-  return { tool, core };
-}
-
 describe("ssh 四工具 live round-trip (#24 AC)", () => {
   it.skipIf(!hasLiveSsh)(
     "start → interactive command → incremental tail → close against a real host",
     { timeout: 90_000 },
     async () => {
       const agent = { name: "live" };
-      const { tool, core } = boot();
+      // #61 (ADR-0010): the live suite drives the REAL self-managed core —
+      // `spawnPty` omitted ⇒ the default spawner IS @lydell/node-pty (ConPTY)
+      // running the ssh composition directly as the spawned process. #136:
+      // `ssh: true` mounts the `./ssh` entry on the same context (one
+      // registry: `core.active` sees both).
+      const { tool, core } = bootPlugin({ ssh: true });
       const opened = await tool("ssh_start").execute({ host: HOST!, ...(JUMP ? { jump: JUMP } : {}), shell: "bash --login" }, { agent });
       onTestFinished(() => tool("ssh_close").execute({ id: opened.sessionId }, { agent }).catch(() => {}));
       expect(opened.sessionId).toBeDefined();
@@ -90,7 +62,7 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
 
   it.skipIf(!hasLiveSsh)("ssh_start rejects malformed hosts before any network", async () => {
     const agent = { name: "live" };
-    const { tool } = boot();
+    const { tool } = bootPlugin({ ssh: true });
     await expect(tool("ssh_start").execute({ host: "bad host" }, { agent })).rejects.toThrow(/host/);
   });
 
@@ -102,7 +74,7 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
     { timeout: 60_000 },
     async () => {
       const agent = { name: "live" };
-      const { tool } = boot();
+      const { tool } = bootPlugin({ ssh: true });
       const opened = await tool("pty_open").execute(
         { command: "cmd.exe /d /c echo %LAUNCHER_ENV_PROBE%", env: { LAUNCHER_ENV_PROBE: "spawn-env-live-42" } },
         { agent },
@@ -122,7 +94,7 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
     { timeout: 90_000 },
     async () => {
       const agent = { name: "live" };
-      const { tool } = boot();
+      const { tool } = bootPlugin({ ssh: true });
       const opened = await tool("ssh_start").execute(
         { host: HOST!, options: ["BatchMode=yes"] },
         { agent },

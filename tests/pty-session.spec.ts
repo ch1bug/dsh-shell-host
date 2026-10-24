@@ -7,26 +7,9 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { apply } from "../src/pty/index.ts";
 import { AUTO_CLOSE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS } from "../src/pty/session-core.ts";
-import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
-import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
+import { bootPlugin, echoFakePty } from "./helpers/fake-pty.ts";
 import { waitUntil, stillPending } from "./helpers/wait-until.ts";
-
-// ---------------------------------------------------------------------------
-// Echo spawner: every write is echoed back as a complete line — the fake
-// stands in for the pty line discipline the real ConPTY provides.
-// ---------------------------------------------------------------------------
-
-const handles: FakePtyHandle[] = [];
-const specs: CoreSpawnSpec[] = [];
-
-function echoSpawner(spec: CoreSpawnSpec) {
-  specs.push(spec);
-  const h = echoFakePty();
-  handles.push(h);
-  return h.pty;
-}
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -35,34 +18,16 @@ function echoSpawner(spec: CoreSpawnSpec) {
 function makeAgent(name: string) { return { agentName: name }; }
 const exec = (agent: unknown) => ({ agent, signal: new AbortController().signal });
 
-let ctx: any;
-/** The boot context (tools register, `pty` service provides, one dispose effect).
- * #102: the permission services are mounted PERMISSIVE here (`danger-full-
- * access` + `allowed-once`) — the gate fails closed on a missing service, and
- * this suite is about the session core, not the policy. The gate's own
- * verdicts are pinned in `tests/permission-gate.spec.ts`. */
-function makeCtx(): any {
-  const permissions = fakePermissionServices();
-  return {
-    provided: {},
-    provide(name: string, value: unknown) { this.provided[name] = value; },
-    tools: { registered: [] as any[], register(t: unknown) { this.registered.push(t); } },
-    effects: [] as Array<{ fn: () => () => Promise<void>; label: string }>,
-    effect(fn: () => () => Promise<void>, label: string) { this.effects.push({ fn, label }); },
-    get: permissionServiceLookup(permissions),
-  };
-}
-
-/** Boot the pty entry over the echo spawner; `deps` reaches the core, so a
- * case can swap in the signal seam (#119: `platform` / `procKill`). */
+let boot: ReturnType<typeof bootPlugin>;
+/** Boot the pty entry over the echo fake through the SHARED harness (#156 —
+ * the hand-rolled `makeCtx` is gone; bootPlugin mounts the permissive #102
+ * permission fakes by default). `deps` reaches the core, so a case can swap
+ * in the signal seam (#119: `platform` / `procKill`). */
 function setup(deps: { platform?: NodeJS.Platform; procKill?: (pid: number, signal: string) => void } = {}) {
-  handles.length = 0;
-  specs.length = 0;
-  ctx = makeCtx();
-  apply(ctx, { tailLines: 200, maxSessions: 8 }, { spawnPty: echoSpawner, ...deps });
+  boot = bootPlugin({ config: { tailLines: 200, maxSessions: 8 }, spawnPty: echoFakePty, deps });
 }
-const tool = (n: string) => ctx.tools.registered.find((t: any) => t.name === n);
-const pty = () => ctx.provided.pty;
+const tool = (n: string) => boot.tool(n);
+const pty = () => boot.core;
 
 beforeEach(() => setup());
 
@@ -94,7 +59,7 @@ describe("pty lifecycle round-trip", () => {
     await tool("pty_open").execute({ command: "auto-run-line" }, exec(agent));
     // #61: the command IS the spawned process (under the platform-shell
     // wrapper in production) — no typed-in command line anymore.
-    expect(specs[0].command).toBe("auto-run-line");
+    expect(boot.specs[0].command).toBe("auto-run-line");
   });
 });
 
@@ -117,8 +82,8 @@ describe("lifetime and disposal", () => {
     const other = makeAgent("b");
     await tool("pty_open").execute({ command: "one" }, exec(agent));
     await tool("pty_open").execute({ command: "two" }, exec(other));
-    expect(ctx.effects).toHaveLength(1);
-    await ctx.effects[0].fn()();
+    expect(boot.effects).toHaveLength(1);
+    await boot.effects[0].dispose();
     expect(pty().active(agent)).toHaveLength(0);
     expect(pty().active(other)).toHaveLength(0);
   });
@@ -201,10 +166,10 @@ describe("pty_open options", () => {
     }, exec(agent));
     // env rides the spawn spec (#61: the core's spawn request): the process
     // is born with these entries.
-    expect(specs[0].env).toEqual({ FOO: "bar baz", WEIRD: "it's" });
+    expect(boot.specs[0].env).toEqual({ FOO: "bar baz", WEIRD: "it's" });
     // Nothing is typed into the terminal as `export` lines: nothing is
     // written into the pty at all — the command is the spawned process.
-    expect(handles[0].writes).toHaveLength(0);
+    expect(boot.handles[0].writes).toHaveLength(0);
   });
 
   it("rejects an empty command", async () => {
@@ -246,11 +211,11 @@ describe("pty_open options", () => {
     // #146: the open call WAITS for the real exit, so the exit is driven while
     // the call is in flight (the #64 shape — emit after the open resolved —
     // would now wait forever by design).
-    await waitUntil(() => handles.length === 1, {
+    await waitUntil(() => boot.handles.length === 1, {
       timeoutMs: 2_000,
-      describeObserved: () => `handles=${handles.length}`,
+      describeObserved: () => `handles=${boot.handles.length}`,
     });
-    const handle = handles[0];
+    const handle = boot.handles[0];
     // #146: the call waits for the real exit — it must NOT resolve while the
     // process is alive (the harness settle window is 150ms; 400ms is well past
     // it, so the pre-#146 shape would have returned `running` here).
@@ -295,7 +260,7 @@ describe("pty_open options", () => {
     await expect(tool("pty_open").execute({ shellCommand: "bash --login -i", autoClose: true }, exec(a)))
       .rejects.toMatchObject({ code: "INVALID_ARGS" });
     // Refused before any spawn — no process left running behind a rejected call.
-    expect(specs).toHaveLength(0);
+    expect(boot.specs).toHaveLength(0);
   });
 
   it("#146: command semantics have one source — the tool description and its `command` parameter quote the constant", () => {
@@ -348,8 +313,8 @@ describe("pty facade service (consumer plugins)", () => {
   it("dispose effect still closes facade-opened sessions", async () => {
     const agent = makeAgent("a");
     await pty().open(agent, { command: "bye" }, new AbortController().signal);
-    expect(ctx.effects).toHaveLength(1);
-    await ctx.effects[0].fn()();
+    expect(boot.effects).toHaveLength(1);
+    await boot.effects[0].dispose();
     expect(pty().active(agent)).toHaveLength(0);
   });
 });
@@ -403,7 +368,7 @@ describe("pty_list / pty_signal tool surface (#119)", () => {
     await expect(tool("pty_signal").execute({ id: "nope", signal: "SIGINT" }, exec(a)))
       .rejects.toMatchObject({ code: "NO_SESSION" });
     // 会话退出后仍被持有（持久默认）—— 报 delivered:false，而不是假装投递过。
-    handles[0].emitExit({ exitCode: 0 });
+    boot.handles[0].emitExit({ exitCode: 0 });
     expect(await tool("pty_signal").execute({ id: s.sessionId, signal: "SIGTERM" }, exec(a)))
       .toMatchObject({ delivered: false, status: { kind: "exited", exitCode: 0 } });
     // 归属边界不因退出而失效：别人的 id 依旧响亮。

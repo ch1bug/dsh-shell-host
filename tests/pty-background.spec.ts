@@ -132,7 +132,9 @@ function boot(opts: { jobs?: ReturnType<typeof fakeJobs>; config?: unknown } = {
   // #136: the ssh send path lives in the `./ssh` entry now; mount it too so the
   // "one gate, both tools" cases keep exercising the SAME shared branch. Its
   // `enableRunInBackground` reads the same probe config object.
-  const h = bootPlugin({ ssh: true, spawnPty: () => echoFakePty(), config: opts.config });
+  // #156: the spawner passes DIRECTLY — the `() => echoFakePty()` arrow that
+  // worked around the #120-era TS2322 is retired by the signature alignment.
+  const h = bootPlugin({ ssh: true, spawnPty: echoFakePty, config: opts.config });
   if (opts.jobs !== undefined) h.provided.set("jobs", opts.jobs);
   return h;
 }

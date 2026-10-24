@@ -17,34 +17,10 @@
  */
 
 import { describe, expect, it, onTestFinished } from "vitest";
-import { apply } from "../src/pty/index.ts";
+import { bootPlugin } from "./helpers/fake-pty.ts";
 import { waitUntil } from "./helpers/wait-until.ts";
-import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
 
 const AGENT = { name: "pty-signal-machine" };
-
-/** Boot the pty entry on the REAL core (default spawner = @lydell/node-pty).
- * #102: the gate resolves the host policy per execution and fails closed on a
- * missing service, so the permissive fakes ride along (this lane is about the
- * ConPTY signal semantics, not the policy). */
-function boot() {
-  const registered: any[] = [];
-  const provided = new Map<string, unknown>();
-  const permissions = fakePermissionServices();
-  const ctx = {
-    provide: (name: string, value: unknown) => provided.set(name, value),
-    effect: () => () => Promise.resolve(),
-    tools: { register: (t: unknown) => registered.push(t) },
-    get: permissionServiceLookup(permissions, (name) => provided.get(name)),
-  };
-  apply(ctx as any, {});
-  const tool = (name: string) => {
-    const t = registered.find((x: any) => x.name === name);
-    if (!t) throw new Error(`tool not registered: ${name}`);
-    return t;
-  };
-  return { tool };
-}
 
 /** A long-running real child: node keeps the event loop alive, produces no
  * output — so the session stays "running" until something kills it. */
@@ -55,7 +31,10 @@ describe("pty_signal machine lane (#119, Windows/ConPTY)", () => {
     "SIGINT is refused loudly (no silent mapping); SIGTERM terminates the real session",
     { timeout: 60_000 },
     async () => {
-      const { tool } = boot();
+      // The REAL core: bootPlugin with `spawnPty` omitted (#156 — the
+      // hand-rolled ctx is gone; the shared harness mounts the permissive #102
+      // permission fakes and the default node-pty spawner).
+      const { tool } = bootPlugin();
       const opened = await tool("pty_open").execute({ command: LONG_RUNNING }, { agent: AGENT });
       onTestFinished(() => tool("pty_close").execute({ id: opened.sessionId }, { agent: AGENT }).catch(() => {}));
       const status = async () => (await tool("pty_list").execute({}, { agent: AGENT })).sessions[0]?.status;

@@ -78,13 +78,19 @@ export type { CoreSpawnSpec };
 /** A line-discipline echo fake: every write comes back as a complete line
  * (prefix + the written bytes, CR stripped), and kill surfaces the exit
  * event — the real pty behaviors the core's settle/close paths rely on.
- * `prefix` lets a suite pose as a specific remote (e.g. ssh's "ECHO:"). */
-export function echoFakePty(prefix = "") {
+ * `prefix` lets a suite pose as a specific remote (e.g. ssh's "ECHO:").
+ * #156: the parameter ALSO accepts a `CoreSpawnSpec` — the bootPlugin
+ * `spawnPty` seam hands the spec as its first argument, so `bootPlugin({
+ * spawnPty: echoFakePty })` typechecks AND echoes correctly (a spec is not a
+ * string, so it is dropped instead of used as the echo prefix). This retires
+ * the `() => echoFakePty()` arrow wrapper the #120-era TS2322 forced. */
+export function echoFakePty(prefix: string | CoreSpawnSpec = "") {
   const h = fakePty();
+  const echoPrefix = typeof prefix === "string" ? prefix : "";
   const rawWrite = h.pty.write.bind(h.pty);
   (h.pty as any).write = (d: string) => {
     rawWrite(d);
-    setTimeout(() => h.emitData(prefix + d.replace(/\r$/, "") + "\r\n"), 5);
+    setTimeout(() => h.emitData(echoPrefix + d.replace(/\r$/, "") + "\r\n"), 5);
   };
   (h.pty as any).kill = () => setTimeout(() => h.emitExit({ exitCode: 0 }), 5);
   return h;
@@ -115,7 +121,9 @@ export function fakeSystemPrompt() {
  *
  *  - `spawnPty` omitted ⇒ the REAL core (the machine lane's default spawner);
  *  - `spawnPty` given ⇒ an echo/fake core, and every spawn spec is recorded in
- *    `specs` (the zero-vocabulary assertion reads that list);
+ *    `specs` (the zero-vocabulary assertion reads that list); every handle the
+ *    spawner handed out is recorded in `handles` (#156 — the suites assert on
+ *    writes/emitExit/killed through it instead of keeping their own array);
  *  - `deps` reaches the core / prompt seams untouched (platform, procKill,
  *    detectEnvironments);
  *  - `ctx.inject` is a synchronous child fiber: the prompt contribution
@@ -186,6 +194,7 @@ export function bootPlugin(opts?: {
       return {};
     },
   };
+  const handles: FakePtyHandle[] = [];
   const spawnSeam = opts?.spawnPty === undefined
     ? {}
     : {
@@ -194,7 +203,11 @@ export function bootPlugin(opts?: {
         spawnPty: (spec: CoreSpawnSpec) => {
           specs.push(spec);
           const result = opts.spawnPty!(spec);
-          return "pty" in result ? result.pty : (result as never);
+          if ("pty" in result) {
+            handles.push(result);
+            return result.pty;
+          }
+          return result as never;
         },
       };
   apply(ctx, opts?.config ?? {}, { ...spawnSeam, ...opts?.deps });
@@ -211,5 +224,5 @@ export function bootPlugin(opts?: {
     return t;
   };
   const core = provided.get("pty") as SessionCore;
-  return { registered, tool, core, provided, effects, systemPrompt, specs, ctx, permissions };
+  return { registered, tool, core, provided, effects, systemPrompt, specs, handles, ctx, permissions };
 }

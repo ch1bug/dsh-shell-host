@@ -12,75 +12,19 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { join } from "node:path";
-import { echoFakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
-import { fakePermissionServices, permissionServiceLookup } from "./helpers/fake-permissions.ts";
-import { apply as applyPty } from "../src/pty/index.ts";
-import { PWSH_INTERACTIVE_ARGV } from "../src/launchers.ts";
+import { bootTerminal, fullDeps, FULL_ENV, PWSH, type TerminalBoot } from "./helpers/fake-terminal.ts";
 import { apply as applyTerminal } from "../src/terminal/index.ts";
+import { PWSH_INTERACTIVE_ARGV } from "../src/launchers.ts";
 import { resolveLaunchers } from "../src/launchers.ts";
 import type { CustomLauncherConfig, LauncherDeps } from "../src/launchers.ts";
 
-const MSYS_BASH = "C:\\msys64\\usr\\bin\\bash.exe";
-const PWSH = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
-
-function existsEverything(candidate: string): boolean {
-  const known = [MSYS_BASH, PWSH, join("C:\\Windows", "System32", "cmd.exe")];
-  return known.some((k) => k.toLowerCase() === candidate.toLowerCase());
-}
-
-const FULL_ENV = { SystemRoot: "C:\\Windows", Path: "C:\\Windows\\System32" } as NodeJS.ProcessEnv;
-const fullDeps: LauncherDeps = { exists: existsEverything, env: FULL_ENV, path: FULL_ENV.Path, listDistros: () => [] };
-
-interface Boot {
-  tool: (name: string) => any;
-  spawnSpecs: CoreSpawnSpec[];
-  handles: FakePtyHandle[];
-  /** The pty entry's facade — `active(owner)` is the registry-derived
-   * liveness view (#62: the cap/idle fact source). */
-  core: { active(owner: unknown): string[] };
-  /** The boot context — a remount test re-applies the terminal entry on it
-   * to prove the cap count survives (#62). */
-  ctx: any;
-  registered: any[];
-  provided: Map<string, unknown>;
-}
-
-/** Boot the pty AND terminal entries on one self-managed core; surface the
+/** Boot the pty AND terminal entries on one self-managed core through the
+ * SHARED harness (#156 — the hand-rolled ctx/spawner is gone); surface the
  * spawn specs the core handed to its spawner and the registered tools of
- * both entries. */
-function boot(config: { custom?: CustomLauncherConfig[]; maxSessions?: number } = {}, deps: LauncherDeps = fullDeps): Boot {
-  const handles: FakePtyHandle[] = [];
-  const spawnSpecs: CoreSpawnSpec[] = [];
-  const spawnPty = (spec: CoreSpawnSpec) => {
-    spawnSpecs.push(spec);
-    // A minimal echo "shell" (shared helper): any write comes back as a
-    // complete line, and kill surfaces the exit event — real
-    // line-discipline/ConPTY semantics without spawning anything.
-    const h = echoFakePty();
-    handles.push(h);
-    return h.pty;
-  };
-  const registered: any[] = [];
-  const provided = new Map<string, unknown>();
-  // #102: both entries drive the host permission gate, which fails closed on a
-  // missing service — mount the permissive fakes here (the gate's own verdicts
-  // live in tests/permission-gate.spec.ts).
-  const permissions = fakePermissionServices();
-  const ctx = {
-    provide: (name: string, value: unknown) => provided.set(name, value),
-    effect: () => () => Promise.resolve(),
-    tools: { register: (t: unknown) => registered.push(t) },
-    get: permissionServiceLookup(permissions, (name) => provided.get(name)),
-  };
-  applyPty(ctx as any, {}, { spawnPty });
-  applyTerminal(ctx as any, config, deps);
-  const tool = (name: string) => {
-    const t = registered.find((x) => x.name === name);
-    if (!t) throw new Error(`tool not registered: ${name}`);
-    return t;
-  };
-  return { tool, spawnSpecs, handles, core: provided.get("pty") as Boot["core"], ctx: ctx as any, registered, provided };
+ * both entries. Unit posture: the injected every-launcher-present deps and
+ * the in-process echo fake spawner. */
+function boot(config: { custom?: CustomLauncherConfig[]; maxSessions?: number } = {}, deps: LauncherDeps = fullDeps): TerminalBoot {
+  return bootTerminal(config, deps, { fakeSpawn: true });
 }
 
 const agent = { name: "unit" };
