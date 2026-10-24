@@ -53,8 +53,21 @@
 - [dev-environment.md](dev-environment.md)（隔离契约、宿主锚点、构建坑）
 - [README.md](../README.md)（验证段）
 
-**邻近文件的既有风格**：`src/` 用双引号 + 分号（TypeScript，`verbatimModuleSyntax` 下
-`import type` 显式）；`tests/*.spec.ts` 用 vitest、按位置收集；文档以中文为主
+**邻近文件的既有风格**：本仓**无 lint、无 formatter**，引号/分号风格在树里就是**混合态**；
+判新文件**以同文件、紧邻文件的既有代码为准**，不按目录级口径判 —— 写死哪一档，Standards 轴
+就会拿错的标准点名新文件（两次实证：`#149`、`#120`，见 §7）。两种形态的落点**判前现查**
+（仓库根；读数随开发漂移，下行注释是 2026-10-23 摸底形态）：
+
+```bash
+grep -rEc '";$' src tests --include='*.ts' | grep -v ':0$'            # 双引号+分号 落在哪
+grep -rEc "^import .*'$" src tests --include='*.ts' | grep -v ':0$'   # 单引号+无分号 import 落在哪
+```
+
+src/ 老代码（`launchers.ts`、`pty/*` 等）是**单引号、无分号**；新落的 `remote*`/`remote-fs`
+纵切与 `tests/` 主体是**双引号 + 分号**，但两个方向都有交叉（remote 纵切内部两种都有）——
+任何目录级写死都会错一半，判据只能落在紧邻代码。`tsconfig.json` 显式
+`"verbatimModuleSyntax": false`（`import type` 仍是局部惯例，但不是开关强制）；
+`tests/*.spec.ts` 用 vitest、按位置收集；文档以中文为主
 （AGENTS.md 顶部即有"与人沟通一律用中文"）。
 
 - **决策状态类事实**（判断项转硬）：状态 / 证据文件里，**未拍的决策不得写成「已拍」** ——
@@ -147,6 +160,11 @@ prompt** —— subagent 没有你的上下文（不会自带基线）。**别�
   「某文件 / 某票 / 某测试用了 X」，都要当场 `git grep` / `gh issue view` 一次 —— 「顺手一写、没 grep」
   的注释被 Standards 轴判硬违规两次：「README / tests cite this constant」（实际只有本文件用）、
   「`#144`/`#149` precedent」（`#144` 当时**还没有**落地物）。
+- **按错的标准判了新文件**（`#149` / `#120`，两次实证）：§3 曾断言「`src/` 用双引号 + 分号」，
+  与实况相反（`src/` 老代码是单引号、无分号）—— 文档化标准自身错反，Standards 轴拿它当输入
+  就会按错标准点名新文件。`#149`：轴按邻近实况报「新 `src` 文件带分号，与 `src/` 既有风格
+  （单引号、无分号）不符」，并当场揭穿这条错句（队列外，记 retro）；`#120`：派轴前先手工
+  对齐这条错句才能派。落法：风格写进本文只能给**现查命令**（§3），不写死目录级口径。
 
 ## 8. 没有 review 轴的提交（retro / chore 落地）
 
