@@ -33,6 +33,16 @@ if ! git symbolic-ref -q HEAD >/dev/null; then
   fail "HEAD 处于 detached 状态 —— 先 git switch <branch> 再提交"
 fi
 
+# 1.5 共享树提交提醒（#161 AC3，reminder-only，不阻断）：裸 `git commit` 提交的是
+# 整个 index——多会话共享工作树时会把**他方暂存**的内容一起卷进提交（2026-10-24 实测
+# 16 files 事故）。pathspec 提交（`git commit -m <msg> -- <paths>`）走临时 index，不碰
+# 这里的暂存面。只报数提示，不判断意图。
+STAGED_COUNT=$(git diff --cached --name-only | wc -l)
+if [ "$STAGED_COUNT" -gt 0 ]; then
+  echo "pre-commit: index 里有 ${STAGED_COUNT} 个暂存文件将全部进入本次提交（共享树时可能含他方暂存）——"
+  echo "  只打算提交部分文件时用 pathspec：git commit -m <msg> -- <paths>"
+fi
+
 # 2. lockfile 必须与 package.json 一致（#82 的第一层：干净检出装不上）。
 # 用 `node <pnpm.mjs>` 而非 PATH 上的 `pnpm`：Windows 上是 .cmd shim，msys 的 bash
 # 直接调用会挂住（实测）。找不到 pnpm.mjs 就响亮跳过。
