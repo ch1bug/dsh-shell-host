@@ -116,6 +116,16 @@ prompt** —— subagent 没有你的上下文（不会自带基线）。**别�
 
 ## 5. 两轴 brief 模板
 
+**复核子代理只读（S4，#157）**：两轴 subagent 的写权限 = **无** —— 不得 `git checkout` /
+`git restore` / `git stash` / `git clean`（**非完整清单**：`git reset` / `git add` / `git commit` /
+`git am` / `git apply` 同禁，完整禁令面以 preset 仓 `docs/code-review-brief.md` §5 的固定段为准），
+不得删改 `.scratch/`（那里是**证据**，不是草稿区），临时件一律落 `os.tmpdir()` 不进仓；
+**复核的产物只能进报告，不能进工作树**。主防线 = 先提交再复核（基线冻结；工作树未冻结时
+显式告知"移动靶，只读快照"）。派发时把这几条**随 brief 整段粘给子代理** —— 约束要写进
+它真读到的地方，不能只活在派单者的记忆里。preset 仓先例与判据表单一事实源：
+#114 / #157 S4（`docs/silence-guardrails.md`，该仓 `tests/verify-review-brief-readonly.mjs`
+钉 preset 侧；本仓此注记句暂无机械守卫）。
+
 两个 subagent **同时**发（一条消息两个调用），各给"diff 命令 + 提交列表 + 该轴材料 + 它的 brief"：
 
 - **Standards 轴**：diff 命令 + 第 3 节清单 + 粘好的 smell 基线 + **本仓的证据文字面**
