@@ -193,6 +193,37 @@ await pty_send({ id: s.sessionId, data: 'cd /c/work && ls | head -3' })   // 无
 提示符与命令回显是终端语义，不是本票要消的噪音；本票消掉的是「每命令一次会话 + 一次 PTY 初始化
 + 一次 shell 启动」以及**回显里再没有包装串**。
 
+### `initialOutput` 可能为空（#154）：ConPTY 首静默窗与正确的取数姿势
+
+**事实：真实 ConPTY 下 `pty_open` 返回的 `initialOutput` 经常是空串，这不是缺陷。**
+成因在 core 的初始 settle（`src/pty/session-core.ts`）：打开会话后先等一个**输出静默窗**
+（默认 `DEFAULT_SETTLE_QUIET_MS = 150`，一旦连续 150ms 无新字节即返回；另有 2s 硬上界防挂），
+而 ConPTY 的初始化转义序列与 shell 横幅往往在**首个静默窗之后**才到达 ⇒ 它们不落进
+`initialOutput`，而是落进**下一次** `pty_tail` 的页里（tail 游标从打开时已存在的行起算，
+之后到的字节都能读到）。`autoClose: true` 的一次性形态不受此影响 —— 它等真退出后再走一次
+静默窗，缓冲输出会落进 `initialOutput`（见上一节 #146）。
+
+实测读数（采集环境：文件沙箱 = `danger-full-access`、无审批提示，真实 ConPTY / win32）：
+
+- `#149`：`shell initialOutput bytes = 0`，同一份日志里紧接的 delta 才带着 `ESC[?9001h…`
+  与 bash 横幅（`.scratch/149-probe.log`）。
+- `#147` 读数 A：`pty_open { command: 'node -e "setInterval(() => {}, 1000)"' }` 返回
+  `{"initialOutput":""}`（转录 `.scratch/t147-pty-crosscall.md`）。
+
+**正确取数姿势：要量「启动输出」（横幅 / 初始化转义 / 提示符），不要读 `initialOutput`，
+用后续 tool call 里的 `pty_tail` 轮询**。可复跑步骤（最少两次 tool call；采集环境一并记）：
+
+1. `pty_open { command: 'node -e "setInterval(() => {}, 1000)"' }`（或任一会产出横幅的会话）
+   → 记下返回的 session id；**此时 `initialOutput` 为 `""` 属预期**，别拿它断言「没输出」。
+2. **另一次** tool call 里 `pty_tail { id }` → 横幅与初始化转义（`ESC[?9001h…`）在这一页里；
+   若还没有，隔一拍再 `pty_tail`，直到读到你要的 needle 为止。
+   （不产出任何输出的子进程读到空增量也算正常返回 —— 与
+   [docs/dev-environment.md §4.6](docs/dev-environment.md) 的跨轮存活读数是同一套措辞。）
+3. 用完 `pty_close { id }` 收尾。
+
+**本票不改语义**：不加「首个输出到达再算 settle」的开关、不改 settle 默认值 ——
+要那样请另立票（会牵动默认行为 / 超时上界 / `shellCommand` 交互与变异验证）。
+
 ### pty_list / pty_signal（#119）
 
 补齐官方 `terminal_list` / `terminal_signal` 的工具面覆盖。两者都**只作用于调用方
@@ -275,6 +306,28 @@ agent 自己持有的会话**（数据源就是核心的 owner 注册表，与 `
   原文留在 `cause`）。落点在 `defaultSpawnPty` 的包装层，不在工具层（`#67` 的路径）。
 
 真实 ConPTY 读数载体：`tests/pty-oneshot-machine.spec.ts`（0 / 非零退出码各一条 + 内建命令诊断）。
+
+### 硬截止时间（#159）：one-shot exec 默认 600s，防等待输入无限挂起
+
+`pty_open({ command, autoClose: true })` 的调用本身现在有**默认生效、可调的硬截止时间**（wall-clock，
+覆盖**整个工具调用**——初始 settle + 等退出全部算在内）：
+
+- **优先级**：单次参数 `deadlineMs` > `./pty` 配置的 `deadlineMs` > 默认 **600000ms**（10 分钟，
+  单源：`session-core.ts` 的 `DEFAULT_DEADLINE_MS`，工具描述内文由该常量插值）。
+  `deadlineMs: 0` = **显式关闭**（默认是有限的；关闭必须显式传，不存在静默无限）。非法值（非整数 / 负数）
+  在工具面与配置面**响亮拒绝**。
+- **总时长口径**：持续输出、读日志、settle 窗口的提前返回都**不会重置或顺延**它——这与
+  #56 的 opt-in `idleTimeoutMs`（按输出定义的空闲）是**两个独立机制**，命名互不覆盖。
+- **到期动作**：杀**自有**进程树——POSIX 先向进程组发 SIGTERM，宽限（默认 2s）后组 SIGKILL 强杀；
+  Windows/ConPTY 只有树终止一条杠杆，直接终止。**绝不触碰其他 owner 的会话**；清理走单条关闭路径，幂等。
+- **结果语义**：返回 `timeout: true` + 已捕获输出（`initialOutput`）+ `status` 里的**真实退出码**
+  （进程确实报了才给；到期杀不伪造成功码）。abort 是另一条逃生通道，**永不**带 `timeout` 标记。
+- **边界（成文）**：deadline 管的是**工具调用**，不管持久 session / REPL / watcher——那是 #56 opt-in
+  idle 的管辖（`shell_open` 描述里也明说）；PTY 是字节流、没有命令边界协议，持久会话内**单条 shell
+  命令不假设可精确计时**。对持久 open 传 `deadlineMs` 会响亮拒绝。
+
+单元读数载体：`tests/pty-deadline.spec.ts`（等待 stdin 的 / 持续输出不退出的 / 长任务显式延长的 /
+正常快速命令的假件，全部有界）。
 
 ## The `./ssh` entry (issue #136, ADR-0016 Q1)
 

@@ -53,6 +53,17 @@ const DEFAULT_SCROLLBACK_LINES = 10_000
 /** Bounded wait for a kill to surface its exit event. */
 const CLOSE_EXIT_WAIT_MS = 5000
 
+/** Default hard deadline (#159) for a one-shot exec (autoClose: true): the
+ * WHOLE tool call (wall clock) may take this long before the session's own
+ * process tree is killed. Guards the waiting-for-stdin / pager class of
+ * hangs; continuous output does NOT defer it. 0 = explicitly disabled
+ * (only via an explicit pass — the default is finite). */
+export const DEFAULT_DEADLINE_MS = 600_000
+/** Grace window (#159) between the graceful stop (POSIX SIGTERM to the
+ * process group) and the hard kill. Windows/ConPTY has no graceful lever,
+ * so the grace does not apply there (kill() IS the tree teardown). */
+export const DEFAULT_DEADLINE_GRACE_MS = 2_000
+
 export interface SessionCoreConfig {
   tailLines: number
   maxSessions: number
@@ -61,6 +72,21 @@ export interface SessionCoreConfig {
   settleTimeoutMs: number
   idleTickMs: number
   scrollbackLines: number
+  /** #159: default hard deadline (ms) for one-shot execs when the call does
+   * not pass its own `deadlineMs`. 0 = disabled by configuration. */
+  deadlineMs: number
+  /** #159: grace window (ms) between the graceful stop and the hard kill. */
+  deadlineGraceMs: number
+}
+
+/** #159: the config face of the deadline default. 0 is a MEANINGFUL value
+ * (explicitly disabled), so the positiveInt helper does not apply — only a
+ * non-negative integer is honored, anything else falls back to the default
+ * (the tool surface's resolveConfig is where a bad user-authored value fails
+ * loudly). */
+const resolveDeadlineConfig = (value: unknown): number => {
+  if (value === undefined) return DEFAULT_DEADLINE_MS
+  return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : DEFAULT_DEADLINE_MS
 }
 
 /** Resolve partial config onto the defaults (the config surface is the
@@ -77,7 +103,23 @@ export function resolveCoreConfig(raw: Partial<SessionCoreConfig> | undefined): 
     settleTimeoutMs: positiveInt(c.settleTimeoutMs, DEFAULT_SETTLE_TIMEOUT_MS),
     idleTickMs: positiveInt(c.idleTickMs, DEFAULT_IDLE_TICK_MS),
     scrollbackLines: positiveInt(c.scrollbackLines, DEFAULT_SCROLLBACK_LINES),
+    // #159: see resolveDeadlineConfig above — 0 = off is meaningful here.
+    deadlineMs: resolveDeadlineConfig(c.deadlineMs),
+    deadlineGraceMs: positiveInt(c.deadlineGraceMs, DEFAULT_DEADLINE_GRACE_MS),
   }
+}
+
+/**
+ * #159 priority chain, resolved ONCE: per-call `deadlineMs` > configured
+ * `deadlineMs` > {@link DEFAULT_DEADLINE_MS}. A selected 0 means the deadline
+ * is explicitly OFF for that call (the default is finite; turning it off must
+ * be explicit, never a silent fallback). Pure + exported so the spec can pin
+ * the chain without waiting real time.
+ */
+export function resolveDeadlineMs(perCall: number | undefined, configured: number | undefined): number {
+  if (perCall !== undefined) return perCall
+  if (configured !== undefined) return configured
+  return DEFAULT_DEADLINE_MS
 }
 
 /** The pty process slice the core drives (the @lydell/node-pty IPty
@@ -144,6 +186,11 @@ interface Session {
    * leaves its callback behind, which the exit then no-ops. */
   exitWaiters: Array<() => void>
   idleTimeoutMs?: number
+  /** #159: set when the call's hard deadline fired and the kill sequence ran.
+   * The autoClose result then carries `timeout: true` — distinct from an
+   * abort (which sets nothing) and from the #56 idle timeout (a session-level
+   * reclaim, not a call result marker). */
+  deadlineExceeded?: boolean
   /** One-shot mode (#64) — semantics have a single source of truth:
    * `AUTO_CLOSE_SEMANTICS` (OpenSpec doc). Reclaim rides the settle
    * window, then the single close path. Default (absent): persistent. */
@@ -242,6 +289,15 @@ export interface OpenSpec {
    * `AUTO_CLOSE_SEMANTICS` below. Default false: persistent, unchanged. */
   autoClose?: boolean
   /**
+   * #159: per-call hard deadline (ms) for the WHOLE one-shot exec tool call
+   * (wall clock). Priority: this value > the configured `deadlineMs` >
+   * {@link DEFAULT_DEADLINE_MS}; 0 = explicitly disabled for this call.
+   * Only meaningful on a one-shot (autoClose: true) — a persistent session is
+   * governed by #56's opt-in `idleTimeoutMs`, so passing `deadlineMs` on a
+   * persistent open is refused loudly rather than silently ignored.
+   */
+  deadlineMs?: number
+  /**
    * Declared by the OPENING SURFACE (#119): the session's top-level process IS
    * a shell — `./terminal`'s shell_open sets it, because that layer is the one
    * that knows it resolved a launcher preset. Gates SIGKILL in `signal()`.
@@ -300,11 +356,38 @@ export const PTY_COMMAND_SEMANTICS =
   '(argv[0] is the executable), so &&, pipes, redirection and shell built-ins are NOT interpreted: name the shell explicitly ' +
   '(' + SHELL_SPELLINGS + '). POSIX — the command runs under `/bin/sh -c` (real shell semantics).'
 
+/**
+ * The hard-deadline semantics, stated ONCE (#159; the AUTO_CLOSE /
+ * PTY_COMMAND_SEMANTICS precedent): the pty_open tool description and its
+ * `deadlineMs` parameter description both quote this constant verbatim, so
+ * the agent-facing contract cannot drift from what the core enforces.
+ */
+export const DEADLINE_SEMANTICS =
+  'Hard deadline (#159): a one-shot exec (autoClose: true) is bounded by a WALL-CLOCK deadline covering the WHOLE tool call. ' +
+  // The default rides the constant — no second copy of the value that a
+  // future re-tune could leave drifting in prose.
+  `Priority: per-call deadlineMs > the configured deadlineMs (the ./pty settings namespace) > the default ${DEFAULT_DEADLINE_MS}ms (10 minutes); ` +
+  'deadlineMs: 0 explicitly disables it for that call — turning the deadline off must be explicit, never a silent fallback. ' +
+  'Total call time is the measure: continuous output, log tails or an early return of the settle window neither reset nor defer it — ' +
+  'this is NOT the opt-in per-session idleTimeoutMs (output-defined idle, #56), which keeps governing persistent sessions. ' +
+  'On expiry the session\'s OWN process tree is killed — POSIX: SIGTERM to the process group, a short grace window, then a hard kill; ' +
+  'Windows/ConPTY: the tree termination is the only lever, so it happens immediately — and no other owner\'s session is ever touched. ' +
+  'The result then carries timeout: true, the output captured so far, and the real exit code ONLY if the process actually reported one — ' +
+  'a deadline kill never fabricates a success code. An aborted call (a different escape) never sets timeout. ' +
+  'Boundary: the deadline covers the TOOL CALL, not individual shell commands inside a persistent session — a PTY is a byte stream ' +
+  'with no command-boundary protocol, so per-command timing inside a session is not assumed.'
+
 export interface OpenResult {
   sessionId: string
   pid?: number
   status: SessionStatus
   initialOutput: string
+  /** #159: true exactly when the call's hard deadline fired and the session's
+   * own process tree was killed. Mutually exclusive by definition with the
+   * other wait outcomes: an aborted call sets nothing, and the #56 idle
+   * timeout reclaims a session WITHOUT a call result (it is a watcher, not
+   * an awaited exec). Absent = the call ended by exit or abort. */
+  timeout?: boolean
 }
 
 export interface SendRequest {
@@ -603,6 +686,87 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       signal?.addEventListener('abort', finish, { once: true })
     })
 
+  /** Bounded wait for an exit event (#159): poll the session's exited flag
+   * for at most `ms`, then move on regardless (the caller decides what an
+   * exit-less wait means — the kill paths below never fabricate a code). */
+  const boundedExitWait = (s: Session, ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      const check = setInterval(() => {
+        if (s.exited) {
+          clearInterval(check)
+          resolve()
+        }
+      }, 25)
+      setTimeout(() => {
+        clearInterval(check)
+        resolve()
+      }, ms)
+    })
+
+  /** #159: stop the session's OWN process tree after its deadline fired.
+   * POSIX — graceful first: SIGTERM to the session's process GROUP (negative
+   * pid, the same addressing `signal()` uses), wait the grace window, then a
+   * group SIGKILL for a tree that ignored it, then the single close path
+   * (pty.kill + bounded exit wait + idempotent reclaim). Windows/ConPTY —
+   * kill() IS the tree teardown and there is no graceful lever, so the close
+   * path runs immediately. Every lever addresses THIS session's own
+   * pid/group; a foreign owner's sessions are unreachable by construction
+   * (the registry hands out only the caller's own session objects). */
+  const deadlineKill = async (s: Session): Promise<void> => {
+    if (s.exited) return
+    const pid = s.pty.pid
+    if (platform !== 'win32' && pid !== undefined) {
+      try {
+        procKill(-pid, 'SIGTERM')
+      } catch {
+        // The tree died between the deadline and the graceful stop.
+      }
+      await boundedExitWait(s, config.deadlineGraceMs)
+      if (s.exited) {
+        await killSession(s, 'deadline exceeded (graceful stop)').catch(() => {})
+        return
+      }
+      try {
+        procKill(-pid, 'SIGKILL')
+      } catch {
+        // Same — the hard kill found nothing left to address.
+      }
+    }
+    await killSession(s, 'deadline exceeded').catch(() => {})
+  }
+
+  /** Race the one-shot exit against the #159 deadline: resolves true when the
+   * deadline fired FIRST, false on a real exit or an aborted call (an abort
+   * is a different escape and never produces a timeout marker). The waiter
+   * rides the same `exitWaiters` list `waitForExit` uses, so the exit tap's
+   * single-source release covers both. */
+  const waitForDeadlineOrExit = (s: Session, signal: AbortSignal | undefined, deadlineMs: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      // A fast exit (or an already-dead process) must win the race outright —
+      // the deadline waiter registers after the initial settle, so the exit
+      // may already have fired before it ever registers.
+      if (s.exited || signal?.aborted) {
+        resolve(false)
+        return
+      }
+      let settled = false
+      const onExit = () => finish(false)
+      const onAbort = () => finish(false)
+      const finish = (fired: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onAbort)
+        const i = s.exitWaiters.indexOf(onExit)
+        if (i >= 0) s.exitWaiters.splice(i, 1)
+        resolve(fired)
+      }
+      const timer: ReturnType<typeof setTimeout> = setTimeout(() => finish(true), deadlineMs)
+      timer.unref?.()
+      s.exitWaiters.push(onExit)
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
+
   /** The idle watcher: one interval for every watched session; an
    * idle-expired session closes through the single close path. Output
    * activity (line-count movement) refreshes the clock — PTY input without
@@ -686,6 +850,9 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
 
   const core: SessionCore = {
     async open(owner, spec, signal) {
+      // #159: the deadline measures the WHOLE tool call, so the clock starts
+      // before the validation/spawn work, not at the exit wait.
+      const callStartedAt = Date.now()
       const command = spec?.command
       if (typeof command !== 'string' || command.trim().length === 0) {
         throw new Error('command must be a non-empty string')
@@ -698,6 +865,23 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       }
       if (spec.idleTimeoutMs !== undefined && (!Number.isInteger(spec.idleTimeoutMs) || spec.idleTimeoutMs <= 0)) {
         throw new Error(`idleTimeoutMs must be a positive integer (ms), got: ${JSON.stringify(spec.idleTimeoutMs)}`)
+      }
+      // #159: the per-call deadline is a non-negative integer (0 = explicitly
+      // off), and it only bounds a ONE-SHOT exec — a persistent session has no
+      // call-length deadline (the #56 opt-in idleTimeoutMs governs it), so a
+      // deadline on a persistent open is refused loudly instead of silently
+      // ignored.
+      if (spec.deadlineMs !== undefined && (!Number.isInteger(spec.deadlineMs) || spec.deadlineMs < 0)) {
+        throw new Error(`deadlineMs must be a non-negative integer (ms; 0 = explicitly off), got: ${JSON.stringify(spec.deadlineMs)}`)
+      }
+      if (spec.deadlineMs !== undefined && spec.autoClose !== true) {
+        throw Object.assign(
+          new Error(
+            'pty open: deadlineMs bounds a ONE-SHOT exec (autoClose: true) — a persistent session has no call-length deadline; ' +
+              'use the opt-in idleTimeoutMs for idle reclamation (#56) or autoClose: true for exec semantics',
+          ),
+          { code: 'INVALID_ARGS' },
+        )
       }
       // #146 × #149: a DECLARED shell session is persistent by design (its close
       // path is pty_close), so waiting for its exit would pin this call to a
@@ -772,8 +956,26 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         // the result is built, so `status` carries the real code and
         // `initialOutput` carries the final output. Reclaim stays on the exit
         // tap above, so an aborted call still gets its slot back later.
-        await waitForExit(s, signal)
+        // #159: the wait races the call's hard deadline (measured from the
+        // CALL START, not from the settle — boundary: the WHOLE tool call).
+        // A fired deadline kills the session's own tree (graceful-then-hard,
+        // see deadlineKill) and the result carries timeout: true with the
+        // output captured so far and the real exit code only if one exists.
+        const deadline = resolveDeadlineMs(spec.deadlineMs, config.deadlineMs)
+        const deadlineRemaining = deadline - (Date.now() - callStartedAt)
+        const deadlineFired = deadline > 0 && (deadlineRemaining <= 0 || (await waitForDeadlineOrExit(s, signal, deadlineRemaining)))
+        if (deadlineFired) {
+          s.deadlineExceeded = true
+          await deadlineKill(s)
+        }
+        if (!s.deadlineExceeded) await waitForExit(s, signal)
         if (s.exited) await settleFor(s, undefined, { ignoreExit: true })
+        // #159: a deadline kill reclaims through the single close path even
+        // when the exit event never surfaced (killSession is idempotent and
+        // no-ops once the row is gone). If no real exit code exists at that
+        // point, statusOf reports it honestly (running / no exitCode) — the
+        // kill never fabricates a success code.
+        if (s.deadlineExceeded) await killSession(s, 'deadline exceeded').catch(() => {})
       }
       if (spec.idleTimeoutMs !== undefined) ensureWatcher()
       const initialOutput = readNewest(s, totalLines(s), config.scrollbackLines).text
@@ -782,6 +984,10 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         ...(pty.pid === undefined ? {} : { pid: pty.pid }),
         status: statusOf(s),
         initialOutput,
+        // #159: present exactly when the hard deadline fired — never on an
+        // exit or an abort (the marker's mutual exclusion, stated in
+        // DEADLINE_SEMANTICS and on the tool's output schema).
+        ...(s.deadlineExceeded ? { timeout: true as const } : {}),
       }
     },
 

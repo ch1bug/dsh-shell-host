@@ -54,7 +54,7 @@
 
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, extractSpec, AUTO_CLOSE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, DEFAULT_DEADLINE_MS, extractSpec, AUTO_CLOSE_SEMANTICS, DEADLINE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
 import {
   ENVIRONMENT_CONTEXT_NAME,
   ENVIRONMENT_CONTEXT_ORDER,
@@ -110,6 +110,10 @@ export interface PtyConfig extends SessionCoreConfig {
    * foreground settle. #136: the ssh family moved to `./ssh` and carries its own
    * copy of this setting in ITS namespace (`ssh.enableRunInBackground`). */
   enableRunInBackground?: boolean
+  // #159: the user-configured default hard deadline rides the inherited
+  // SessionCoreConfig.deadlineMs (the core owns the priority chain:
+  // per-call > this > its 600000ms default); THIS surface only adds the
+  // loud validation in resolveConfig below.
 }
 
 /**
@@ -127,6 +131,9 @@ const Config = z.object({
   /** Background sends (#120): expose and accept `run_in_background`
    * (default true, the official posture). */
   enableRunInBackground: z.boolean().default(true),
+  /** #159: user-configured default hard deadline (ms) for one-shot execs
+   * (optional; unset = the core's 600000ms default). */
+  deadlineMs: z.number(),
 })
 
 /** Default-fill a raw config (#64 fix: forward the FULL core config — the
@@ -139,6 +146,12 @@ function resolveConfig(raw: unknown): PtyConfig {
   const defaultShellCommand = c.defaultShellCommand
   if (defaultShellCommand !== undefined && (typeof defaultShellCommand !== 'string' || defaultShellCommand.trim() === '')) {
     throw new Error(`pty: defaultShellCommand must be a non-empty command line when configured, got: ${JSON.stringify(defaultShellCommand)}`)
+  }
+  // #159: a bad configured deadline fails loudly (the core's resolveCoreConfig
+  // only falls back silently for untyped config surfaces; THIS is the settings
+  // namespace where the value is user-authored).
+  if (c.deadlineMs !== undefined && (!Number.isInteger(c.deadlineMs) || c.deadlineMs < 0)) {
+    throw new Error(`pty: deadlineMs must be a non-negative integer (ms; 0 = explicitly off), got: ${JSON.stringify(c.deadlineMs)}`)
   }
   return {
     ...resolveCoreConfig(c),
@@ -260,7 +273,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
    */
   const facade = {
     /** Spawn the command on a ConPTY with env injected into the process. */
-    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean; shell?: boolean; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any> =>
+    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean; deadlineMs?: number; shell?: boolean; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any> =>
       core.open(owner, extractSpec(spec) as OpenSpec, signal),
 
     /** Exclusive send: write, await the settle, return the output read. */
@@ -332,6 +345,8 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       'defaultShellCommand applies, and with no default either the call fails loudly naming all three. ' +
       'A shell session is a SHELL TARGET: pty_signal refuses SIGKILL on it (killing a shell cannot reclaim the children it owns) — ' +
       'use pty_close, the single close path. ' + AUTO_CLOSE_SEMANTICS + ' ' +
+      // #159: the hard deadline for the one-shot exec, stated on the face.
+      DEADLINE_SEMANTICS + ' ' +
       // #102: the permission contract, stated on the face the model reads.
       SANDBOX_EXECUTION_SEMANTICS,
     parameters: {
@@ -365,6 +380,13 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         type: 'boolean',
         description: AUTO_CLOSE_SEMANTICS,
       },
+      deadlineMs: {
+        type: 'number',
+        description:
+          'Per-call hard deadline (ms) for this one-shot exec — the whole tool call, wall clock. ' +
+          `Priority: this value > the configured deadlineMs > the default ${DEFAULT_DEADLINE_MS}ms; 0 = explicitly off for this call. ` +
+          'Only valid together with autoClose: true (a persistent session has no call-length deadline). ' + DEADLINE_SEMANTICS,
+      },
       ...sandboxPermissionParameters('command'),
     },
     output: {
@@ -386,6 +408,13 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
             },
           },
           initialOutput: { type: 'string', description: 'Output captured during spawn/command start.' },
+          timeout: {
+            type: 'boolean',
+            description:
+              'Present (true) exactly when the call\'s hard deadline fired and the session\'s own process tree was killed (#159). ' +
+              'Never set on an aborted call, and unrelated to the opt-in idleTimeoutMs (a session watcher, not a call result). ' +
+              'The real exit code appears in status only if the process actually reported one.',
+          },
           shellCommand: {
             type: 'string',
             description:
@@ -401,8 +430,13 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       },
       render: jsonRender as any,
     },
-    async execute(args: { command?: string; shellCommand?: string; cwd?: string; env?: Record<string, string>; autoClose?: boolean; sandbox_permissions?: string; justification?: string }, exec: { agent?: Owner; signal?: AbortSignal; callId?: string }) {
+    async execute(args: { command?: string; shellCommand?: string; cwd?: string; env?: Record<string, string>; autoClose?: boolean; deadlineMs?: number; sandbox_permissions?: string; justification?: string }, exec: { agent?: Owner; signal?: AbortSignal; callId?: string }) {
       const owner = requireAgent(exec)
+      // #159: a bad per-call deadline is a caller error — loud before anything
+      // spawns (the core re-validates; this is the tool-surface gate).
+      if (args.deadlineMs !== undefined && (!Number.isInteger(args.deadlineMs) || args.deadlineMs < 0)) {
+        throw invalidArgs(`pty_open: deadlineMs must be a non-negative integer (ms; 0 = explicitly off), got: ${JSON.stringify(args.deadlineMs)}`)
+      }
       const declaration = resolveShellDeclaration(args, config.defaultShellCommand)
       // #102: authorize BEFORE anything spawns — the gate resolves the policy
       // per execution and routes an escalation through the official approval
@@ -431,6 +465,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
         ...(args.env === undefined ? {} : { env: args.env }),
         ...(args.autoClose === undefined ? {} : { autoClose: args.autoClose }),
+        ...(args.deadlineMs === undefined ? {} : { deadlineMs: args.deadlineMs }),
         // The mode the spawn was AUTHORIZED under (the one-shot grant when an
         // escalation was approved) is the session's write baseline: `pty_send`
         // re-resolves against it, so a grant never becomes a standing write
@@ -650,12 +685,19 @@ function registerEnvironmentContext(ctx: PtyCtx, deps: PtyDeps): void {
       // duck-typed harness's guard, kept loud rather than a silent no-op.
       throw new Error('dsh-shell-host/pty: the systemPrompt child fiber ran without the service')
     }
-    const text = createEnvironmentContextText(deps.detectEnvironments ?? (() => detectEnvironmentRows()))
+    // #152: the provider is cached until an explicit refresh; today nothing
+    // on this surface calls refresh (the settings-page preview / workspace
+    // surface, future #105/#116, own that trigger). NOTE: the two caches are
+    // INDEPENDENT — this closure holds the only reachable reference, so a
+    // future `refreshWslDistroCache()` caller does NOT freshen this rendered
+    // line; #105/#116 must plumb a refresh channel to the provider they
+    // create (or recreate it) when they wire the explicit invalidation.
+    const contextText = createEnvironmentContextText(deps.detectEnvironments ?? (() => detectEnvironmentRows()))
     systemPrompt.context({
       name: ENVIRONMENT_CONTEXT_NAME,
       order: ENVIRONMENT_CONTEXT_ORDER,
       interpolate: false,
-      text,
+      text: contextText.text,
     })
   })
 }

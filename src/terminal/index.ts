@@ -163,6 +163,10 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
       'Returns a sessionId that is a PTY session: operate it with pty_send / pty_tail / pty_close — no second tool family. ' +
       'Unknown ids fail loudly listing the available presets; uninstalled environments fail loudly naming every probe point. ' +
       'A per-agent concurrent-session cap applies; idleTimeoutMs opts ONE session into auto-close when it produces no new output for that long. ' +
+      // #159 boundary, stated on the persistent surface itself: no call-length
+      // deadline covers a persistent session, and single commands inside it
+      // are not precisely clockable (a PTY is a byte stream).
+      'This session is PERSISTENT: the #159 one-shot hard deadline (pty_open + autoClose) does NOT cover it, and single shell commands inside it cannot be precisely timed — the only automatic reclaim is the opt-in idleTimeoutMs. ' +
       SANDBOX_EXECUTION_SEMANTICS,
     parameters: {
       preset: { type: 'string', required: true, description: 'Launcher preset id (built-in view or configured custom preset).' },
