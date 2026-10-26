@@ -20,6 +20,9 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { SPAWN_FAILURE_HINT } from "../src/pty/session-core.ts";
 import { bootPlugin } from "./helpers/fake-pty.ts";
 
@@ -84,6 +87,50 @@ describe("readable spawn diagnostic on the real ConPTY (#146 AC3/AC4)", () => {
       // ...and teaches the fix with the SAME authored hint the unit lane pins
       // to the tool description's spellings (no second copy here).
       expect(message).toContain(SPAWN_FAILURE_HINT);
+    },
+  );
+});
+
+describe("mid-shape: spawn succeeds, the child rejects its own command line (#160 AC②)", () => {
+  it(
+    "a non-zero child exit carries the child's OWN diagnostic in initialOutput AND the real code in the status",
+    { timeout: 120_000 },
+    async () => {
+      const { tool } = boot();
+      // The shape the #160 report observed, rebuilt without cmd.exe (the
+      // interpreter here is node, per the human rule): CreateProcess SUCCEEDS
+      // — this is NOT a spawnFailed (that lane is pinned above) — but the
+      // child itself rejects its arguments, writes its own diagnostic, and
+      // exits non-zero. The result must show BOTH: the machine's words in the
+      // output (not a bare exited code) and the real code in the status.
+      const opened = await tool("pty_open").execute(
+        { command: `node -e "console.error('midshape-diag-#160: bad option line'); process.exit(7)"`, autoClose: true },
+        exec,
+      );
+      expect(opened.status).toEqual({ kind: "exited", exitCode: 7 });
+      expect(opened.initialOutput).toContain("midshape-diag-#160: bad option line");
+    },
+  );
+
+  it(
+    "cwd reaches the child verbatim under the default permissive policy (#160 cwd reading)",
+    { timeout: 120_000 },
+    async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "pty-cwd-160-"));
+      try {
+        const { tool } = boot();
+        const opened = await tool("pty_open").execute(
+          { command: "node -p process.cwd()", cwd: dir, autoClose: true },
+          exec,
+        );
+        expect(opened.status).toEqual({ kind: "exited", exitCode: 0 });
+        // Compare separator-insensitively: ConPTY/CRLF may decorate the line,
+        // and win32 output uses `\`, while path.join handed us the OS form.
+        const norm = (s: string) => s.replaceAll("\\", "/").trim();
+        expect(norm(opened.initialOutput)).toContain(norm(dir));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     },
   );
 });
