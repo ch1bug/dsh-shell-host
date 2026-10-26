@@ -656,6 +656,9 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
   - **不读 stdin 的子进程在 ConPTY 下 `pty_send` 零回显**（`delta: ""`）⇒ 别拿它断言「会话可驱动」；
     要量驱动性用读 stdin 的交互 shell（`#147` 实测：`node -e "setInterval(() => {}, 1000)"` 的
     `pty_send` 永远读到空增量）。
+  - **`pty_open` 的 `initialOutput` 在 ConPTY 下可能为空串**（首静默窗先于横幅到达）⇒
+    要量启动输出用后续 tool call 里 `pty_tail` 轮询到 needle，别按空串断言「没输出」。
+    **事实全文 + 可复跑取数步骤见 [README 的 pty 节（#154）](../README.md)** —— 本列表只留指针，不复制第二份表述。
   - **`cmd` 会话的输入回显可能乱序 / 截断**（丢前半截 + 一个响铃字节）但命令**照常执行** ⇒
     别拿回显判「命令发完整了没」，看日志与窗口标题（`#147` 实测）。
   - **长跑命令别用 `… | Select-Object -Last N`**：PowerShell 会把进度**全缓冲**掉，看起来像挂死
