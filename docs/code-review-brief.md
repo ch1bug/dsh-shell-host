@@ -63,12 +63,20 @@ grep -rEc '";$' src tests --include='*.ts' | grep -v ':0$'            # 双引�
 grep -rEc "^import .*'$" src tests --include='*.ts' | grep -v ':0$'   # 单引号+无分号 import 落在哪
 ```
 
-src/ 老代码（`launchers.ts`、`pty/*` 等）是**单引号、无分号**；新落的 `remote*`/`remote-fs`
-纵切与 `tests/` 主体是**双引号 + 分号**，但两个方向都有交叉（remote 纵切内部两种都有）——
-任何目录级写死都会错一半，判据只能落在紧邻代码。`tsconfig.json` 显式
+src/ 主流是**单引号、无分号**（实例：`src/pty/index.ts`、`src/launchers.ts`；上面第二条
+现查命令可直接复核）；已知例外是 `src/remote/frame.ts` 与 `src/remote-fs/` 的 mutations 系
+四文件（`mutations.ts`、`mutation-tools.ts`、`observation.ts`、`read-tool.ts`）——
+**逐文件**例外，不是目录级：`src/remote-fs/` 内部是混合态（`contract.ts` / `index.ts`
+是单引号、无分号 import）。判新文件**以同文件、紧邻文件的既有代码为准**，不按目录级口径判。
+`tsconfig.json` 显式
 `"verbatimModuleSyntax": false`（`import type` 仍是局部惯例，但不是开关强制）；
 `tests/*.spec.ts` 用 vitest、按位置收集；文档以中文为主
 （AGENTS.md 顶部即有"与人沟通一律用中文"）。
+
+**复核标准里的事实句也要核到源**：本节每条事实句（风格形态、开关取值、收集方式）采纳进
+brief 前都要么给**现查命令**（如上两行 grep）、要么给**实例指针**（如 `src/pty/index.ts`），
+不允许凭印象写"某目录是什么风格" —— 写死一档而无源可核，Standards 轴就会拿错的标准
+点名新文件（两次实证：`#149`、`#120`，见 §7）。
 
 - **决策状态类事实**（判断项转硬）：状态 / 证据文件里，**未拍的决策不得写成「已拍」** ——
   用 `待拍` 与 `已拍（<日期>）` 两种标记，reviewer 逐条核。这是"引用类事实"的**姊妹类**：
