@@ -11,9 +11,9 @@
  * @module tests/terminal
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { bootTerminal, fullDeps, FULL_ENV, PWSH, type TerminalBoot } from "./helpers/fake-terminal.ts";
-import { apply as applyTerminal } from "../src/terminal/index.ts";
+import { apply as applyTerminal, _resetRegistrationForTests } from "../src/terminal/index.ts";
 import { PWSH_INTERACTIVE_ARGV } from "../src/launchers.ts";
 import { resolveLaunchers } from "../src/launchers.ts";
 import type { CustomLauncherConfig, LauncherDeps } from "../src/launchers.ts";
@@ -28,6 +28,14 @@ function boot(config: { custom?: CustomLauncherConfig[]; maxSessions?: number } 
 }
 
 const agent = { name: "unit" };
+
+// #105: the registration snapshot is PROCESS-level (restart-effect contract);
+// production never resets it. The unit suite boots one scenario per test, so
+// each test starts from a clean snapshot — the contract itself is pinned in
+// tests/terminal-registration.spec.ts (same-process double apply).
+beforeEach(() => {
+  _resetRegistrationForTests();
+});
 
 describe("shell_open (#55)", () => {
   it("opens a local preset: composes the executable+argv command, returns the core sessionId", async () => {
@@ -106,20 +114,23 @@ describe("shell_open (#55)", () => {
     expect(err.message).toContain("pwsh.exe");
   });
 
-  it("a custom preset from config is selectable (data channel; overrides a built-in id)", async () => {
+  it("a custom preset from config is selectable; an override id is rejected at the gate (#105)", async () => {
     const custom: CustomLauncherConfig[] = [
       { id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: { DEV: "1" } },
-      { id: "pwsh", transport: "local", executable: [PWSH], argv: ["-NoLogo", "-NoExit"], env: {} },
     ];
     const { tool, spawnSpecs } = boot({ custom });
     const opened = await tool("shell_open").execute({ preset: "dev" }, { agent });
     expect(opened.command).toContain("-NoExit");
     expect(spawnSpecs[0]!.env!.DEV).toBe("1");
-    // Same-id override: the built-in pwsh view is replaced by the custom one.
-    await tool("shell_open").execute({ preset: "pwsh" }, { agent });
-    expect(spawnSpecs[1]!.env).toEqual({});
     const second = await tool("shell_open").execute({ preset: "dev", env: { OVR: "y" } }, { agent });
     expect(second.command).toContain("-NoExit");
+    // #105: the same-id override is dead at the registration gate (ADR-0018) —
+    // a custom `pwsh` row fails the row activation loudly instead of silently
+    // replacing the built-in view (#54 semantics, narrowed). Fresh snapshot:
+    // the first boot of this test already defined it.
+    _resetRegistrationForTests();
+    expect(() => boot({ custom: [{ id: "pwsh", transport: "local", executable: [PWSH], env: {} }] }))
+      .toThrow(/override the built-in/);
   });
 
   it("an ssh custom preset opens via the ssh composition (keepalive defaults inherit)", async () => {
@@ -169,18 +180,16 @@ describe("shell_open result fields (#56)", () => {
     expect(spawnSpecs[1]!.cwd).toBe("D:\\x");
   });
 
-  it("a custom id that overrides a built-in reports source custom + overrode true; a custom-only id overrode false", async () => {
+  it("a custom-only id reports source custom + overrode false; an override id never boots (#105)", async () => {
     const custom: CustomLauncherConfig[] = [
-      { id: "pwsh", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: {} },
       { id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: {} },
     ];
     const { tool } = boot({ custom });
-    const overridden = await tool("shell_open").execute({ preset: "pwsh" }, { agent });
-    expect(overridden.source).toBe("custom");
-    expect(overridden.overrode).toBe(true);
     const customOnly = await tool("shell_open").execute({ preset: "dev" }, { agent });
     expect(customOnly.source).toBe("custom");
     expect(customOnly.overrode).toBe(false);
+    // The override path is closed at registration (ADR-0018); the layer-level
+    // merge semantics stay pinned in tests/launchers.spec.ts.
   });
 
   it("an ssh preset carries source/overrode but no executable/probed (no local candidates)", async () => {

@@ -573,13 +573,14 @@ preset table is read-only, surfaced live by the unknown-id error.
 
 ### 覆盖规则 / 并发上限 / 空闲超时（#56 裁决）
 
-- **预设覆盖**：custom 同 id 覆盖 built-in 视图（用户显式配置优先），**不报错** ——
-  但 `shell_open` 结果带响亮字段 `source: 'builtin'|'custom'` 和
-  `overrode: true|false`（仅当 custom 真正替换了一个存在的 built-in 视图时为
-  true；shadow 一个未安装的 built-in 不算覆盖）。结果同时含
+- **预设出处**：`shell_open` 结果带响亮字段 `source: 'builtin'|'custom'` 和
+  `overrode: true|false`（custom 真正替换一个存在的 built-in 视图时为 true；
+  shadow 一个未安装的 built-in 不算覆盖）。结果同时含
   `executable`（命中候选）/ `probed`（全部候选点）/ `cwd`（实际生效值）；
   不返回完整 env（合并后即整条 PATH，无增量），argv 不重复返回（`command`
   已含）。判定单源在 `resolveLauncherDetailed`（`src/launchers.ts`）。
+  ⚠️ #105 起**同 id 覆盖在注册门处被封死**（见下节）——`overrode` 经合法注册
+  通道不再可能为 true，字段保留为出处事实。
 - **并发软上限（#61/#62 起 core 推导）**：计数来自 pty 核心**注册表**（owner 归属、
   `pty_close` 即释放；plugin dispose 全杀回收）——entry 重挂不再可能把计数归零
   （#62 的缝时代根因已随缝消失）。默认上限 8，settings namespace
@@ -592,6 +593,28 @@ preset table is read-only, surfaced live by the unknown-id error.
   调用者显式 opt-in 时，该会话**无新输出**持续 `idleTimeoutMs` 毫秒后自动
   `pty_close`（空闲判据 = 输出行数不再增长；新输出会重置计时）。不带该
   参数的会话永不被空闲回收。
+
+### 自定义 shell 注册面（#105，ADR-0018）
+
+`custom` 通道把一条**可执行路径 + argv + env + PATH 前缀**交给 `shell_open`——
+注册面本身即攻击面，故有注册门（`src/terminal/register.ts`）：
+
+- **写入方**：只由**人**经配置文件（profile `cordis.patch.yml` 的 terminal 行
+  `config.custom`）写入；工具面没有任何写注册口（守卫测试锁定）。
+- **注册门（apply 期，fail-closed）**：任一条目非法 ⇒ 整行拒绝激活并列出每条
+  被拒条目与全部原因（插件管理器可见）。矩阵：id 非空且字符集锁定、数组内
+  不重复、**禁止覆盖内置 id**；local 可执行候选必须绝对路径 + 含路径分隔符
+  （拒裸名——沿 PATH 解析可被改名劫持）+ 无引号与 shell 元字符 + 存在且不是
+  目录；空格允许（Windows 合法安装路径，spawn 走 argv 数组）；ssh 行必须有
+  host；cwd 若声明必须绝对。`base` 继承源必须是内置 id 或更早被接受的
+  自定义 id。
+- **重启生效**：custom 表在进程内第一次 apply 时定型（进程级快照）。宿主在
+  HMR profile 下会因配置写重组插件树——行重挂不是重启；配置修改恰好在宿主
+  进程重启时生效，同进程内（含行关-开）不采纳新表（守卫测试锁定）。
+- **配置页**：宿主的三个配置插槽全是 client 插槽（React 浏览器半幅，经
+  `dsh.client` 声明装载），且不存在通用 schema 渲染的插件配置页；配置页
+  （`plugins.row.config` 表单）为候选票，配置文件在当前语义下是唯一权威
+  存储与唯一写入口。裁决与宿主读数见 ADR-0018。
 
 ```js
 import * as terminal from 'dsh-shell-host/terminal' // { name, inject, apply }

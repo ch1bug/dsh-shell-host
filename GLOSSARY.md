@@ -353,6 +353,18 @@ profile 并存；但**不宜同时开**官方持久终端与本仓 `pty_*` / `sh
   （懒算 + 缓存 + 无环境不注入）；配置面 = `./pty` Config 的 `defaultShellCommand`。
   README「会话默认 shell（#149）」写工具面与代价，机器档读数在 `pty-shell-machine.spec.ts`。
 
+## #105 注册面（2026-10-26，ADR-0018；批 J 第 4 票，票内口径自定留档）
+
+- **注册门（fail-closed）**：`custom` 通道在 entry apply 期整表校验（`src/terminal/register.ts`），
+  任一条目非法 ⇒ 整行拒绝激活并列出全部原因。矩阵含**禁止覆盖内置 id**（收窄 #54 的
+  同 id 覆盖语义）与可执行候选的绝对路径 / 分隔符 / 元字符 / 存在 / 非目录五连；空格合法
+  （Windows 安装路径 + argv 数组 + 启动引号），「带参数的执行串」由存在性探测拦住。
+- **重启生效 = 进程级快照**：宿主 HMR 会因配置写重组插件树，「不重读文件」保不住契约，
+  故 custom 表进程内第一次 apply 定型；行关-开也不换表（字面语义，代价显式接受）。
+- **配置页载体**：宿主三个配置插槽全是 client 插槽（React 浏览器半幅），无通用 schema
+  渲染页；配置写协议 `form.mutate(ops, revision)` 的 ops 形状未取证 ⇒ client 半幅出
+  候选票，配置文件是当前唯一权威存储与写入口。读数与裁决全文见 ADR-0018。
+
 ## 术语表(惰性)
 
 - **Backend Descriptor(后端描述符)**:声明式后端描述 = 有序可执行路径候选 + 分模式 argv 模板(one-shot/interactive)+ env 注入(null=删除)+ 双向路径映射(toShell/fromShell)。落地形态与字段溯源见 `docs/adr/0001-backend-descriptor-layer.md`(模式源:microsoft/vscode terminal profiles)。phase 1 只实现 msys2 后端;pwsh/wsl 为占位注册项。

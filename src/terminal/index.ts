@@ -41,7 +41,8 @@
 import z from '@deepseek-ai/schemastery'
 import { delimiter } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { resolveLauncherDetailed, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
+import { resolveLauncherDetailed, builtInLauncherIds, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
+import { registrationError, validateCustomEntries } from './register.ts'
 import { spawnableExists } from '../detect.ts'
 import { DEFAULT_MAX_SESSIONS as CORE_DEFAULT_MAX_SESSIONS } from '../pty/session-core.ts'
 import {
@@ -292,9 +293,41 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
   }))
 }
 
-/** Plugin entry: register the launcher-layer tool surface over the pty core. */
+/** Plugin entry: register the launcher-layer tool surface over the pty core.
+ *
+ * #105 registration gate: the `custom` channel is validated ONCE per process
+ * by `src/terminal/register.ts` (loud rejection of every illegal entry, no
+ * built-in overrides, explicit absolute paths only) and the accepted table is
+ * snapshotted — the RESTART-EFFECT CONTRACT. The host recomposes the plugin
+ * tree on config writes under HMR, so "the row re-applies" is not a restart;
+ * only the FIRST apply in a process defines the preset table, and later
+ * applies reuse the snapshot. A config edit therefore takes effect exactly
+ * when the host process restarts — never mid-session (asserted by
+ * tests/terminal-registration.spec.ts, not by documentation).
+ *
+ * Fail-closed: any rejected registration entry THROWS — the terminal row
+ * fails to activate with the full reason list visible in the plugin manager,
+ * rather than serving a half-open execution table. */
+let registrationSnapshot: readonly CustomLauncherConfig[] | undefined
+
+/** Test seam: reset the per-process registration snapshot. */
+export function _resetRegistrationForTests(): void {
+  registrationSnapshot = undefined
+}
+
 function apply(ctx: TerminalCtx, config: unknown, deps: LauncherDeps = {}): void {
-  registerShellOpen(ctx, resolveConfig(config), deps)
+  if (registrationSnapshot === undefined) {
+    const resolved = resolveConfig(config)
+    const { accepted, rejected } = validateCustomEntries(resolved.custom, {
+      builtInIds: builtInLauncherIds(deps),
+      // One probe seam source: the launcher deps' exists (fake-able in tests,
+      // spawnableExists in production).
+      ...(deps.exists === undefined ? {} : { exists: deps.exists }),
+    })
+    if (rejected.length > 0) throw registrationError(rejected)
+    registrationSnapshot = accepted
+  }
+  registerShellOpen(ctx, { ...resolveConfig(config), custom: [...registrationSnapshot] }, deps)
 }
 
 export { Config, apply, inject, name }
