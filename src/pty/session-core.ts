@@ -381,11 +381,11 @@ export const DEADLINE_SEMANTICS =
   'Windows/ConPTY: the tree termination is the only lever, so it happens immediately — and no other owner\'s session is ever touched. ' +
   'The result then carries timeout: true, the output captured so far, and the real exit code ONLY if the process actually reported one — ' +
   'a deadline kill never fabricates a success code. An aborted call (a different escape) never sets timeout. ' +
-   // #162: the output-face ruling — the killed shell has one last execution
-   // window before its own exit event, and anything it prints there is residue.
-   'A timeout result\'s output is CUT at the moment the kill sequence starts: what the result carries is the command\'s own output up to that instant; ' +
-   'output arriving after it (termination-race residue, #162 — e.g. the killed shell running one more command before it dies) is excluded, ' +
-   'so the caller can tell real command output from kill residue by construction. ' +
+  // #162: the output-face ruling — the killed shell has one last execution
+  // window before its own exit event, and anything it prints there is residue.
+  'A timeout result\'s output is CUT at the moment the kill sequence starts: what the result carries is the command\'s own output up to that instant; ' +
+  'output arriving after it (termination-race residue, #162 — e.g. the killed shell running one more command before it dies) is excluded, ' +
+  'so the caller can tell real command output from kill residue by construction. ' +
   'Boundary: the deadline covers the TOOL CALL, not individual shell commands inside a persistent session — a PTY is a byte stream ' +
   'with no command-boundary protocol, so per-command timing inside a session is not assumed.'
 
