@@ -158,7 +158,12 @@ function bootTerminal(opts: { mode: SandboxMode; workspaceRoot?: string }) {
       return echoFakePty().pty;
     },
   });
-  applyTerminal(ctx as any, {});
+  // deps.exists is FAKED: the rings below reach shell_open's GATE, which sits
+  // after launcher resolution — a machine without pwsh at any probe point
+  // would throw the launcher's loud "not serviceable" (no `code`) before the
+  // gate ever ran, red with a machine-shaped error instead of a policy one
+  // (observed 2026-10-26). The gate is policy, not executable presence.
+  applyTerminal(ctx as any, {}, { exists: () => true });
   return {
     tool: (name: string) => registered.find((tool) => tool.name === name),
     spawned,
