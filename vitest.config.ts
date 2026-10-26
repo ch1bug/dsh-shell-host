@@ -43,6 +43,8 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // pty-oneshot-machine (#146) must observe a REAL ConPTY exit event (one-shot
 // exit code) and a REAL CreateProcess failure (the readable diagnostic) — a
 // fake spawner cannot produce either, so the suite is serial like its peers.
+// pty-deadline-machine (#162) needs a REAL ConPTY tree teardown racing a REAL
+// shell's last execution window (the output-leak repro): serial like its peers.
 // e2e-pty-loop-machine (#148) drives pty_list / pty_signal through a REAL
 // instance's tool loop over a REAL long-lived PTY process: the same
 // boot-a-real-instance cost as its e2e peers, so it is serial too.
@@ -52,6 +54,7 @@ const machineLane = [
   'tests/pty-signal-machine.spec.ts',
   'tests/pty-shell-machine.spec.ts',
   'tests/pty-oneshot-machine.spec.ts',
+  'tests/pty-deadline-machine.spec.ts',
   // #137：真实 bash 执行 shipping 帧循环，不能由 fake-channel 代验。
   'tests/remote-frame-machine.spec.ts',
   'tests/remote-fs-machine.spec.ts',

@@ -235,6 +235,76 @@ describe("deadline expiry kills the session's own tree and marks the result (#15
   });
 });
 
+describe("deadline output cut: post-kill race residue never reaches the result (#162)", () => {
+  it("win32: output produced AFTER the kill starts is excluded; pre-deadline output kept", async () => {
+    const b = boot({
+      config: { deadlineMs: 120, deadlineGraceMs: 50 },
+      platform: "win32",
+    });
+    const openP = bootOpen(b);
+    await waitForSpawn(b, 1);
+    // The command's own output, produced well before the deadline.
+    b.handles[0]!.emitData("T0\r\n");
+    // The #162 race: the ConPTY tree teardown kills the direct child first;
+    // the shell's last execution window emits more output BEFORE its own exit
+    // event surfaces (both after pty.kill() — the kill sequence start).
+    const rawKill = (b.handles[0]!.pty as any).kill.bind(b.handles[0]!.pty);
+    (b.handles[0]!.pty as any).kill = () => {
+      rawKill();
+      setTimeout(() => b.handles[0]!.emitData("T1_LEAK\r\n"), 1);
+    };
+    const opened = await openP;
+    expect(opened.timeout).toBe(true);
+    expect(opened.initialOutput).toContain("T0");
+    expect(opened.initialOutput).not.toContain("T1_LEAK");
+    // Exit-code and marker semantics unchanged (#159).
+    expect(opened.status).toEqual({ kind: "exited", exitCode: 137 });
+  });
+
+  it("POSIX: residue emitted during the graceful window (after SIGTERM) is excluded too", async () => {
+    const b = boot({ config: { deadlineMs: 120, deadlineGraceMs: 300 }, sigtermBehavior: "hang", platform: "linux" });
+    const openP = bootOpen(b);
+    await waitForSpawn(b, 1);
+    b.handles[0]!.emitData("T0\r\n");
+    // The tree hangs on SIGTERM; the dying shell leaks output as soon as the
+    // graceful stop is delivered — still AFTER the kill sequence started, so
+    // below the cut on both platforms.
+    const iv = setInterval(() => {
+      if (b.kills.some((k) => k.signal === "SIGTERM")) {
+        clearInterval(iv);
+        b.handles[0]!.emitData("T1_LEAK\r\n");
+      }
+    }, 5);
+    try {
+      const opened = await openP;
+      expect(opened.timeout).toBe(true);
+      expect(opened.initialOutput).toContain("T0");
+      expect(opened.initialOutput).not.toContain("T1_LEAK");
+      expect(opened.status).toEqual({ kind: "exited", exitCode: 137 });
+    } finally {
+      clearInterval(iv);
+    }
+    expect(activeCount(b)).toBe(0);
+  });
+
+  it("leak without a trailing newline (pending tail) is excluded as well", async () => {
+    const b = boot({ config: { deadlineMs: 120 }, platform: "win32" });
+    const openP = bootOpen(b);
+    await waitForSpawn(b, 1);
+    b.handles[0]!.emitData("T0\r\n");
+    const rawKill = (b.handles[0]!.pty as any).kill.bind(b.handles[0]!.pty);
+    (b.handles[0]!.pty as any).kill = () => {
+      rawKill();
+      // No newline: the residue lands in the session's pending tail.
+      setTimeout(() => b.handles[0]!.emitData("T1_LEAK_partial"), 1);
+    };
+    const opened = await openP;
+    expect(opened.timeout).toBe(true);
+    expect(opened.initialOutput).toContain("T0");
+    expect(opened.initialOutput).not.toContain("T1_LEAK");
+  });
+});
+
 describe("deadline validation and surface boundaries (#159)", () => {
   it("invalid per-call values fail loudly", async () => {
     const b = boot({});

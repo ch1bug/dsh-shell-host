@@ -191,6 +191,13 @@ interface Session {
    * abort (which sets nothing) and from the #56 idle timeout (a session-level
    * reclaim, not a call result marker). */
   deadlineExceeded?: boolean
+  /** #162: the output-cut watermark, recorded when the deadline's kill
+   * sequence STARTS — the absolute complete-line count and the pending-tail
+   * length at that instant. The one-shot result's initialOutput is truncated
+   * to it: output arriving after the cut is termination-race residue (the
+   * killed shell's last execution window — it is causally downstream of the
+   * kill), never the command's own output, and never reaches the result. */
+  deadlineOutputCut?: { abs: number; pendingLen: number }
   /** One-shot mode (#64) — semantics have a single source of truth:
    * `AUTO_CLOSE_SEMANTICS` (OpenSpec doc). Reclaim rides the settle
    * window, then the single close path. Default (absent): persistent. */
@@ -374,6 +381,11 @@ export const DEADLINE_SEMANTICS =
   'Windows/ConPTY: the tree termination is the only lever, so it happens immediately — and no other owner\'s session is ever touched. ' +
   'The result then carries timeout: true, the output captured so far, and the real exit code ONLY if the process actually reported one — ' +
   'a deadline kill never fabricates a success code. An aborted call (a different escape) never sets timeout. ' +
+   // #162: the output-face ruling — the killed shell has one last execution
+   // window before its own exit event, and anything it prints there is residue.
+   'A timeout result\'s output is CUT at the moment the kill sequence starts: what the result carries is the command\'s own output up to that instant; ' +
+   'output arriving after it (termination-race residue, #162 — e.g. the killed shell running one more command before it dies) is excluded, ' +
+   'so the caller can tell real command output from kill residue by construction. ' +
   'Boundary: the deadline covers the TOOL CALL, not individual shell commands inside a persistent session — a PTY is a byte stream ' +
   'with no command-boundary protocol, so per-command timing inside a session is not assumed.'
 
@@ -629,6 +641,19 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       totalLines: total,
       truncated: begin > s.absBase || end < total,
     }
+  }
+
+  /** #162: the newest `count` complete lines BELOW the deadline output cut,
+   * plus the pending tail clamped to its length at the cut — the
+   * `timeout: true` result's initialOutput. Everything past the cut is
+   * termination-race residue and is excluded (the same read shape as
+   * {@link readNewest}: newline-terminated complete lines, then the tail). */
+  const readNewestBelowCut = (s: Session, count: number, cut: { abs: number; pendingLen: number }): string => {
+    const cutTotal = Math.max(s.absBase, Math.min(totalLines(s), cut.abs))
+    const begin = Math.max(s.absBase, cutTotal - count)
+    const slice = s.lines.slice(begin - s.absBase, cutTotal - s.absBase)
+    const pending = s.pending.slice(0, Math.min(s.pending.length, cut.pendingLen))
+    return [...slice.map((l) => l + '\n'), pending].join('')
   }
 
   /** The settle: wait until the session's byte production goes quiet —
@@ -966,6 +991,10 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         const deadlineFired = deadline > 0 && (deadlineRemaining <= 0 || (await waitForDeadlineOrExit(s, signal, deadlineRemaining)))
         if (deadlineFired) {
           s.deadlineExceeded = true
+          // #162: freeze the output cut AT the kill-sequence start, BEFORE any
+          // lever fires — output arriving after this point is termination-race
+          // residue and is excluded from the result below.
+          s.deadlineOutputCut = { abs: totalLines(s), pendingLen: s.pending.length }
           await deadlineKill(s)
         }
         if (!s.deadlineExceeded) await waitForExit(s, signal)
@@ -978,7 +1007,14 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         if (s.deadlineExceeded) await killSession(s, 'deadline exceeded').catch(() => {})
       }
       if (spec.idleTimeoutMs !== undefined) ensureWatcher()
-      const initialOutput = readNewest(s, totalLines(s), config.scrollbackLines).text
+      // #162: a timeout result carries the output up to the kill-sequence
+      // start only — the settle window above still DRAINS the race residue
+      // (the exit event needs it to surface), but the cut keeps it out of the
+      // result the caller sees.
+      const initialOutput =
+        s.deadlineOutputCut !== undefined
+          ? readNewestBelowCut(s, config.scrollbackLines, s.deadlineOutputCut)
+          : readNewest(s, totalLines(s), config.scrollbackLines).text
       return {
         sessionId: id,
         ...(pty.pid === undefined ? {} : { pid: pty.pid }),
