@@ -21,7 +21,7 @@
 
 import { describe, expect, it } from "vitest";
 import { apply } from "../src/pty/index.ts";
-import { ENVIRONMENT_CONTEXT_NAME, ENVIRONMENT_CONTEXT_ORDER, environmentRows } from "../src/pty/environment-context.ts";
+import { createEnvironmentContextText, ENVIRONMENT_CONTEXT_NAME, ENVIRONMENT_CONTEXT_ORDER, environmentRows } from "../src/pty/environment-context.ts";
 import { bootPlugin, echoFakePty, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
 import type { ResolvedLauncher } from "../src/launchers.ts";
 
@@ -224,6 +224,19 @@ describe("environment context (#149 AC10)", () => {
     // A second assembly reuses the cached line (the counting seam proves it).
     expect(h.systemPrompt.text(ENVIRONMENT_CONTEXT_NAME)).toBe(first);
     expect(state.calls).toBe(1);
+  });
+
+  it("refresh() drops the cache: the next assembly re-runs detection (#152 explicit invalidation, no TTL)", () => {
+    const { state, detect } = counted();
+    const provider = createEnvironmentContextText(detect);
+    const first = provider.text();
+    expect(state.calls).toBe(1);
+    expect(provider.text()).toBe(first); // cached
+    expect(state.calls).toBe(1);
+    provider.refresh();
+    const second = provider.text();
+    expect(state.calls).toBe(2);
+    expect(second).toBe(first); // same rows, but genuinely recomputed
   });
 
   it("contributes nothing when no environment resolves (never writes 'none')", () => {

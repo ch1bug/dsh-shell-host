@@ -13,6 +13,9 @@ import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import {
   builtInLauncherIds,
+  createWslDistroCache,
+  currentSharedWslDistroCache,
+  refreshWslDistroCache,
   resolveLauncher,
   resolveLauncherDetailed,
   resolveLaunchers,
@@ -390,5 +393,65 @@ describe("resolveLauncherDetailed (#56 source/overrode)", () => {
     expect(() => resolveLauncherDetailed("no-such-shell", fullDeps())).toThrow(/unknown preset/);
     expect(() => resolveLauncherDetailed("pwsh", { exists: () => false, env: FULL_ENV, path: "", listDistros: () => [] }))
       .toThrow(/not serviceable/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The wsl distro-probe cache (#152): cache + explicit refresh, no TTL
+// ---------------------------------------------------------------------------
+
+describe("wsl distro cache (#152)", () => {
+  const WSL_EXE = join(SYSTEM_ROOT, "System32", "wsl.exe");
+
+  /** Counting listDistros fake (the probe the cache wraps). */
+  const countedListDistros = () => {
+    const state = { calls: 0 };
+    return {
+      state,
+      listDistros: (): readonly string[] => {
+        state.calls += 1;
+        return WSL_DISTROS;
+      },
+    };
+  };
+
+  it("caches the probe per wsl.exe path: two resolutions, one listDistros call", () => {
+    const { state, listDistros } = countedListDistros();
+    const cache = createWslDistroCache();
+    const first = resolveLaunchers({ exists: existsEverything, env: FULL_ENV, path: FULL_ENV.PATH, listDistros, distroCache: cache });
+    expect(state.calls).toBe(1);
+    expect(localPreset(first.presets, "wsl").executable).toContain(WSL_EXE);
+    // Second resolution, fresh deps, same cache: the probe does not re-run.
+    const second = resolveLaunchers({ exists: existsEverything, env: FULL_ENV, path: FULL_ENV.PATH, listDistros, distroCache: cache });
+    expect(state.calls).toBe(1);
+    expect(localPreset(second.presets, "wsl").argv).toEqual(["-d", "Ubuntu-22.04", "-e", "bash", "--login", "-i"]);
+  });
+
+  it("an injected listDistros WITHOUT a distroCache bypasses caching (existing fake semantics intact)", () => {
+    const { state, listDistros } = countedListDistros();
+    resolveLaunchers({ exists: existsEverything, env: FULL_ENV, path: FULL_ENV.PATH, listDistros });
+    resolveLaunchers({ exists: existsEverything, env: FULL_ENV, path: FULL_ENV.PATH, listDistros });
+    expect(state.calls).toBe(2);
+  });
+
+  it("refreshWslDistroCache() swaps the shared cache; the next resolution re-probes", () => {
+    const before = currentSharedWslDistroCache();
+    const { state, listDistros } = countedListDistros();
+    // Populate via the current shared instance injected as distroCache.
+    resolveLaunchers({ exists: existsEverything, env: FULL_ENV, path: FULL_ENV.PATH, listDistros, distroCache: before });
+    expect(state.calls).toBe(1);
+    refreshWslDistroCache();
+    expect(currentSharedWslDistroCache()).not.toBe(before);
+    const after = currentSharedWslDistroCache();
+    resolveLaunchers({ exists: existsEverything, env: FULL_ENV, path: FULL_ENV.PATH, listDistros, distroCache: after });
+    expect(state.calls).toBe(2);
+  });
+
+  it("an absent wsl.exe never touches the cache (no probe, nothing to key on)", () => {
+    const { state, listDistros } = countedListDistros();
+    const cache = createWslDistroCache();
+    resolveLaunchers({ exists: existsCmdOnly, env: FULL_ENV, path: FULL_ENV.PATH, listDistros, distroCache: cache });
+    expect(state.calls).toBe(0);
+    expect(cache.get(WSL_EXE)).toBeUndefined();
   });
 });

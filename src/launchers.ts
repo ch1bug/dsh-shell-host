@@ -57,8 +57,59 @@ export function parseWslDistroList(output: string): readonly string[] {
   return output.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0)
 }
 
+/**
+ * The wsl distro-probe cache (#152, decided form 2 — explicit lifecycle):
+ * a cache + an EXPLICIT invalidation entry (`refreshWslDistroCache`); no TTL —
+ * a freshly installed distro becomes visible exactly when someone who needs a
+ * fresh reading calls refresh (the settings-page preview / workspace surface,
+ * future #105/#116), never on a timer. Keyed by the resolved `wsl.exe` path —
+ * the probe surface that determines the distro list.
+ */
+export interface WslDistroCache {
+  get(wslExe: string): readonly string[] | undefined
+  set(wslExe: string, distros: readonly string[]): void
+}
+
+/** A fresh Map-backed distro cache (also the shape tests inject). */
+export function createWslDistroCache(): WslDistroCache {
+  const store = new Map<string, readonly string[]>()
+  return {
+    get: (wslExe) => store.get(wslExe),
+    set: (wslExe, distros) => store.set(wslExe, distros),
+  }
+}
+
+/** The shared default cache behind cache-less `resolveLaunchers` calls. */
+let sharedWslDistroCache = createWslDistroCache()
+
+/**
+ * Explicit invalidation for the shared distro cache (#152): the next
+ * resolution re-runs `wsl.exe --list --quiet`. Callers that need a fresh
+ * reading (settings-page preview, workspace surface) call this — nothing
+ * invalidates on its own (no TTL).
+ */
+export function refreshWslDistroCache(): void {
+  sharedWslDistroCache = createWslDistroCache()
+}
+
+/**
+ * Observability seam (#152): the CURRENT shared cache instance. Lets tests pin
+ * the refresh semantics without running the real `wsl.exe` probe — inject this
+ * as `deps.distroCache`, then assert `refreshWslDistroCache()` swaps it.
+ */
+export function currentSharedWslDistroCache(): WslDistroCache {
+  return sharedWslDistroCache
+}
+
 /** Injected probes — tests fake the machine; production uses the real one. */
 export interface LauncherDeps {
+  /**
+   * The distro-probe cache (#152). Defaults to the module's shared cache when
+   * NO `listDistros` is injected (the real probe is the expensive one); an
+   * injected `listDistros` without a `distroCache` bypasses caching entirely,
+   * so existing test fakes keep their per-call semantics.
+   */
+  distroCache?: WslDistroCache
   exists?: (path: string) => boolean
   env?: NodeJS.ProcessEnv
   path?: string
@@ -158,12 +209,22 @@ export function builtInLauncherIds(deps: LauncherDeps = {}): readonly string[] {
 
 const msys2Bash = (root: string): string => join(root, 'usr', 'bin', 'bash.exe')
 
-/** Distros discovered through the WSL launcher; [] when the launcher is absent. */
+/** Distros discovered through the WSL launcher; [] when the launcher is absent.
+ * Cached per #152: the resolved `wsl.exe` path is the cache key; the cache is
+ * in play when `distroCache` is injected, or (default path only) the module's
+ * shared cache — an injected `listDistros` with no `distroCache` bypasses. */
 function wslDistros(deps: LauncherDeps, env: NodeJS.ProcessEnv): readonly string[] {
   const exists = deps.exists ?? spawnableExists
   const wslExe = wslProbedLocations(env).find(candidate => exists(candidate))
   if (wslExe === undefined) return []
-  return (deps.listDistros ?? defaultListDistros)(wslExe)
+  const cache = deps.distroCache ?? (deps.listDistros === undefined ? sharedWslDistroCache : undefined)
+  if (cache !== undefined) {
+    const hit = cache.get(wslExe)
+    if (hit !== undefined) return hit
+  }
+  const distros = (deps.listDistros ?? defaultListDistros)(wslExe)
+  if (cache !== undefined) cache.set(wslExe, distros)
+  return distros
 }
 
 /** The real distro discovery: `wsl.exe --list --quiet` (UTF-16LE) — uses this module's parser. */

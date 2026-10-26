@@ -6,11 +6,13 @@
  *
  * Three deliberate properties (each one is a ticket decision, not a style):
  *
- * - **LAZY, computed once and cached.** The launcher resolution shells out on
- *   win32 (`wsl.exe --list --quiet`, `src/launchers.ts`), so it must never run
- *   inside plugin `apply` — the provider below evaluates on the FIRST
- *   assembly and reuses the rendered line afterwards (#152 tracks making that
- *   detection cheap enough for other call sites).
+ * - **LAZY, computed once and cached until an explicit refresh.** The launcher
+ *   resolution shells out on win32 (`wsl.exe --list --quiet`,
+ *   `src/launchers.ts`), so it must never run inside plugin `apply` — the
+ *   provider below evaluates on the FIRST assembly and reuses the rendered
+ *   line afterwards (#149 AC10's counting seam asserts exactly that); #152
+ *   added the explicit `refresh()` entry (no TTL), matching the launcher
+ *   layer's distro-probe cache semantics.
  * - **AN ENVIRONMENT FACT, not an instruction.** It states what exists; it
  *   starts no turn of its own (the host has no plugin-facing entry point for
  *   that anyway — separate ticket).
@@ -95,14 +97,30 @@ export function detectEnvironmentRows(deps: LauncherDeps = {}): EnvironmentRow[]
 }
 
 /**
- * Lazy + cached text provider: the detection runs on FIRST evaluation and the
- * rendered line is reused afterwards, so N assemblies cost one resolution
- * (#149 AC10's counting seam asserts exactly that).
+ * Lazy + cached text provider (#152 口径收编): the detection runs on FIRST
+ * evaluation and the rendered line is reused afterwards, so N assemblies cost
+ * one resolution (#149 AC10's counting seam asserts exactly that). Invalidation
+ * is EXPLICIT — `refresh()` drops the cached line so the next `text()` call
+ * re-runs detection — and there is no TTL, matching the launcher layer's
+ * `refreshWslDistroCache` semantics: whoever needs a fresh reading calls
+ * refresh.
  */
-export function createEnvironmentContextText(detect: () => readonly EnvironmentRow[]): () => string {
+export interface EnvironmentContextText {
+  /** The cached context line (computed on first call). */
+  text(): string
+  /** Drop the cache; the next `text()` call re-runs detection. */
+  refresh(): void
+}
+
+export function createEnvironmentContextText(detect: () => readonly EnvironmentRow[]): EnvironmentContextText {
   let cached: string | undefined
-  return () => {
-    if (cached === undefined) cached = formatEnvironmentContext(detect())
-    return cached
+  return {
+    text() {
+      if (cached === undefined) cached = formatEnvironmentContext(detect())
+      return cached
+    },
+    refresh() {
+      cached = undefined
+    },
   }
 }
