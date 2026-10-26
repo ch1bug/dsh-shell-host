@@ -197,6 +197,20 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
         },
       },
       render: (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }],
+      // #121: pure display metadata on `tool/result.meta` — the preset
+      // resolution facts (ticket: 映 preset / executable). Pure display: the
+      // schema/render above are untouched; the built-in Web Client renders
+      // third-party names with the generic card either way, so the consumers
+      // here are the session event stream / replay / PTC dispatch logs.
+      presentationMeta: (_args: unknown, value: { preset?: string; source?: string; executable?: string; probed?: string[]; cwd?: string; overrode?: boolean }) => ({
+        // Lossless JSON: absent members are omitted, never undefined-valued.
+        ...(value.preset === undefined ? {} : { preset: value.preset }),
+        ...(value.source === undefined ? {} : { source: value.source }),
+        ...(value.executable === undefined ? {} : { executable: value.executable }),
+        ...(value.probed === undefined ? {} : { probed: value.probed }),
+        ...(value.cwd === undefined ? {} : { cwd: value.cwd }),
+        ...(value.overrode === undefined ? {} : { overrode: value.overrode }),
+      }),
     },
     async execute(args: { preset: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; sandbox_permissions?: string; justification?: string }, exec: { agent?: unknown; signal?: AbortSignal; callId?: string }) {
       const owner = exec?.agent

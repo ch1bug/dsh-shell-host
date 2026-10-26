@@ -78,6 +78,7 @@ import {
   createBackgroundStarter,
   jsonRender,
   presentSendCall,
+  presentSendMeta,
   renderSend,
   requireAgent,
   type BackgroundStarter,
@@ -504,6 +505,11 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         },
       },
       render: renderSend,
+      // #121: pure display metadata on `tool/result.meta` — the structured
+      // send read (delta + status) for a foreground settle, null for the
+      // background ack (the official terminal_send posture). render/schema
+      // above are untouched; see presentSendMeta for the consumer note.
+      presentationMeta: presentSendMeta,
     },
     async execute(args: { id: string; data: string; submit?: boolean; run_in_background?: boolean }, exec: SendExec) {
       const owner = requireAgent(exec)
@@ -546,6 +552,13 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         },
       },
       render: (_args: unknown, value: { text?: string }) => [{ type: 'text' as const, text: value.text || '(no new output)' }],
+      // #121: pure display metadata on `tool/result.meta` — the page facts
+      // without duplicating the (already model-facing) text itself.
+      presentationMeta: (_args: unknown, value: { lines?: number; truncated?: boolean }) => ({
+        // Lossless JSON: absent members are omitted, never undefined-valued.
+        ...(value.lines === undefined ? {} : { lines: value.lines }),
+        ...(value.truncated === undefined ? {} : { truncated: value.truncated }),
+      }),
     },
     async execute(args: { id: string; lines?: number }, exec: { agent?: Owner }) {
       const owner = requireAgent(exec)

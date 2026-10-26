@@ -284,6 +284,27 @@ agent 自己持有的会话**（数据源就是核心的 owner 注册表，与 `
 - **不自己造 controller、不复制 `job_*` 工具**：那是宿主的能力，本包只接线
   （依赖面的例外记账见 `docs/dev-environment.md` §4.4 与 ADR-0005 决策 7）。
 
+### 展示元数据（#121）：`presentationMeta` 进 `result.meta`，`presentResult` 不接
+
+**可行性读数（票面第 1 步）**：内置 Web Client 的工具卡片**按第一方 wire 工具名**在
+`tool.call.toolview` slot 做 key 匹配（无 key 落 generic 卡），且 client-ui-tool 明言
+「Host `presentCall` / `presentResult` 值不会进入 Client」⇒ 第三方插件**复用不了**
+`card: 'terminal'`，接 `presentResult` 对 Web UI **零收益**（官方 `terminal_send` 的那
+份也只喂宿主本地消费方）。⇒ 本票只接 `presentationMeta`：宿主侧把它投影进
+`tool/result.meta`（持久、replay 原样保留），消费面 = 会话事件流 / replay / PTC
+dispatch 日志；Web 卡片对本仓工具名仍是 generic（已知边界，不改）。
+
+- **`pty_send`**：前台投影 `{ delta, status }`（官方 `terminal_send` 同款「前台给结构化
+  读数、后台给 `null`」姿态）；`pty_tail` 投影页事实 `{ lines, truncated }`（不复制正文）；
+  `shell_open` 投影预设解析事实 `{ preset, source, executable, probed, cwd, overrode }`。
+- **模型面零变化**：`output.schema` / `output.render` 逐字不动 —— 元数据是纯展示，
+  不进模型上下文（PTC 路径只写 `tool/ptc-dispatch` 事件的 meta，见
+  `docs/research/research-ptc-third-party-tools.md` §1.4）。
+- **`finalizeContent` 不对齐**（票面顺带评估）：官方的 `maxResultBytes` 是对渲染文本的
+  字节上限；本仓的输出**已被结构面各自封顶**（settle 窗有界、`pty_tail` 有 lines 预算 +
+  scrollback 上限、#162 截止水位截断 one-shot 结果），再叠一层上限只会改变模型可见内容
+  的语义（与 #162 的「按构造区分真实输出与截断残留」口径相抵），收益不成比例 —— 不做。
+
 ### 一次性命令（#146）：`autoClose` 等真退出、给真退出码；Windows 无 shell 解释
 
 `./pty` 当 **exec 面**用时缺的两块，本票补齐：

@@ -81,6 +81,31 @@ export const presentSendCall = (args: { id: string; data: string; run_in_backgro
     ? { card: 'generic' as const, title: `Send to session ${args.id} in background`, kind: 'execute' as const, rawInput: args.data }
     : { card: 'terminal' as const, title: args.data }
 
+/** Local structural JsonValue: the upstream type lives in
+ * `@deepseek-ai/dsh-util-values`, which is NOT a dependency of this package —
+ * the projector only needs the structural contract (lossless JSON, no
+ * undefined-valued members) that `defineTool`'s `presentationMeta` enforces. */
+type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+
+/**
+ * #121: presentationMeta projector of a send tool (the official `terminal_send`
+ * posture — a foreground result projects the STRUCTURED read, a background one
+ * projects nothing). Pure display metadata: it rides `tool/result.meta` only
+ * (persisted, replay-preserved); the model-facing render and schema are
+ * untouched. The built-in Web Client keeps rendering third-party tool names
+ * with the generic card — the consumers of this field are the session event
+ * stream / replay / PTC dispatch logs (see README 「展示元数据（#121）」).
+ */
+export const presentSendMeta = (_args: unknown, value: { kind?: string; delta?: string; status?: JsonValue }): JsonValue =>
+  value.kind === 'background'
+    ? null
+    : {
+        // Meta must be lossless JSON: members whose value is absent are
+        // omitted, never `undefined`-valued keys.
+        ...(value.delta === undefined ? {} : { delta: value.delta }),
+        ...(value.status === undefined ? {} : { status: value.status }),
+      }
+
 /**
  * Every pty/ssh tool requires an owning agent session (owner-scoped core).
  * The prose is kept VERBATIM from the pre-#136 ssh family as well: this ticket
