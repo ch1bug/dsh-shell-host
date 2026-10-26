@@ -20,6 +20,15 @@
  *      「不含」≠「相反」，照 `#130` 字面判据会在今日面上假红（ADR-0015 Decision 2 的读数）。
  * - **多声称行整行出判定面**（Q3=D）：一行出现 ≥2 个**不同**退出码时不做就近配对
  *   （误配对的代价是假红），同样**响亮声明**（`!! SKIP (loud)`）。
+ * - **多读数载体响亮不判**（#153，ADR-0015 修订 2026-10-26）：一个载体去重后出现
+ *   ≥2 个**不同**读数时，该载体对**任何**声称都判不了「相反 ⇒ 红」——
+ *   旧判据 `exitReadings.includes(claim)` 会让矛盾声称**静默变绿**（#146 实测：
+ *   `t146-unit.log` 同时含 0 与 1 两种读数，对两个矛盾声称都判 ok）。
+ *   三种候选修法（边车配对 / 取首或最近 / 多读数响亮不判）里选了第三种：与
+ *   Decision 2 的「没有读数 ⇒ 响亮不判」同构、牙齿只缩到真正判不了的判位上；
+ *   「只认边车」会把现存 `.log` 内合法读数一次性全降级，「取首/最近」恰是
+ *   Q3=D 明言要躲的就近配对假红家族。降级形态是**新状态 `ambiguous`**：
+ *   不进红清单、必打 `!! SKIP (loud)` 并点名该载体。
  * - **扫描面 = 有证据行义务的三类**（Q4=B）：`.scratch/<NN>-landing.md`（落地文档）、
  *   `.scratch/batch-state.md`（批次进度）、`.scratch/retro/*.md`（retro 候选）。
  *   归档 / 交接文档 / issue 回读**不纳入**（它们没有证据行义务，且归档沿用"红 → 绿"取证文体）。
@@ -182,7 +191,7 @@ export interface EvidenceJudgment {
   readonly line: number;
   readonly token: string;
   readonly claim: string;
-  readonly state: "ok" | "contradict" | "missing" | "no-info";
+  readonly state: "ok" | "contradict" | "missing" | "no-info" | "ambiguous";
   readonly readings: readonly string[];
 }
 
@@ -198,8 +207,10 @@ export interface EvidenceScan {
 /**
  * 判定一组文本块（`blocksOf` 的产物；`.md` 里一块 = 一行）。
  *
- * 逐条按 ADR-0015 Decision 2/3：不存在 ⇒ `missing`；读数与声称相反 ⇒ `contradict`；
- * 读数里含声称值 ⇒ `ok`；载体没有任何读数 ⇒ `no-info`（**响亮声明、不判**）。
+ * 逐条按 ADR-0015 Decision 2/3（+ `#153` 修订）：不存在 ⇒ `missing`；读数与声称相反 ⇒
+ * `contradict`；读数里含声称值 ⇒ `ok`；载体没有任何读数 ⇒ `no-info`（**响亮声明、不判**）；
+ * 载体去重后 ≥2 个**不同**读数 ⇒ `ambiguous`（**响亮声明、不判** —— 多读数载体判不了
+ * 「相反」，旧判据在这里会让矛盾声称静默变绿，`#146` 实测）。
  * **多声称行在"无载体"判定之前**先出局 —— 否则"两个不同声称 + 没有载体"的行会被记成
  * "无载体"，把 D3 的声明数吞掉（复核发现）。`[History: …]` 点名的 token 已在点名池里，此处过滤。
  */
@@ -231,6 +242,9 @@ export function judgeEvidence(
       if (!carrier.found) pairs.push({ line, token, claim, state: "missing", readings: [] });
       else if (carrier.exitReadings.length === 0) {
         pairs.push({ line, token, claim, state: "no-info", readings: [] });
+      } else if (new Set(carrier.exitReadings).size > 1) {
+        // #153：多读数载体判不了「相反 ⇒ 红」，降级为响亮不判 —— 不是 ok。
+        pairs.push({ line, token, claim, state: "ambiguous", readings: carrier.exitReadings });
       } else if (carrier.exitReadings.includes(claim)) {
         pairs.push({ line, token, claim, state: "ok", readings: carrier.exitReadings });
       } else {
@@ -284,6 +298,16 @@ export function skipDeclarationsOf(rel: string, scan: EvidenceScan): string[] {
           .slice(0, 3)
           .map((pair) => `${rel}:${String(pair.line)} ${pair.token}`)
           .join(" / ")}${noInfo.length > 3 ? " …" : ""}`,
+    );
+  }
+  const ambiguous = scan.pairs.filter((pair) => pair.state === "ambiguous");
+  if (ambiguous.length > 0) {
+    declarations.push(
+      `  !! SKIP (loud) — ${String(ambiguous.length)} 个判位的载体含 ≥2 个不同读数` +
+        `（多读数载体判不了「相反」，#153 起响亮不判）：${ambiguous
+          .slice(0, 3)
+          .map((pair) => `${rel}:${String(pair.line)} ${pair.token}（读数 ${[...new Set(pair.readings)].join("/")}）`)
+          .join(" / ")}${ambiguous.length > 3 ? " …" : ""}`,
     );
   }
   if (scan.multiClaimLines.length > 0) {
@@ -544,6 +568,69 @@ describe("证据引用守卫 · 判定语义（合成）", () => {
     expect(/exit=0$/u.test(lf)).toBe(true);
   });
 
+  it("多读数载体（#146 实测形态：同时含 `exit 0` 与 `exit 1` 的 `.log`）⇒ ambiguous 响亮不判，矛盾声称不再静默变绿", () => {
+    const open = makeEvidenceOpener(
+      root,
+      treeOf({
+        // #146 的实测样本形态：日志里同时出现 0 与 1 两种退出码读数（被 echo 进来的其它文本所致）。
+        "t146-unit.log": "… 上一行写 `exit 0` …\n… 后面又出现 exit 1 的叙述 …\n",
+      }),
+    );
+    expect(open("t146-unit.log").exitReadings).toEqual(["0", "1"]);
+    const scan = judgeEvidence(
+      blocksOfLine(["- `.scratch/t146-unit.log` exit=0", "- `.scratch/t146-unit.log` exit=1"].join("\n")),
+      open,
+    );
+    // 关键回归位：before 判据（includes）对两个**矛盾**声称都判 ok —— 现在两条都降级。
+    expect(scan.pairs.map((pair) => [pair.line, pair.state])).toEqual([
+      [1, "ambiguous"],
+      [2, "ambiguous"],
+    ]);
+    // 不进红清单（不是矛盾），但必须响亮（与 no-info 同一条纪律）。
+    expect(redLinesOf(".scratch/x-landing.md", scan)).toEqual([]);
+    const declarations = skipDeclarationsOf(".scratch/x-landing.md", scan);
+    expect(declarations).toHaveLength(1);
+    expect(declarations[0]).toContain("!! SKIP (loud)");
+    expect(declarations[0]).toContain("2 个判位");
+    expect(declarations[0]).toContain("读数 0/1");
+  });
+
+  it("同值重复读数不算多读数（去重后再数）：单值载体照常判 ok / contradict", () => {
+    const open = makeEvidenceOpener(
+      root,
+      treeOf({
+        "same.log": "exit=0\n",
+        "same.exit": "T_EXIT=0\n",
+      }),
+    );
+    // 读数 ["0","0"] 去重后只有 1 个 ⇒ 判据不变。
+    expect(new Set(open("same.log").exitReadings).size).toBe(1);
+    expect(judgeEvidence(blocksOfLine("- `.scratch/same.log` exit=0"), open).pairs[0]?.state).toBe("ok");
+    expect(judgeEvidence(blocksOfLine("- `.scratch/same.log` exit=1"), open).pairs[0]?.state).toBe(
+      "contradict",
+    );
+  });
+
+  it("边车与 .log 读数分歧（#153 AC1 形态：.exit=1 + .log 另含 exit 0）⇒ ambiguous 而非 ok（候选 3 下的边界锁定）", () => {
+    const open = makeEvidenceOpener(
+      root,
+      treeOf({
+        "split.log": "叙述里提到 exit 0\n",
+        "split.exit": "T_EXIT=1\n",
+      }),
+    );
+    // opener 合并两源读数 ⇒ 去重后 2 个不同值 ⇒ 判不了「相反」，响亮不判（不判 ok）。
+    // 顺序不做硬断言（opener 先 .log 后 .exit，判定只看去重集合），只锁「两个源都在」。
+    expect([...new Set(open("split.log").exitReadings)].sort()).toEqual(["0", "1"]);
+    const scan = judgeEvidence(
+      blocksOfLine(["- `.scratch/split.log` exit=1", "- `.scratch/split.log` exit=0"].join("\n")),
+      open,
+    );
+    expect(scan.pairs.map((pair) => pair.state)).toEqual(["ambiguous", "ambiguous"]);
+    expect(redLinesOf(".scratch/x-landing.md", scan)).toEqual([]);
+    expect(skipDeclarationsOf(".scratch/x-landing.md", scan)[0]).toContain("!! SKIP (loud)");
+  });
+
   it("「不判」必须响亮（`!! SKIP (loud)` + 说明缺什么），不能只在一行汇总里报数", () => {
     const open = makeEvidenceOpener(
       root,
@@ -604,8 +691,9 @@ describe("证据引用守卫 · 活体 .scratch/（#132，ADR-0015）", () => {
     console.log(
       `  #132 证据引用面：${String(files.length)} 档 / ${String(pairs.length)} 判位` +
         `（${String(count("ok"))} 含 / ${String(count("no-info"))} 无 exit 信息 / ${String(
-          count("missing") + count("contradict"),
-        )} 红）· 多声称行 ${String(multi)} · 无载体声称行 ${String(withoutCarrier)}`,
+          count("ambiguous"),
+        )} 多读数不判 / ${String(count("missing") + count("contradict"))} 红）` +
+        `· 多声称行 ${String(multi)} · 无载体声称行 ${String(withoutCarrier)}`,
     );
     // 牙齿自检：空面 / 全「无读数」的 0 红不证明任何事。
     expect(pairs.length, "判定面为空 ⇒ 0 红不证明任何事").toBeGreaterThan(0);
