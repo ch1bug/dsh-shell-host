@@ -428,13 +428,36 @@ export function resolveLaunchers(deps: LauncherDeps = {}, custom: readonly Custo
   return { presets, absent, builtInViewIds }
 }
 
+/**
+ * The stable `code` vocabulary for launcher-layer loud failures (#165). Same
+ * family style as the permission gate's `SANDBOX_DENIED`: a consumer branches
+ * on `error.code` to tell an ENVIRONMENT shape (this table) from a POLICY
+ * shape (the gate) without matching prose.
+ * - `PRESET_NOT_SERVICEABLE`: a known built-in id whose every probe point is
+ *   absent on this machine.
+ * - `PRESET_UNKNOWN`: the id resolves to nothing in the table.
+ * - `NO_EXECUTABLE_CANDIDATE`: shell_open's runtime re-probe found no existing
+ *   executable (thrown from the terminal layer, same vocabulary).
+ * - `PRESET_CONFIG_INVALID`: a custom preset entry fails config validation.
+ */
+export type LauncherErrorCode =
+  | 'PRESET_NOT_SERVICEABLE'
+  | 'PRESET_UNKNOWN'
+  | 'NO_EXECUTABLE_CANDIDATE'
+  | 'PRESET_CONFIG_INVALID'
+
+/** Build a launcher-layer loud error carrying its stable structured `code` (#165). */
+export function launcherError(code: LauncherErrorCode, message: string): Error {
+  return Object.assign(new Error(message), { code })
+}
+
 function resolveCustom(entry: CustomLauncherConfig, resolved: ResolvedLauncher[], absent: readonly AbsentLauncher[]): ResolvedLauncher {
   if (entry.id === undefined || entry.id === '') {
-    throw new Error('launcher: a custom preset requires a non-empty id')
+    throw launcherError('PRESET_CONFIG_INVALID', 'launcher: a custom preset requires a non-empty id')
   }
   if (entry.transport === 'ssh') {
     if (entry.host === undefined || entry.host === '') {
-      throw new Error(`launcher: custom ssh preset '${entry.id}' requires a host`)
+      throw launcherError('PRESET_CONFIG_INVALID', `launcher: custom ssh preset '${entry.id}' requires a host`)
     }
     return {
       id: entry.id,
@@ -454,10 +477,10 @@ function resolveCustom(entry: CustomLauncherConfig, resolved: ResolvedLauncher[]
     ? undefined
     : resolved.find((p): p is LocalLauncherPreset => p.id === entry.base && p.transport === 'local')
   if (entry.base !== undefined && base === undefined) {
-    throw new Error(`launcher: custom preset '${entry.id}' references unknown or absent base preset '${entry.base}'`)
+    throw launcherError('PRESET_CONFIG_INVALID', `launcher: custom preset '${entry.id}' references unknown or absent base preset '${entry.base}'`)
   }
   if (entry.executable === undefined && base === undefined) {
-    throw new Error(`launcher: custom local preset '${entry.id}' requires an executable (or a base preset reference)`)
+    throw launcherError('PRESET_CONFIG_INVALID', `launcher: custom local preset '${entry.id}' requires an executable (or a base preset reference)`)
   }
   const executable = entry.executable ?? base?.executable ?? []
   return {
@@ -493,9 +516,9 @@ export function resolveLauncherDetailed(id: string, deps: LauncherDeps = {}, cus
   }
   const miss = absent.find(a => a.id === id)
   if (miss !== undefined) {
-    throw new Error(`launcher: preset '${id}' is not serviceable on this machine. Probed: ${miss.probed.join(', ')}`)
+    throw launcherError('PRESET_NOT_SERVICEABLE', `launcher: preset '${id}' is not serviceable on this machine. Probed: ${miss.probed.join(', ')}`)
   }
-  throw new Error(`launcher: unknown preset '${id}'; resolved presets: ${presets.map(p => p.id).join(', ')}`)
+  throw launcherError('PRESET_UNKNOWN', `launcher: unknown preset '${id}'; resolved presets: ${presets.map(p => p.id).join(', ')}`)
 }
 
 /**

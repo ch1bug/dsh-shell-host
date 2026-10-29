@@ -41,7 +41,7 @@
 import z from '@deepseek-ai/schemastery'
 import { delimiter } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { resolveLauncherDetailed, builtInLauncherIds, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
+import { launcherError, resolveLauncherDetailed, builtInLauncherIds, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
 import { registrationError, validateCustomEntries } from './register.ts'
 import { spawnableExists } from '../detect.ts'
 import { DEFAULT_MAX_SESSIONS as CORE_DEFAULT_MAX_SESSIONS } from '../pty/session-core.ts'
@@ -121,7 +121,7 @@ function localLaunchCommand(preset: LocalLauncherPreset, deps: LauncherDeps): { 
   const exists = deps.exists ?? spawnableExists
   const executable = preset.executable.find(candidate => exists(candidate))
   if (executable === undefined) {
-    throw new Error(`launcher: preset '${preset.id}' has no existing executable candidate. Probed: ${preset.executable.join(', ')}`)
+    throw launcherError('NO_EXECUTABLE_CANDIDATE', `launcher: preset '${preset.id}' has no existing executable candidate. Probed: ${preset.executable.join(', ')}`)
   }
   const exe = executable.includes(' ') ? `"${executable}"` : executable
   return { executable, command: [exe, ...preset.argv].join(' '), probed: [...preset.probed] }

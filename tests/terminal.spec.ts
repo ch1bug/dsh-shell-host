@@ -114,6 +114,22 @@ describe("shell_open (#55)", () => {
     expect(err.message).toContain("pwsh.exe");
   });
 
+  it("a custom preset whose executable vanishes mid-flight fails loudly with NO_EXECUTABLE_CANDIDATE (#165)", async () => {
+    // The machine changed between boot (the registration gate saw the
+    // executable) and shell_open's runtime re-probe: a literal-executable
+    // custom preset resolves verbatim (no probe at resolution), so the loud
+    // miss lands on localLaunchCommand — now with a stable code.
+    let present = true;
+    const custom: CustomLauncherConfig[] = [
+      { id: "dev", transport: "local", executable: ["X:\\tools\\dev-shell.exe"], argv: [] },
+    ];
+    const { tool } = boot({ custom }, { ...fullDeps, exists: () => present });
+    present = false;
+    const err = await tool("shell_open").execute({ preset: "dev" }, { agent }).catch((e: Error) => e);
+    expect(err.message).toMatch(/no existing executable candidate/);
+    expect(err.code).toBe("NO_EXECUTABLE_CANDIDATE");
+  });
+
   it("a custom preset from config is selectable; an override id is rejected at the gate (#105)", async () => {
     const custom: CustomLauncherConfig[] = [
       { id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: { DEV: "1" } },

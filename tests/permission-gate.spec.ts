@@ -138,7 +138,7 @@ function bootPtyMissing(missing: "sandboxPolicy" | "approval") {
 }
 
 /** Boot BOTH entries on one shared context — `shell_open`'s gate + core. */
-function bootTerminal(opts: { mode: SandboxMode; workspaceRoot?: string }) {
+function bootTerminal(opts: { mode: SandboxMode; workspaceRoot?: string; exists?: (candidate: string) => boolean }) {
   const spawned: CoreSpawnSpec[] = [];
   const registered: any[] = [];
   const provided = new Map<string, unknown>();
@@ -163,7 +163,7 @@ function bootTerminal(opts: { mode: SandboxMode; workspaceRoot?: string }) {
   // would throw the launcher's loud "not serviceable" (no `code`) before the
   // gate ever ran, red with a machine-shaped error instead of a policy one
   // (observed 2026-10-26). The gate is policy, not executable presence.
-  applyTerminal(ctx as any, {}, { exists: () => true });
+  applyTerminal(ctx as any, {}, { exists: opts.exists ?? (() => true) });
   return {
     tool: (name: string) => registered.find((tool) => tool.name === name),
     spawned,
@@ -218,6 +218,25 @@ function bootWsl(opts: {
 }
 
 // ---------------------------------------------------------------------------
+// #165 — the two failure shapes are attributable by `code` alone: an absent
+// machine (launcher resolution fails FIRST) is an environment shape; a policy
+// refusal at the gate is a strategy shape. Same tool, same spec, no prose
+// matching needed.
+describe("#165: environment shape vs policy shape, attributable by code", () => {
+  it("shell_open without any executable is PRESET_NOT_SERVICEABLE, under read-only it is SANDBOX_DENIED — the codes differ", async () => {
+    await ring("#165 环境形状 vs 策略形状：launcher code ≠ SANDBOX_DENIED（同一 spec 可归因）", async () => {
+      const env = bootTerminal({ mode: "read-only", exists: () => false });
+      const envErr = await refusal(env.tool("shell_open").execute({ preset: "pwsh" }, exec()));
+      expect(envErr.code).toBe("PRESET_NOT_SERVICEABLE");
+      expect(envErr.code).not.toBe("SANDBOX_DENIED");
+
+      const policy = bootTerminal({ mode: "read-only" });
+      const policyErr = await refusal(policy.tool("shell_open").execute({ preset: "pwsh" }, exec()));
+      expect(policyErr.code).toBe("SANDBOX_DENIED");
+    });
+  });
+});
+
 // AC1 — read-only refuses a spawn, with the official denial vocabulary
 // ---------------------------------------------------------------------------
 

@@ -397,6 +397,46 @@ describe("resolveLauncherDetailed (#56 source/overrode)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #165 — launcher-layer loud failures carry a stable structured `code`
+// ---------------------------------------------------------------------------
+
+describe("launcher error codes (#165)", () => {
+  it("an absent built-in throws PRESET_NOT_SERVICEABLE (environment shape)", () => {
+    try {
+      resolveLauncher("pwsh", { exists: () => false, env: FULL_ENV, path: "", listDistros: () => [] });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect((err as Error & { code?: string }).code).toBe("PRESET_NOT_SERVICEABLE");
+    }
+  });
+
+  it("an unknown id throws PRESET_UNKNOWN", () => {
+    try {
+      resolveLauncher("no-such-shell", fullDeps());
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect((err as Error & { code?: string }).code).toBe("PRESET_UNKNOWN");
+    }
+  });
+
+  it.each([
+    ["missing id", { transport: "local", executable: ["X:\\bash.exe"] } as unknown as CustomLauncherConfig],
+    ["missing host", { id: "box", transport: "ssh" } as CustomLauncherConfig],
+    ["unknown base", { id: "dev", transport: "local", base: "ghost" } as CustomLauncherConfig],
+    ["missing executable", { id: "dev", transport: "local" } as CustomLauncherConfig],
+  ])("an invalid custom preset (%s) throws PRESET_CONFIG_INVALID with the message intact", (_case, entry) => {
+    try {
+      resolveLauncher("dev", fullDeps(), [entry]);
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      expect(e.code).toBe("PRESET_CONFIG_INVALID");
+      expect(e.message).toMatch(/^launcher: /); // message family unchanged
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The wsl distro-probe cache (#152): cache + explicit refresh, no TTL
 // ---------------------------------------------------------------------------
 
