@@ -26,7 +26,7 @@
 
 import { statSync } from 'node:fs'
 import { isAbsolute, sep } from 'node:path'
-import type { CustomLauncherConfig } from '../launchers.ts'
+import type { CustomLauncherConfig, LauncherErrorCode } from '../launchers.ts'
 import { spawnableExists } from '../detect.ts'
 
 /** Probe seams — tests fake the machine; production uses the real one. */
@@ -232,11 +232,20 @@ export function validateCustomEntries(custom: readonly unknown[], deps: Registra
   return { accepted, rejected }
 }
 
-/** The loud apply-time error for a registration with rejected entries. */
-export function registrationError(rejected: readonly RegistrationRejection[]): Error {
+/**
+ * The loud apply-time error for a registration with rejected entries.
+ * Carries the same structured `code` as the parse-time rejections in
+ * `resolveCustom` (#165 vocabulary, #171): same failure family — an illegal
+ * custom preset config — so consumers branch on `code`, not prose. The
+ * message text is unchanged; only the code is new.
+ */
+export function registrationError(rejected: readonly RegistrationRejection[]): Error & { code: LauncherErrorCode } {
   const lines = rejected.map(r => `  [${r.index}] id=${JSON.stringify(r.id)}: ${r.reasons.join('; ')}`)
-  return new Error(
-    `terminal: custom preset registration rejected ${rejected.length} entr${rejected.length === 1 ? 'y' : 'ies'} ` +
-    '(fix the config and RESTART to apply):\n' + lines.join('\n'),
+  return Object.assign(
+    new Error(
+      `terminal: custom preset registration rejected ${rejected.length} entr${rejected.length === 1 ? 'y' : 'ies'} ` +
+      '(fix the config and RESTART to apply):\n' + lines.join('\n'),
+    ),
+    { code: 'PRESET_CONFIG_INVALID' } as const,
   )
 }

@@ -108,13 +108,23 @@ describe("registration validation matrix (#105) — every illegal shape is loudl
     const err = registrationError(rejected);
     expect(err.message).toContain("[0]");
     expect(err.message).toContain("RESTART");
+    // #171: same structured code family as resolveCustom's parse-time
+    // rejections — a consumer branches on `code`, never on prose.
+    expect(err.code).toBe("PRESET_CONFIG_INVALID");
   });
 });
 
 describe("registration gate at apply time (#105)", () => {
   it("an illegal config file fails the row activation loudly — nothing registers", () => {
-    expect(() => bootTerminal({ custom: [bootEntry({ id: "pwsh" })] as never, }, fullDeps, { fakeSpawn: true }))
-      .toThrow(/override the built-in/);
+    let caught: unknown;
+    try {
+      bootTerminal({ custom: [bootEntry({ id: "pwsh" })] as never }, fullDeps, { fakeSpawn: true });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/override the built-in/);
+    expect((caught as { code?: string }).code).toBe("PRESET_CONFIG_INVALID");
   });
 
   it("a legal registration reaches the preset table: source=custom, resolvable", async () => {
