@@ -37,7 +37,15 @@ export interface RegistrationDeps {
   exists?: (path: string) => boolean
   /** Directory probe (a directory is not spawnable); defaults to statSync. */
   isDirectory?: (path: string) => boolean
-  /** Platform gate for separator shape; defaults to process.platform. */
+  /**
+   * Platform gate for separator shape (#167). The default `process.platform`
+   * is the SINGLE-MACHINE gauge: correct for the in-process LauncherDeps
+   * path, but WRONG if this pure-validation layer is ever reused to judge
+   * configs destined for a DIFFERENT host (e.g. a remote/POSIX target while
+   * validating on Windows) — win32-only rules (`\` or `/`, NTFS streams)
+   * would silently misfire. When validating for another environment, pass
+   * `platform` explicitly; the default is a convenience, not a contract.
+   */
   platform?: NodeJS.Platform
 }
 
@@ -93,6 +101,7 @@ function validateExecutableCandidate(candidate: unknown, deps: RegistrationDeps)
   // Bare names (no separator) would resolve along PATH at spawn time — a
   // renamed binary earlier on PATH is a hijack. A registered preset pins an
   // explicit location. win32 counts both `\` and `/`; POSIX only `/`.
+  // separator shape is a SINGLE-MACHINE gauge — see RegistrationDeps.platform (#167).
   const platform = deps.platform ?? process.platform
   const hasSeparator = candidate.includes(sep) || (platform === 'win32' && candidate.includes('/'))
   if (!hasSeparator) {
