@@ -202,6 +202,8 @@ export function spawnableExists(candidate: string): boolean {
  * Every PowerShell location the pwsh backend probes, in order (win32, #3):
  * PowerShell 7's install-root `pwsh.exe` first, then every PATH entry's
  * `pwsh.exe` (e.g. the Microsoft Store install, user-added locations),
+ * then the per-user install root's `pwsh.exe` (#164: WindowsApps — where
+ * Store / MSI per-user installs land when no PATH entry covers them),
  * then Windows PowerShell 5.1's `powershell.exe` — the same shape as the
  * upstream `pwsh-local` candidate list, with the trailing bare-`pwsh` PATH
  * fallback REMOVED: this executor's contract is a loud failure naming every
@@ -213,9 +215,13 @@ export function pwshProbedLocations(
 ): readonly string[] {
   const programFiles = env.ProgramFiles ?? 'C:\\Program Files'
   const systemRoot = env.SystemRoot ?? 'C:\\Windows'
+  const localAppData = env.LocalAppData
   return [
     join(programFiles, 'PowerShell', '7', 'pwsh.exe'),
     ...pathEntries(path),
+    // No LocalAppData default: an env without it is not a per-user Windows
+    // profile, and inventing one would probe a path that cannot exist.
+    ...(localAppData ? [join(localAppData, 'Microsoft', 'WindowsApps', 'pwsh.exe')] : []),
     join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
   ]
 }

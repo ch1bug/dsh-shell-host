@@ -173,6 +173,12 @@ describe('detectPwsh (#3: PowerShell 7 preferred over Windows PowerShell 5.1)', 
     expect(detectPwsh(exists, path)).toBe('D:\\quoted\\pwsh.exe')
   })
 
+  it('probes the per-user WindowsApps install before Windows PowerShell 5.1 (#164)', () => {
+    const env = { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows', LocalAppData: 'C:\\Users\\me\\AppData\\Local' }
+    const windowsApps = 'C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe'
+    expect(detectPwsh(existsFor([windowsApps, winPs]), '', env)).toBe(windowsApps)
+  })
+
   it('falls back to Windows PowerShell 5.1 when no pwsh.exe exists', () => {
     const env = { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows' }
     expect(detectPwsh(existsFor([winPs]), '', env)).toBe(winPs)
@@ -186,9 +192,10 @@ describe('detectPwsh (#3: PowerShell 7 preferred over Windows PowerShell 5.1)', 
   })
 
   it('pwshProbedLocations names every probed path in probe order', () => {
-    const locations = pwshProbedLocations('D:\\a;D:\\b', { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows' })
+    const locations = pwshProbedLocations('D:\\a;D:\\b', { ProgramFiles: 'C:\\Program Files', SystemRoot: 'C:\\Windows', LocalAppData: 'C:\\Users\\me\\AppData\\Local' })
     expect(locations[0]).toBe(ps7)
-    expect(locations.slice(1, -1)).toEqual(['D:\\a\\pwsh.exe', 'D:\\b\\pwsh.exe'])
+    expect(locations.slice(1, 3)).toEqual(['D:\\a\\pwsh.exe', 'D:\\b\\pwsh.exe'])
+    expect(locations.at(-2)).toBe('C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe')
     expect(locations.at(-1)).toBe(winPs)
   })
 })
