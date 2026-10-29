@@ -26,6 +26,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { posix as posixPath } from 'node:path'
 import { posixQuote } from '../posix-quote.ts'
+import { codedError } from '../coded-error.ts'
 import {
   FsError,
   type FsDirEntry,
@@ -561,16 +562,14 @@ function registerRemoteLs(ctx: RemoteFsCtx, fs: RemoteFileSystem, config: Remote
     async execute(args: { path?: string; limit?: number }, exec: { agent?: unknown; signal?: AbortSignal }) {
       const owner = requireAgentFor('remote', exec)
       if (args.limit !== undefined && (!Number.isInteger(args.limit) || args.limit < 1)) {
-        throw Object.assign(new Error(`remote_ls: limit must be a positive integer, got: ${JSON.stringify(args.limit)}`), { code: 'INVALID_ARGS' })
+        throw codedError(`remote_ls: limit must be a positive integer, got: ${JSON.stringify(args.limit)}`, 'INVALID_ARGS')
       }
       const requested = args.path
       if (requested !== undefined && !isAbsoluteRemotePath(requested)) {
-        throw Object.assign(
-          new Error(
-            `remote_ls: ${JSON.stringify(requested)} is not an absolute remote path — the remote workspace uses absolute POSIX paths only ` +
-              '(e.g. /srv/app). Omit `path` to list the workspace root.',
-          ),
-          { code: 'INVALID_ARGS' },
+        throw codedError(
+          `remote_ls: ${JSON.stringify(requested)} is not an absolute remote path — the remote workspace uses absolute POSIX paths only ` +
+            '(e.g. /srv/app). Omit `path` to list the workspace root.',
+          'INVALID_ARGS',
         )
       }
       const cwd = await agentCwd(ctx, owner, exec.signal)

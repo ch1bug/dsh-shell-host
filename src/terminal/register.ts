@@ -28,6 +28,7 @@ import { statSync } from 'node:fs'
 import { isAbsolute, sep } from 'node:path'
 import type { CustomLauncherConfig, LauncherErrorCode } from '../launchers.ts'
 import { spawnableExists } from '../detect.ts'
+import { codedError } from '../coded-error.ts'
 
 /** Probe seams — tests fake the machine; production uses the real one. */
 export interface RegistrationDeps {
@@ -241,11 +242,9 @@ export function validateCustomEntries(custom: readonly unknown[], deps: Registra
  */
 export function registrationError(rejected: readonly RegistrationRejection[]): Error & { code: LauncherErrorCode } {
   const lines = rejected.map(r => `  [${r.index}] id=${JSON.stringify(r.id)}: ${r.reasons.join('; ')}`)
-  return Object.assign(
-    new Error(
-      `terminal: custom preset registration rejected ${rejected.length} entr${rejected.length === 1 ? 'y' : 'ies'} ` +
-      '(fix the config and RESTART to apply):\n' + lines.join('\n'),
-    ),
-    { code: 'PRESET_CONFIG_INVALID' } as const,
+  return codedError(
+    `terminal: custom preset registration rejected ${rejected.length} entr${rejected.length === 1 ? 'y' : 'ies'} ` +
+    '(fix the config and RESTART to apply):\n' + lines.join('\n'),
+    'PRESET_CONFIG_INVALID',
   )
 }

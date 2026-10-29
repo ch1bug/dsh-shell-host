@@ -20,6 +20,7 @@ import {
   type BackgroundJobRegistry,
 } from './pty/background-send.ts'
 import type { SendResult } from './pty/session-core.ts'
+import { codedError } from './coded-error.ts'
 
 /** Owner (Agent) identity passed to every core call. */
 export type Owner = unknown
@@ -125,7 +126,7 @@ export function requireAgent(exec: { agent?: Owner }): Owner {
 export function requireAgentFor(family: string, exec: { agent?: Owner }): Owner {
   const owner = exec?.agent
   if (owner === undefined) {
-    throw Object.assign(new Error(`${family}_* tools require an owning agent session`), { code: 'NO_AGENT' })
+    throw codedError(`${family}_* tools require an owning agent session`, 'NO_AGENT')
   }
   return owner
 }

@@ -29,6 +29,7 @@
 import { spawn as nodePtySpawn } from '@lydell/node-pty'
 import { resolveExecutable } from '../detect.ts'
 import type { SandboxMode } from '../permission-gate.ts'
+import { codedError } from '../coded-error.ts'
 
 /** Default concurrent-session soft cap (#56 ruling 3, migrated onto the
  * core: the registry is the single source of truth, so an entry remount
@@ -444,7 +445,7 @@ export interface SessionCore {
   dispose(): Promise<void>
 }
 
-const terr = (code: string, message: string) => Object.assign(new Error(message), { code })
+const terr = (code: string, message: string) => codedError(message, code)
 
 /** Windows command-line tokenizer (the Microsoft argv rules cmd.exe itself
  * follows for double quotes): whitespace separates; `"` toggles quoting;
@@ -551,8 +552,7 @@ function spawnFailed(requested: string, resolved: string, error: unknown): Error
   // error, same code shape; non-interpreters keep the bare #146 diagnostic.
   // (spawnFailed is only reached from the win32 branch; POSIX errors are raw.)
   const interpreterNote = isKnownInterpreterExecutable(resolved) ? `; ${PATH_PROFILE_HINT}` : ''
-  return Object.assign(new Error(`pty: ${detail} — ${target}; ${SPAWN_FAILURE_HINT}${interpreterNote}`), {
-    code: 'SPAWN_FAILED',
+  return codedError(`pty: ${detail} — ${target}; ${SPAWN_FAILURE_HINT}${interpreterNote}`, 'SPAWN_FAILED', {
     cause: error,
   })
 }
@@ -929,12 +929,10 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         throw new Error(`deadlineMs must be a non-negative integer (ms; 0 = explicitly off), got: ${JSON.stringify(spec.deadlineMs)}`)
       }
       if (spec.deadlineMs !== undefined && spec.autoClose !== true) {
-        throw Object.assign(
-          new Error(
-            'pty open: deadlineMs bounds a ONE-SHOT exec (autoClose: true) — a persistent session has no call-length deadline; ' +
-              'use the opt-in idleTimeoutMs for idle reclamation (#56) or autoClose: true for exec semantics',
-          ),
-          { code: 'INVALID_ARGS' },
+        throw codedError(
+          'pty open: deadlineMs bounds a ONE-SHOT exec (autoClose: true) — a persistent session has no call-length deadline; ' +
+            'use the opt-in idleTimeoutMs for idle reclamation (#56) or autoClose: true for exec semantics',
+          'INVALID_ARGS',
         )
       }
       // #146 × #149: a DECLARED shell session is persistent by design (its close
@@ -942,13 +940,11 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       // process that may never end. Refuse loudly BEFORE a spawn instead of
       // hanging, and name both workable fixes.
       if (spec.autoClose === true && spec.shell === true) {
-        throw Object.assign(
-          new Error(
-            'pty_open: autoClose is one-shot exec semantics, but this call declares a shell session ' +
-              '(shellCommand / the configured defaultShellCommand) — a shell is persistent, so close it with pty_close. ' +
-              'For a one-shot that needs shell semantics, pass the LINE as `command`, e.g. ' + SHELL_SPELLINGS + '.',
-          ),
-          { code: 'INVALID_ARGS' },
+        throw codedError(
+          'pty_open: autoClose is one-shot exec semantics, but this call declares a shell session ' +
+            '(shellCommand / the configured defaultShellCommand) — a shell is persistent, so close it with pty_close. ' +
+            'For a one-shot that needs shell semantics, pass the LINE as `command`, e.g. ' + SHELL_SPELLINGS + '.',
+          'INVALID_ARGS',
         )
       }
       // Soft cap over the owner's OWN held sessions (#56 migrated onto the

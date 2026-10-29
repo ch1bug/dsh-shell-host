@@ -29,6 +29,7 @@
  */
 
 import { posix as posixPath } from 'node:path'
+import { codedError } from '../coded-error.ts'
 import type { SshOptionInput } from '../ssh/compose.ts'
 import type { SshTransport } from '../ssh/transport.ts'
 import type { ChannelStatus, RemoteResult } from './channel.ts'
@@ -130,12 +131,10 @@ export function isAbsoluteRemotePath(path: string): boolean {
  */
 export function normalizeRemotePath(path: string): string {
   if (!isAbsoluteRemotePath(path)) {
-    throw Object.assign(
-      new Error(
-        `remote path ${JSON.stringify(path)} is not an absolute POSIX path — the remote workspace speaks absolute POSIX paths only ` +
-          '(pass something like /srv/app; a Windows-shaped path is never a remote path, per ADR-0017 decision 6).',
-      ),
-      { code: REMOTE_WORKSPACE_ERRORS.INVALID_PATH },
+    throw codedError(
+      `remote path ${JSON.stringify(path)} is not an absolute POSIX path — the remote workspace speaks absolute POSIX paths only ` +
+        '(pass something like /srv/app; a Windows-shaped path is never a remote path, per ADR-0017 decision 6).',
+      REMOTE_WORKSPACE_ERRORS.INVALID_PATH,
     )
   }
   const normalized = posixPath.normalize(path)

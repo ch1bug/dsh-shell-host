@@ -42,6 +42,7 @@ import z from '@deepseek-ai/schemastery'
 import { delimiter } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { launcherError, resolveLauncherDetailed, builtInLauncherIds, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
+import { codedError } from '../coded-error.ts'
 import { registrationError, validateCustomEntries } from './register.ts'
 import { spawnableExists } from '../detect.ts'
 import { DEFAULT_MAX_SESSIONS as CORE_DEFAULT_MAX_SESSIONS } from '../pty/session-core.ts'
@@ -216,7 +217,7 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
     async execute(args: { preset: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; sandbox_permissions?: string; justification?: string }, exec: { agent?: unknown; signal?: AbortSignal; callId?: string }) {
       const owner = exec?.agent
       if (owner === undefined) {
-        throw Object.assign(new Error('shell_open requires an owning agent session'), { code: 'NO_AGENT' })
+        throw codedError('shell_open requires an owning agent session', 'NO_AGENT')
       }
       if (args.idleTimeoutMs !== undefined && (!Number.isInteger(args.idleTimeoutMs) || args.idleTimeoutMs <= 0)) {
         throw new Error(`shell_open: idleTimeoutMs must be a positive integer (ms), got: ${JSON.stringify(args.idleTimeoutMs)}`)

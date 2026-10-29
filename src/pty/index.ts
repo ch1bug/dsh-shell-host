@@ -55,6 +55,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, DEFAULT_DEADLINE_MS, extractSpec, AUTO_CLOSE_SEMANTICS, DEADLINE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import { codedError } from '../coded-error.ts'
 import {
   ENVIRONMENT_CONTEXT_NAME,
   ENVIRONMENT_CONTEXT_ORDER,
@@ -166,7 +167,7 @@ function resolveConfig(raw: unknown): PtyConfig {
 
 /** A caller error on the tool surface (a bad declaration pair): stable code so
  * a consumer can branch without matching prose. */
-const invalidArgs = (message: string) => Object.assign(new Error(message), { code: 'INVALID_ARGS' })
+const invalidArgs = (message: string) => codedError(message, 'INVALID_ARGS')
 
 /** One `pty_open` declaration resolved into the launch command (#149). */
 export interface ShellDeclaration {

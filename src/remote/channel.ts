@@ -51,6 +51,7 @@ import { composeSshArgv, normalizeSshOptions, type SshOptionInput } from '../ssh
 import { controlMasterUsable, type SshTransport } from '../ssh/transport.ts'
 import { FRAME_RESPONSE, FrameDecoder, REMOTE_FRAME_LOOP, REMOTE_PROTOCOL_VERSION, handshakeCommand, encodeRequest } from './frame.ts'
 import { posixQuote } from '../posix-quote.ts'
+import { codedError } from '../coded-error.ts'
 
 /** The stable error codes this layer reports. Consumers branch on these, never on prose. */
 export const REMOTE_CHANNEL_ERRORS = {
@@ -75,7 +76,7 @@ export const REMOTE_CHANNEL_ERRORS = {
 
 /** A coded error (`code` is the stable fact; the message is for humans). */
 export function remoteError(code: string, message: string, extra: Record<string, unknown> = {}): Error {
-  return Object.assign(new Error(message), { code, ...extra })
+  return codedError(message, code, extra)
 }
 
 /** 文件通道和交互会话各自采样，只共享POSIX事实的判定规则。 */

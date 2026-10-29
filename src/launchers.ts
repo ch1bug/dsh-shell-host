@@ -33,6 +33,7 @@ import {
   wslProbedLocations,
 } from './detect.ts'
 import { composeSshCommand, type SshLaunchArgs, type SshOptionInput } from './ssh/compose.ts'
+import { codedError } from './coded-error.ts'
 
 // Launcher argv/prefix constants (ADR-0013: formerly in the removed
 // backends.ts — this module is their single home now). Single source
@@ -446,9 +447,9 @@ export type LauncherErrorCode =
   | 'NO_EXECUTABLE_CANDIDATE'
   | 'PRESET_CONFIG_INVALID'
 
-/** Build a launcher-layer loud error carrying its stable structured `code` (#165). */
+/** Build a launcher-layer loud error carrying its stable structured `code` (#165; shared shape via codedError, #172). */
 export function launcherError(code: LauncherErrorCode, message: string): Error {
-  return Object.assign(new Error(message), { code })
+  return codedError(message, code)
 }
 
 function resolveCustom(entry: CustomLauncherConfig, resolved: ResolvedLauncher[], absent: readonly AbsentLauncher[]): ResolvedLauncher {
