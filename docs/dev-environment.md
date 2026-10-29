@@ -683,6 +683,39 @@ peerDependencies 必须显式声明**（现为 `dsh-agent` / `dsh-llm` / `dsh-pt
     [TESTING.md](agents/TESTING.md) §证据纪律的那条）—— 那种情况用唯一前缀
     且**跑完即删**，别留到下一轮。
 
+### 4.7 `pty` 直调解释器的 PATH 缺口（#163，非 login 不跑 profile）
+
+**现象**：win32 直调形式（`pty_open` 的 `command` 是裸命令行，argv[0] 直接 spawn，
+不经 shell 解释）起一个**非 login** 的解释器——典型如 msys `bash.exe -c "seq 5"`——
+解释器内部的命令报 `command not found`（exit 127）。
+
+**根因**：非 login 调用**不跑 profile**（msys 的 `/etc/profile` 负责把 `/usr/bin`
+等目录放进 PATH），于是 coreutils（`seq`/`sleep`/`ls`…）不在解释器看到的 PATH 上。
+`shell_open` 的 launcher 预设走的是 login 形态（`MSYS2_INTERACTIVE_ARGV` 带
+`--login -i`），不受影响。
+
+**复现**（win32 直调语义，`bash -c` 非登录）：
+
+```
+pty_open { command: "bash.exe -c 'seq 5'", autoClose: true }
+→ seq: command not found（exit 127）
+```
+
+**三种绕法**（选一；第一条最常用）：
+
+1. **login 形态**：`bash.exe -lc "seq 5"` —— `-l` 让 bash 先跑 profile，PATH 由
+   `/etc/profile` 建好；与 `shell_open` 预设的行为一致。代价是多一层 profile 执行。
+2. **`env` 注入 PATH**：`pty_open` 的 `env` 参数显式带上解释器需要的目录（如 msys
+   的 `/usr/bin` 对应的 Windows 路径）。适合 profile 副作用不可接受、又要多次调用
+   的场景；代价是要自己维护路径列表。
+3. **命令内绝对路径**：`bash.exe -c "/usr/bin/seq 5"`。一次性调用最省事；代价是
+   路径写死，换机器/换安装位置就失效。
+
+产品侧配套：`pty_open` 的 win32 直调失败诊断（`could not start` 同族，`SPAWN_FAILED`）
+在检测到目标是已知解释器（bash/sh/zsh/fish/pwsh/powershell/wsl/python）时，会追加
+一条同样的 PATH/profile 提示（`PATH_PROFILE_HINT`，`src/pty/session-core.ts`）——
+错误语义与 code 形状不变。
+
 ## 5. 实例相关文档
 
 - 上游契约 / RPC 参数名（typert 逐方法三种形态）/ 会话证据与计费判据：[GLOSSARY.md #82](../GLOSSARY.md)

@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { bootPlugin, fakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
-import { DEFAULT_MAX_SESSIONS, PTY_SIGNALS, SPAWN_FAILURE_HINT, createSessionCore, defaultSpawnPty, type SessionCoreConfig } from "../src/pty/session-core.ts";
+import { DEFAULT_MAX_SESSIONS, PATH_PROFILE_HINT, PTY_SIGNALS, SPAWN_FAILURE_HINT, createSessionCore, defaultSpawnPty, type SessionCoreConfig } from "../src/pty/session-core.ts";
 import { waitUntil, stillPending } from "./helpers/wait-until.ts";
 
 /**
@@ -477,6 +477,62 @@ describe("defaultSpawnPty spawn diagnostics (#146 AC3)", () => {
     expect(message).toContain('could not start "ssh"');
     // The rewritten path is named too — otherwise a PATH problem is invisible.
     expect(message).toContain('resolved to "C:\\\\tools\\\\ssh.exe"');
+  });
+});
+
+// #163: a win32 DIRECT spawn of a KNOWN INTERPRETER (bash/pwsh/powershell/…)
+// usually means the agent wanted a shell — and a non-login invocation lacks the
+// profile PATH entries (msys coreutils then die with command not found, 127).
+// When the spawn fails AND the target is such an interpreter, the diagnostic
+// gains one PATH/profile hint — same error, same code, POSIX unchanged.
+describe("defaultSpawnPty spawn diagnostics — interpreter PATH/profile hint (#163)", () => {
+  const failWith = (command: string, resolved: string): Error => {
+    let thrown: unknown;
+    try {
+      defaultSpawnPty(
+        { command },
+        {
+          platform: "win32",
+          resolveExecutable: () => resolved,
+          spawn: (() => {
+            throw new Error("File not found: ");
+          }) as never,
+        },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    return thrown as Error;
+  };
+
+  it("appends the PATH/profile hint when the target is a known interpreter (#163)", () => {
+    const thrown = failWith("bash.exe -c 'seq 5'", "C:\\msys64\\usr\\bin\\bash.exe");
+    expect((thrown as { code?: string }).code).toBe("SPAWN_FAILED"); // shape unchanged
+    expect(thrown.message).toContain(PATH_PROFILE_HINT);
+    expect(PATH_PROFILE_HINT).toContain("bash -lc"); // login form named
+    expect(PATH_PROFILE_HINT.toLowerCase()).toContain("path"); // env-injection route named
+  });
+
+  it("keeps the hint OFF for non-interpreter targets (ssh) and POSIX (#163)", () => {
+    const ssh = failWith("ssh example.com", "C:\\tools\\ssh.exe");
+    expect(ssh.message).not.toContain(PATH_PROFILE_HINT);
+    expect(ssh.message).toContain(SPAWN_FAILURE_HINT); // base diagnostic intact
+    let posixThrown: unknown;
+    try {
+      defaultSpawnPty(
+        { command: "bash -c 'seq 5'" },
+        {
+          platform: "linux",
+          resolveExecutable: () => "/usr/bin/bash",
+          spawn: (() => {
+            throw new Error("spawn failed");
+          }) as never,
+        },
+      );
+    } catch (error) {
+      posixThrown = error;
+    }
+    expect(String(posixThrown)).not.toContain(PATH_PROFILE_HINT);
   });
 });
 

@@ -511,6 +511,31 @@ export const SPAWN_FAILURE_HINT =
   'a common cause: the win32 spawn is DIRECT (no shell interpretation) — shell built-ins (echo, cd, …) and shell syntax ' +
   '(&&, pipes, redirection) need an explicit shell: ' + SHELL_SPELLINGS
 
+/**
+ * The PATH/profile hint appended to a win32 spawn-failure diagnostic when the
+ * target is a KNOWN INTERPRETER (#163): interpreters run non-interactively do
+ * not load profile scripts, so their internal PATH (msys `/usr/bin`, …) is
+ * missing and inner commands die with `command not found` (exit 127). One
+ * authored copy; the failure specs assert this exact text. It names the three
+ * documented workarounds (dev docs, same ticket): the login form, `env` PATH
+ * injection, or an absolute path inside the command.
+ */
+export const PATH_PROFILE_HINT =
+  'note: this target is an interpreter — invoked non-interactively it does NOT load its profile, so its own PATH entries ' +
+  '(e.g. msys /usr/bin) are missing and inner commands may fail with `command not found` (exit 127). ' +
+  'Workarounds: the login form (bash -lc "…"), inject PATH via env, or use absolute paths inside the command.'
+
+/**
+ * Whether a resolved win32 program is one of the known interpreters whose
+ * non-login invocation has the profile/PATH gap (#163). Deliberately a
+ * basename match over the interpreter families the spawn face realistically
+ * sees (bash/sh/zsh/fish, pwsh/powershell, wsl, python): this is a predicate,
+ * NOT a second argv/prefix table (ADR-0013 single source untouched).
+ */
+export function isKnownInterpreterExecutable(resolved: string): boolean {
+  return /(?:^|[\\/])(?:bash|sh|zsh|fish|pwsh|powershell|wsl|python3?)(?:\.exe)?$/i.test(resolved)
+}
+
 /** Wrap a spawn failure into the agent-usable diagnostic (#146 AC3): the
  * program it tried, the path argv[0] was rewritten to, the machine's own words,
  * and the explicit-shell hint. The original error rides along as `cause`. */
@@ -522,7 +547,11 @@ function spawnFailed(requested: string, resolved: string, error: unknown): Error
   const target = resolved === requested
     ? `could not start ${JSON.stringify(requested)}`
     : `could not start ${JSON.stringify(requested)} (resolved to ${JSON.stringify(resolved)})`
-  return Object.assign(new Error(`pty: ${detail} — ${target}; ${SPAWN_FAILURE_HINT}`), {
+  // #163: a known-interpreter target earns one extra PATH/profile line — same
+  // error, same code shape; non-interpreters keep the bare #146 diagnostic.
+  // (spawnFailed is only reached from the win32 branch; POSIX errors are raw.)
+  const interpreterNote = isKnownInterpreterExecutable(resolved) ? `; ${PATH_PROFILE_HINT}` : ''
+  return Object.assign(new Error(`pty: ${detail} — ${target}; ${SPAWN_FAILURE_HINT}${interpreterNote}`), {
     code: 'SPAWN_FAILED',
     cause: error,
   })
