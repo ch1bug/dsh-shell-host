@@ -12,6 +12,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { join } from "node:path";
 import { bootTerminal, fullDeps, FULL_ENV, PWSH, type TerminalBoot } from "./helpers/fake-terminal.ts";
 import { apply as applyTerminal, _resetRegistrationForTests } from "../src/terminal/index.ts";
 import { PWSH_INTERACTIVE_ARGV } from "../src/launchers.ts";
@@ -22,9 +23,12 @@ import type { CustomLauncherConfig, LauncherDeps } from "../src/launchers.ts";
  * SHARED harness (#156 — the hand-rolled ctx/spawner is gone); surface the
  * spawn specs the core handed to its spawner and the registered tools of
  * both entries. Unit posture: the injected every-launcher-present deps and
- * the in-process echo fake spawner. */
-function boot(config: { custom?: CustomLauncherConfig[]; maxSessions?: number } = {}, deps: LauncherDeps = fullDeps): TerminalBoot {
-  return bootTerminal(config, deps, { fakeSpawn: true });
+ * the in-process echo fake spawner. `files` are the custom.d entries (#170 —
+ * the patch-row channel is 废止; custom presets ride the file family). */
+function boot(config: { custom?: CustomLauncherConfig[]; maxSessions?: number } = {}, deps: LauncherDeps = fullDeps, files: Record<string, string> = {}): TerminalBoot {
+  // File keys are bare names inside the fake custom.d.
+  const prefixed = Object.fromEntries(Object.entries(files).map(([name, body]) => [join("<mem>/custom.d", name), body]));
+  return bootTerminal(config, deps, { fakeSpawn: true, files: prefixed });
 }
 
 const agent = { name: "unit" };
@@ -115,43 +119,46 @@ describe("shell_open (#55)", () => {
   });
 
   it("a custom preset whose executable vanishes mid-flight fails loudly with NO_EXECUTABLE_CANDIDATE (#165)", async () => {
-    // The machine changed between boot (the registration gate saw the
+    // The machine changed between mount (the validation gate saw the
     // executable) and shell_open's runtime re-probe: a literal-executable
     // custom preset resolves verbatim (no probe at resolution), so the loud
     // miss lands on localLaunchCommand — now with a stable code.
     let present = true;
-    const custom: CustomLauncherConfig[] = [
-      { id: "dev", transport: "local", executable: ["X:\\tools\\dev-shell.exe"], argv: [] },
-    ];
-    const { tool } = boot({ custom }, { ...fullDeps, exists: () => present });
+    const deps: LauncherDeps = { ...fullDeps, exists: (candidate: string) => candidate === PWSH ? true : present };
+    const { tool } = boot({}, deps, { "dev.json": JSON.stringify({ id: "dev", transport: "local", executable: ["X:\\tools\\dev-shell.exe"], argv: [] }) });
     present = false;
     const err = await tool("shell_open").execute({ preset: "dev" }, { agent }).catch((e: Error) => e);
     expect(err.message).toMatch(/no existing executable candidate/);
     expect(err.code).toBe("NO_EXECUTABLE_CANDIDATE");
   });
 
-  it("a custom preset from config is selectable; an override id is rejected at the gate (#105)", async () => {
-    const custom: CustomLauncherConfig[] = [
-      { id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: { DEV: "1" } },
-    ];
-    const { tool, spawnSpecs } = boot({ custom });
+  it("a custom preset file is selectable; an override id is single-entry disabled (#105/#170)", async () => {
+    const { tool, spawnSpecs } = boot({}, fullDeps, {
+      "dev.json": JSON.stringify({ id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: { DEV: "1" } }),
+    });
     const opened = await tool("shell_open").execute({ preset: "dev" }, { agent });
     expect(opened.command).toContain("-NoExit");
     expect(spawnSpecs[0]!.env!.DEV).toBe("1");
     const second = await tool("shell_open").execute({ preset: "dev", env: { OVR: "y" } }, { agent });
     expect(second.command).toContain("-NoExit");
-    // #105: the same-id override is dead at the registration gate (ADR-0018) —
-    // a custom `pwsh` row fails the row activation loudly instead of silently
-    // replacing the built-in view (#54 semantics, narrowed). Fresh snapshot:
-    // the first boot of this test already defined it.
-    _resetRegistrationForTests();
-    expect(() => boot({ custom: [{ id: "pwsh", transport: "local", executable: [PWSH], env: {} }] }))
-      .toThrow(/override the built-in/);
+    // #105/#170: a custom `pwsh` row is single-entry DISABLED (the old
+    // whole-batch throw is retired) — the built-in view keeps serving.
+    const overrideBoot = bootTerminal({}, fullDeps, { fakeSpawn: true, files: { [join("<mem>/custom.d", "pwsh.json")]: JSON.stringify({ id: "pwsh", transport: "local", executable: [PWSH], env: {} }) } });
+    const listed = await overrideBoot.tool("terminal_list").execute({}, { agent });
+    const pwshRows = listed.presets.filter((p: { id: string }) => p.id === "pwsh");
+    // The builtin view keeps serving (the first row) AND the rejected custom
+    // file shows up disabled with the original reason.
+    expect(pwshRows[0]).toMatchObject({ source: "builtin" });
+    const disabledRow = pwshRows.find((p: { disabled?: boolean }) => p.disabled === true);
+    expect(disabledRow!.source).toBe("custom");
+    expect(disabledRow!.reasons.join(" ")).toContain("override the built-in");
+    await expect(overrideBoot.tool("shell_open").execute({ preset: "pwsh" }, { agent })).resolves.toMatchObject({ source: "builtin" });
   });
 
   it("an ssh custom preset opens via the ssh composition (keepalive defaults inherit)", async () => {
-    const custom: CustomLauncherConfig[] = [{ id: "box", transport: "ssh", host: "me@example.test", shell: "bash --login" }];
-    const { tool, spawnSpecs } = boot({ custom });
+    const { tool, spawnSpecs } = boot({}, fullDeps, {
+      "box.json": JSON.stringify({ id: "box", transport: "ssh", host: "me@example.test", shell: "bash --login" }),
+    });
     const opened = await tool("shell_open").execute({ preset: "box" }, { agent });
     expect(opened.transport).toBe("ssh");
     expect(opened.command).toContain("ssh -tt");
@@ -184,10 +191,9 @@ describe("shell_open result fields (#56)", () => {
   });
 
   it("cwd reports the EFFECTIVE value: tool arg overrides preset cwd", async () => {
-    const custom: CustomLauncherConfig[] = [
-      { id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], cwd: "C:\\dev" },
-    ];
-    const { tool, spawnSpecs } = boot({ custom });
+    const { tool, spawnSpecs } = boot({}, fullDeps, {
+      "dev.json": JSON.stringify({ id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], cwd: "C:\\dev" }),
+    });
     const opened = await tool("shell_open").execute({ preset: "dev" }, { agent });
     expect(opened.cwd).toBe("C:\\dev");
     expect(spawnSpecs[0]!.cwd).toBe("C:\\dev");
@@ -197,10 +203,9 @@ describe("shell_open result fields (#56)", () => {
   });
 
   it("a custom-only id reports source custom + overrode false; an override id never boots (#105)", async () => {
-    const custom: CustomLauncherConfig[] = [
-      { id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: {} },
-    ];
-    const { tool } = boot({ custom });
+    const { tool } = boot({}, fullDeps, {
+      "dev.json": JSON.stringify({ id: "dev", transport: "local", executable: [PWSH], argv: ["-NoExit"], env: {} }),
+    });
     const customOnly = await tool("shell_open").execute({ preset: "dev" }, { agent });
     expect(customOnly.source).toBe("custom");
     expect(customOnly.overrode).toBe(false);
@@ -209,8 +214,9 @@ describe("shell_open result fields (#56)", () => {
   });
 
   it("an ssh preset carries source/overrode but no executable/probed (no local candidates)", async () => {
-    const custom: CustomLauncherConfig[] = [{ id: "box", transport: "ssh", host: "me@example.test" }];
-    const { tool } = boot({ custom });
+    const { tool } = boot({}, fullDeps, {
+      "box.json": JSON.stringify({ id: "box", transport: "ssh", host: "me@example.test" }),
+    });
     const opened = await tool("shell_open").execute({ preset: "box" }, { agent });
     expect(opened.source).toBe("custom");
     expect(opened.overrode).toBe(false);

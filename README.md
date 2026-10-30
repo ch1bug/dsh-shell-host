@@ -594,27 +594,39 @@ preset table is read-only, surfaced live by the unknown-id error.
   `pty_close`（空闲判据 = 输出行数不再增长；新输出会重置计时）。不带该
   参数的会话永不被空闲回收。
 
-### 自定义 shell 注册面（#105，ADR-0018）
+### 自定义 shell 注册面（#105/#170，ADR-0018）
 
 `custom` 通道把一条**可执行路径 + argv + env + PATH 前缀**交给 `shell_open`——
 注册面本身即攻击面，故有注册门（`src/terminal/register.ts`）：
 
-- **写入方**：只由**人**经配置文件（profile `cordis.patch.yml` 的 terminal 行
-  `config.custom`）写入；工具面没有任何写注册口（守卫测试锁定）。
-- **注册门（apply 期，fail-closed）**：任一条目非法 ⇒ 整行拒绝激活并列出每条
-  被拒条目与全部原因（插件管理器可见）。矩阵：id 非空且字符集锁定、数组内
-  不重复、**禁止覆盖内置 id**；local 可执行候选必须绝对路径 + 含路径分隔符
-  （拒裸名——沿 PATH 解析可被改名劫持）+ 无引号与 shell 元字符 + 存在且不是
-  目录；空格允许（Windows 合法安装路径，spawn 走 argv 数组）；ssh 行必须有
-  host；cwd 若声明必须绝对。`base` 继承源必须是内置 id 或更早被接受的
-  自定义 id。
-- **重启生效**：custom 表在进程内第一次 apply 时定型（进程级快照）。宿主在
-  HMR profile 下会因配置写重组插件树——行重挂不是重启；配置修改恰好在宿主
-  进程重启时生效，同进程内（含行关-开）不采纳新表（守卫测试锁定）。
+- **权威存储（#170 起）：custom.d 文件族**。custom 预设每条一个 JSON 文件
+  （`<customDir>/<id>.json`，文件名必须等于条目 id），目录由 terminal 行设置
+  `customDir`（绝对路径）给出，缺省 `<DSH_HOME 或用户家目录>/.dsh/custom.d`。**patch 行里
+  的 `config.custom` 数组写法已废止**：挂载时忽略并记一条审计事件，不做兼容
+  双读（一次性迁移见下）。
+- **写入方**：只由**人**经 custom.d 文件写入；工具面没有任何写注册口
+  （`terminal_list` 是纯只读面，守卫测试锁定）。
+- **注册门（挂载期，单条禁用）**：逐条过校验矩阵——id 非空且字符集锁定、
+  文件族内不重复、**禁止覆盖内置 id**；local 可执行候选必须绝对路径 + 含路径
+  分隔符（拒裸名——沿 PATH 解析可被改名劫持）+ 无引号与 shell 元字符 + 存在
+  且不是目录；空格允许（Windows 合法安装路径，spawn 走 argv 数组）；ssh 行
+  必须有 host；cwd 若声明必须绝对；`base` 继承源必须是内置 id 或更早被接受的
+  自定义 id。校验**不通过只禁用该条**（`terminal_list` 呈现 `disabled` + 原因
+  原文），其余条目照常挂载；改好文件后**下次挂载自动放行**（无需任何命令）。
+- **注册审计账本（#170）**：`<customDir>/audit.jsonl`，append-only JSONL——
+  registered / disabled / enabled / changed / ignored 事件随 profile 持久。
+  每次 `shell_open` 启动 custom 预设时，对命中执行的 executable 做内容哈希
+  与账本基线比对，不符则在该次结果附**告警字段**（不阻断——阻断权归 #102
+  权限门；哈希一致或无账本记录则不告警）。基线只记首次注册，事后变化以
+  `changed` 事件观察、不动基线。
 - **配置页**：宿主的三个配置插槽全是 client 插槽（React 浏览器半幅，经
   `dsh.client` 声明装载），且不存在通用 schema 渲染的插件配置页；配置页
-  （`plugins.row.config` 表单）为候选票，配置文件在当前语义下是唯一权威
-  存储与唯一写入口。裁决与宿主读数见 ADR-0018。
+  （`plugins.row.config` 表单）为后续票。裁决与宿主读数见 ADR-0018。
+
+**一次性迁移（patch 行 → custom.d）**：把 terminal 行 `config.custom` 数组里的
+每条对象取出，逐条写成 `<customDir>/<id>.json`（UTF-8，内容 = 该条对象原样），
+然后删掉 patch 行里的 `custom` 数组。重启 profile 前旧写法只是被忽略（有审计
+事件提醒），配置不会丢。
 
 ```js
 import * as terminal from 'dsh-shell-host/terminal' // { name, inject, apply }

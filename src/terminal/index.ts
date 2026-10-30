@@ -39,11 +39,15 @@
  */
 
 import z from '@deepseek-ai/schemastery'
-import { delimiter } from 'node:path'
+import { delimiter, isAbsolute, join } from 'node:path'
+import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
+import { mkdirSync, readFileSync, readdirSync, appendFileSync } from 'node:fs'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { launcherError, resolveLauncherDetailed, builtInLauncherIds, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
+import { launcherError, resolveLauncherDetailed, resolveLaunchers, builtInLauncherIds, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
 import { codedError } from '../coded-error.ts'
-import { registrationError, validateCustomEntries } from './register.ts'
+import { validateCustomEntries } from './register.ts'
+import { createAuditLedger } from './audit-ledger.ts'
 import { spawnableExists } from '../detect.ts'
 import { DEFAULT_MAX_SESSIONS as CORE_DEFAULT_MAX_SESSIONS } from '../pty/session-core.ts'
 import {
@@ -72,6 +76,12 @@ export const DEFAULT_MAX_SESSIONS = 8
 export interface TerminalConfig {
   custom: CustomLauncherConfig[]
   maxSessions: number
+  /** #170: the custom.d directory — the custom-preset FILE FAMILY's root
+   * (one `<id>.json` per preset, ADR-0018 修订). Must be absolute when set.
+   * Default: `<DSH_HOME|~/.dsh>/custom.d` (the plugin cannot observe the
+   * active profile NAME at runtime — a profile-scoped location is had by
+   * setting this field explicitly; recorded in .scratch/170-landing.md). */
+  customDir?: string
 }
 
 const Config = z.object({
@@ -90,7 +100,14 @@ function resolveConfig(raw: unknown): TerminalConfig {
   if (!Number.isInteger(maxSessions) || maxSessions < 1) {
     throw new Error(`terminal: maxSessions must be a positive integer, got: ${JSON.stringify(c.maxSessions)}`)
   }
-  return { custom: Array.isArray(c.custom) ? c.custom : [], maxSessions }
+  if (c.customDir !== undefined && !isAbsolute(c.customDir)) {
+    throw new Error(`terminal: customDir must be an absolute path, got: ${JSON.stringify(c.customDir)}`)
+  }
+  return {
+    custom: Array.isArray(c.custom) ? c.custom : [],
+    maxSessions,
+    ...(c.customDir === undefined ? {} : { customDir: c.customDir }),
+  }
 }
 
 /** The tool-execution context slice the entry consumes (duck-typed seam). */
@@ -147,8 +164,38 @@ function launchEnv(preset: ResolvedLauncher, overrides: Record<string, string> |
   return { ...env, ...overrides }
 }
 
+/**
+ * #170 audit check, run when shell_open is about to launch a CUSTOM preset's
+ * executable: compare the file's current content hash against the ledger's
+ * latest `registered` baseline. Advisory ONLY (D4) — the return value rides
+ * the tool result as the `audit` field; the launch proceeds either way. No
+ * ledger record at all → no warning (a newly installed file is a legitimate
+ * shape); matching hash → no warning (the discriminating counter-sample).
+ * A mismatch is recorded ONCE per observed hash (a `changed` event whose
+ * hash was already the latest observation does not re-append) but never
+ * moves the registered baseline.
+ */
+function auditWarningFor(id: string, executable: string, config: TerminalConfig, deps: TerminalDeps): { warning: string; expectedHash: string; expectedRecordedAt: string; actualHash: string } | undefined {
+  const fs = deps.mountFs ?? defaultMountFs()
+  const ledger = ledgerFor(customDirOf(config, deps), fs)
+  const lastReg = ledger.latestRegisteredFor(id)
+  if (lastReg === undefined || typeof lastReg.hash !== 'string') return undefined
+  const actual = fs.hashFile(executable)
+  if (actual === undefined || actual === lastReg.hash) return undefined
+  const latest = ledger.latestEventFor(id)
+  if (!(latest?.kind === 'changed' && latest.hash === actual)) {
+    ledger.append({ kind: 'changed', id, hash: actual, expectedHash: lastReg.hash })
+  }
+  return {
+    warning: 'executable-changed-since-registration',
+    expectedHash: lastReg.hash,
+    expectedRecordedAt: lastReg.ts,
+    actualHash: actual,
+  }
+}
+
 /** Register the single shell_open tool against the pty session core. */
-function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: LauncherDeps): void {
+function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: TerminalDeps): void {
   const core = ctx.get('pty') as PtyCore
   if (core === undefined) {
     throw new Error('terminal: the pty session core is missing — mount the dsh-shell-host/pty entry alongside ./terminal')
@@ -189,6 +236,7 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
           initialOutput: { type: 'string', description: 'Output captured during launch.' },
           executable: { type: 'string', description: 'The executable candidate that hit (local presets).' },
           probed: { type: 'array', items: { type: 'string' }, description: 'Every probe point considered (local presets).' },
+          audit: { type: 'object', additionalProperties: true, description: '#170 advisory audit warning — present only when a custom preset\'s executable content hash differs from the registration ledger baseline. Launch is NOT blocked.' },
           cwd: { type: 'string', description: 'The effective working directory, when one applies.' },
           source: { type: 'string', required: true, description: '"builtin" or "custom" — where the preset view came from.' },
           overrode: { type: 'boolean', required: true, description: 'True when a custom preset REPLACED a built-in view of the same id (loud flag, never an error).' },
@@ -244,6 +292,11 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
       } else {
         command = launcher.command
       }
+      // #170: advisory hash check against the registration ledger (custom
+      // presets only; a mismatch warns on THIS result and never blocks).
+      const audit = detail.source === 'custom' && launched !== undefined
+        ? auditWarningFor(launcher.id, launched.executable, config, deps)
+        : undefined
       const cwd = launcher.transport === 'local' ? (args.cwd ?? launcher.cwd) : args.cwd
       const env = launchEnv(launcher, args.env, deps)
       // #102: authorize BEFORE the spawn — the gate resolves the session
@@ -287,6 +340,7 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
         ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
         source: detail.source,
         overrode: detail.overrode,
+        ...(audit === undefined ? {} : { audit }),
         sandboxMode: authorization.grantedMode,
       }
     },
@@ -296,39 +350,272 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Launc
 
 /** Plugin entry: register the launcher-layer tool surface over the pty core.
  *
- * #105 registration gate: the `custom` channel is validated ONCE per process
- * by `src/terminal/register.ts` (loud rejection of every illegal entry, no
- * built-in overrides, explicit absolute paths only) and the accepted table is
- * snapshotted — the RESTART-EFFECT CONTRACT. The host recomposes the plugin
- * tree on config writes under HMR, so "the row re-applies" is not a restart;
- * only the FIRST apply in a process defines the preset table, and later
- * applies reuse the snapshot. A config edit therefore takes effect exactly
- * when the host process restarts — never mid-session (asserted by
- * tests/terminal-registration.spec.ts, not by documentation).
- *
- * Fail-closed: any rejected registration entry THROWS — the terminal row
- * fails to activate with the full reason list visible in the plugin manager,
- * rather than serving a half-open execution table. */
-let registrationSnapshot: readonly CustomLauncherConfig[] | undefined
-
-/** Test seam: reset the per-process registration snapshot. */
-export function _resetRegistrationForTests(): void {
-  registrationSnapshot = undefined
+ * #105/#170 registration gate: the custom preset storage is the custom.d
+ * FILE FAMILY (ADR-0018 修订), validated at EVERY mount by
+ * `src/terminal/register.ts` (no built-in overrides, explicit absolute
+ * paths, charset-locked ids). Since #170 a rejected entry is SINGLE-ENTRY
+ * DISABLED — it is skipped and surfaced on `terminal_list` with its reasons
+ * while the other files mount normally (the #105 whole-batch fail-closed
+ * throw and the process-level restart snapshot are both retired by the
+ * ADR revision); fixing a file re-enables the preset on the NEXT MOUNT
+ * (asserted by tests/terminal-registration.spec.ts, not by documentation).
+/** #170 (ADR-0018 修订): the machine seam for the custom.d FILE FAMILY and
+ * the audit ledger — production uses node:fs; tests fake the whole thing
+ * (TESTING.md 坑 12: the machine is always faked at the probe seam). */
+export interface MountFs {
+  /** Directory listing; `undefined` = the directory does not exist. */
+  listDir(dir: string): string[] | undefined
+  /** Whole-file text read; `undefined` = unreadable/missing. */
+  readFile(path: string): string | undefined
+  /** Content hash (sha256 hex); `undefined` = unreadable. */
+  hashFile(path: string): string | undefined
+  /** Append one line (the ledger's write path; the parent exists). */
+  appendFile(path: string, line: string): void
+  /** Create a directory (recursively) — the ledger's parent on first append. */
+  ensureDir(dir: string): void
 }
 
-function apply(ctx: TerminalCtx, config: unknown, deps: LauncherDeps = {}): void {
-  if (registrationSnapshot === undefined) {
-    const resolved = resolveConfig(config)
-    const { accepted, rejected } = validateCustomEntries(resolved.custom, {
-      builtInIds: builtInLauncherIds(deps),
-      // One probe seam source: the launcher deps' exists (fake-able in tests,
-      // spawnableExists in production).
-      ...(deps.exists === undefined ? {} : { exists: deps.exists }),
-    })
-    if (rejected.length > 0) throw registrationError(rejected)
-    registrationSnapshot = accepted
+function defaultMountFs(): MountFs {
+  return {
+    listDir: dir => {
+      try {
+        return readdirSync(dir)
+      } catch {
+        return undefined
+      }
+    },
+    readFile: path => {
+      try {
+        return readFileSync(path, 'utf8')
+      } catch {
+        return undefined
+      }
+    },
+    hashFile: path => {
+      try {
+        return createHash('sha256').update(readFileSync(path)).digest('hex')
+      } catch {
+        return undefined
+      }
+    },
+    appendFile: (path, line) => {
+      appendFileSync(path, line, 'utf8')
+    },
+    ensureDir: dir => {
+      mkdirSync(dir, { recursive: true })
+    },
   }
-  registerShellOpen(ctx, { ...resolveConfig(config), custom: [...registrationSnapshot] }, deps)
+}
+
+/** Terminal-layer deps: the launcher probe seams plus the #170 mount seams
+ * (the #105 validation seams `isDirectory`/`platform` are re-declared
+ * optional — validation deps are assembled inside mountCustom). */
+export interface TerminalDeps extends LauncherDeps {
+  /** Directory probe passed through to the #105 validation matrix. */
+  isDirectory?: (path: string) => boolean
+  /** Platform gate for separator shape (#167), passed through unchanged. */
+  platform?: NodeJS.Platform
+  /** The custom.d root override (settings `customDir` wins when set). */
+  customDir?: string
+  /** The file-family + ledger machine seam; defaults to node:fs. */
+  mountFs?: MountFs
+}
+
+/** One preset that FAILED its mount-time validation: skipped (single-entry
+ * disable, ADR-0018 修订) but visible on terminal_list with the reasons. */
+export interface DisabledPreset {
+  id: string
+  file: string
+  reasons: string[]
+}
+
+/** The last mount's outcome — what terminal_list projects. NO process-level
+ * snapshot: the file family re-reads on EVERY apply (ADR-0018 修订 point 3 —
+ * "fix the file, next mount re-enables" replaces the #105 restart contract). */
+let mountState: { active: readonly CustomLauncherConfig[]; disabled: readonly DisabledPreset[] } = { active: [], disabled: [] }
+
+/** Test seam: reset the mount state (kept name for the #105 suite's shape). */
+export function _resetRegistrationForTests(): void {
+  mountState = { active: [], disabled: [] }
+}
+
+function customDirOf(config: TerminalConfig, deps: TerminalDeps): string {
+  return deps.customDir ?? config.customDir ?? join(process.env['DSH_HOME'] ?? join(homedir(), '.dsh'), 'custom.d')
+}
+
+function ledgerFor(customDir: string, fs: MountFs): ReturnType<typeof createAuditLedger> {
+  // The append path ensures the directory first — a fresh profile has no
+  // custom.d yet.
+  return createAuditLedger({
+    ledgerPath: join(customDir, 'audit.jsonl'),
+    readFile: path => fs.readFile(path),
+    appendFile: (path, line) => {
+      fs.ensureDir(customDir)
+      fs.appendFile(path, line)
+    },
+  })
+}
+
+/**
+ * The #170 mount: read the custom.d FILE FAMILY, validate every entry
+ * through the #105 matrix (single-entry disable — the whole-batch
+ * `registrationError` gate is RETIRED, ADR-0018 修订 point 2), record the
+ * ignore event for the now-废止 patch-row channel, and drive the audit
+ * ledger's transition events (registered / enabled / disabled — deduped to
+ * TRANSITIONS so a remount does not spam the history).
+ */
+function mountCustom(resolved: TerminalConfig, deps: TerminalDeps): { active: CustomLauncherConfig[]; disabled: DisabledPreset[] } {
+  const customDir = customDirOf(resolved, deps)
+  const fs = deps.mountFs ?? defaultMountFs()
+  const ledger = ledgerFor(customDir, fs)
+
+  // D8: patch-row custom entries are 废止 — ignore + ONE audit event per
+  // mount (the channel, not each entry; no compatibility double-read). The
+  // `what` discriminator keeps the channel-level event unambiguous in the
+  // shared ledger (D1 reserves `source` for future audit faces).
+  if (resolved.custom.length > 0) {
+    ledger.append({ kind: 'ignored', what: 'patch-source', count: resolved.custom.length })
+  }
+
+  const names = (fs.listDir(customDir) ?? []).filter(name => name.endsWith('.json')).sort()
+  const parsed = names.map(name => {
+    const body = fs.readFile(join(customDir, name))
+    if (body === undefined) return { name, entry: undefined as unknown, error: 'unreadable' as const }
+    try {
+      return { name, entry: JSON.parse(body) as unknown, error: undefined }
+    } catch {
+      return { name, entry: undefined as unknown, error: 'invalid JSON' as const }
+    }
+  })
+  const { accepted, rejected } = validateCustomEntries(
+    parsed.map(p => p.entry),
+    {
+      builtInIds: builtInLauncherIds(deps),
+      ...(deps.exists === undefined ? {} : { exists: deps.exists }),
+      ...(deps.isDirectory === undefined ? {} : { isDirectory: deps.isDirectory }),
+      // #167: the separator-shape platform gate rides the same injection
+      // seam as the probe seams (defaults to process.platform).
+      ...(deps.platform === undefined ? {} : { platform: deps.platform }),
+    },
+  )
+  const disabled: DisabledPreset[] = []
+  for (const reject of rejected) {
+    const file = parsed[reject.index]?.name ?? `<index ${reject.index}>`
+    disabled.push({ id: reject.id, file, reasons: reject.reasons })
+  }
+  for (const p of parsed) {
+    if (p.error === undefined) continue
+    disabled.push({ id: p.name.replace(/\.json$/, ''), file: p.name, reasons: [`preset file is not valid ${p.error === 'unreadable' ? 'readable' : 'JSON'}: ${p.name}`] })
+  }
+  // The D5 shape is `<id>.json`: the FILE NAME must match the entry's id —
+  // a mismatch is exactly the kind of silent drift the file family exists
+  // to isolate, so it disables the entry instead of resolving it.
+  const stillAccepted: CustomLauncherConfig[] = []
+  for (const entry of accepted) {
+    const file = parsed.find(p => (p.entry as { id?: unknown })?.['id'] === entry.id)?.name
+    if (file !== undefined && file.replace(/\.json$/, '') !== entry.id) {
+      disabled.push({ id: entry.id, file, reasons: [`preset file name must match the preset id: ${file} declares id ${JSON.stringify(entry.id)}`] })
+      continue
+    }
+    stillAccepted.push(entry)
+  }
+
+  // Ledger transitions (deduped: append only on CHANGE, never per mount).
+  const exists = deps.exists ?? spawnableExists
+  const currentHashOf = (entry: CustomLauncherConfig): { hash?: string; executable?: string } => {
+    if (entry.transport !== 'local' || entry.executable === undefined) return {}
+    const hit = entry.executable.find(candidate => exists(candidate))
+    if (hit === undefined) return {}
+    const hash = fs.hashFile(hit)
+    return hash === undefined ? {} : { hash, executable: hit }
+  }
+  for (const entry of stillAccepted) {
+    const { hash, executable } = currentHashOf(entry)
+    // Recovery check BEFORE the (possibly new) registered event lands —
+    // otherwise the fresh event hides the preceding 'disabled'.
+    if (ledger.latestEventFor(entry.id)?.kind === 'disabled') {
+      ledger.append({ kind: 'enabled', id: entry.id })
+    }
+    // The registered BASELINE is written ONCE per preset id (first mount):
+    // later content changes are observed as `changed` events at LAUNCH time
+    // and never move the baseline — re-registering on a hash change would
+    // silently swallow the very mismatch the launch check exists to surface.
+    if (ledger.latestRegisteredFor(entry.id) === undefined) {
+      ledger.append({ kind: 'registered', id: entry.id, ...(hash === undefined ? {} : { hash }), ...(executable === undefined ? {} : { executable }) })
+    }
+  }
+  for (const d of disabled) {
+    if (ledger.latestEventFor(d.id)?.kind !== 'disabled') {
+      ledger.append({ kind: 'disabled', id: d.id, reasons: d.reasons, file: d.file })
+    }
+  }
+  return { active: stillAccepted, disabled }
+}
+
+/**
+ * #170: the read-only preset listing surface — every preset (built-in view,
+ * active custom, DISABLED custom with the original validation reasons) in
+ * one projection. The disabled rows come straight from the last mount's
+ * validation outcome; recovery needs no command (fix the file, next mount
+ * re-enables), so this face has no write path — the #105 agent-face guard
+ * (no registration writer) is unchanged in spirit: terminal_list is a pure
+ * read, and the audit ledger stays append-only with no tool over it.
+ */
+function registerTerminalList(ctx: TerminalCtx, deps: TerminalDeps): void {
+  ctx.tools.register(defineTool({
+    name: 'terminal_list',
+    description:
+      'List the terminal launcher presets: built-in views, mounted custom presets, and custom presets DISABLED by mount-time validation (with the original reasons). Read-only — a disabled preset is fixed by repairing its custom.d file; the next mount re-enables it.',
+    parameters: {},
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          presets: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                id: { type: 'string', required: true },
+                transport: { type: 'string', required: true },
+                source: { type: 'string', required: true, description: '"builtin" or "custom".' },
+                disabled: { type: 'boolean', description: 'True when mount-time validation rejected the preset; absent when mounted.' },
+                reasons: { type: 'array', items: { type: 'string' }, description: 'The original validation failure text (disabled rows only).' },
+                file: { type: 'string', description: 'The custom.d file name (custom rows).' },
+              },
+            },
+          },
+        },
+      },
+      render: (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }],
+    },
+    async execute() {
+      const { presets } = resolveLaunchers(deps, [])
+      const rows: Array<{ id: string; transport: string; source: string; disabled?: boolean; reasons?: string[]; file?: string }> =
+        presets.map(p => ({ id: p.id, transport: p.transport, source: 'builtin' }))
+      for (const entry of mountState.active) {
+        const idx = rows.findIndex(r => r.id === entry.id)
+        const row = { id: entry.id, transport: entry.transport, source: 'custom' as const, file: `${entry.id}.json` }
+        if (idx >= 0) rows[idx] = row
+        else rows.push(row)
+      }
+      for (const d of mountState.disabled) {
+        rows.push({ id: d.id, transport: 'local', source: 'custom', disabled: true, reasons: d.reasons, file: d.file })
+      }
+      return { presets: rows }
+    },
+    presentCall: () => ({ card: 'terminal', title: 'terminal_list' }),
+  }))
+}
+
+function apply(ctx: TerminalCtx, config: unknown, deps: TerminalDeps = {}): void {
+  const resolved = resolveConfig(config)
+  mountState = mountCustom(resolved, deps)
+  registerShellOpen(ctx, { ...resolved, custom: [...mountState.active] }, deps)
+  registerTerminalList(ctx, deps)
 }
 
 export { Config, apply, inject, name }

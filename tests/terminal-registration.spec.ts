@@ -1,22 +1,21 @@
 /**
- * #105 — the custom-preset REGISTRATION surface (host half): the loud
- * validation matrix at apply time, the no-builtin-override guard, the
- * restart-effect contract (a process-level snapshot: re-apply or config-file
- * mutation never changes the live preset table mid-session), and the
+ * #105/#170 — the custom-preset REGISTRATION surface (host half): the
+ * validation matrix at mount time, the no-builtin-override guard, and the
  * agent-face guard (no write path into the registration through the tool
- * surface). The client config page is a candidate follow-up (ADR-0018);
- * the registration contract lives in src/terminal/register.ts.
+ * surface). Since #170 (ADR-0018 修订) the authoritative storage is the
+ * custom.d FILE FAMILY (one <id>.json per preset): a bad file disables ONLY
+ * that preset (the whole-batch registrationError gate is retired) and the
+ * family re-reads on EVERY mount. The registration contract lives in
+ * src/terminal/register.ts + src/terminal/index.ts.
  * @module tests/terminal-registration
  */
 
 import { describe, expect, it, beforeEach } from "vitest";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { bootTerminal, fullDeps, PWSH } from "./helpers/fake-terminal.ts";
-import {
-  _resetRegistrationForTests,
-} from "../src/terminal/index.ts";
-import { validateCustomEntries, registrationError } from "../src/terminal/register.ts";
+import { bootTerminal, fakeMountFs, fullDeps, PWSH } from "./helpers/fake-terminal.ts";
+import { _resetRegistrationForTests } from "../src/terminal/index.ts";
+import { validateCustomEntries } from "../src/terminal/register.ts";
 import type { LauncherDeps } from "../src/launchers.ts";
 
 // A REAL absolute file (the running node executable) and a REAL directory —
@@ -24,6 +23,17 @@ import type { LauncherDeps } from "../src/launchers.ts";
 // file is validated against the machine it will execute on).
 const REAL_FILE = process.execPath;
 const REAL_DIR = tmpdir();
+
+const DIR = "<mem>/custom.d";
+/** A custom.d file path in the fake machine. */
+const pf = (name: string) => join(DIR, name);
+/** The boot-time shape: an executable the fullDeps fake probe knows. */
+const bootEntry = (over: Record<string, unknown> = {}) => ({
+  id: "my-shell",
+  transport: "local",
+  executable: [PWSH],
+  ...over,
+});
 
 beforeEach(() => {
   _resetRegistrationForTests();
@@ -35,9 +45,6 @@ const entry = (over: Record<string, unknown>) => ({
   executable: [REAL_FILE],
   ...over,
 });
-// The boot-time shape: an executable the fullDeps fake probe knows (the
-// apply-time validation rides the SAME probe seam as resolution).
-const bootEntry = (over: Record<string, unknown>) => entry({ executable: [PWSH], ...over });
 
 describe("registration validation matrix (#105) — every illegal shape is loudly rejected", () => {
   const validate = (rows: unknown[]) => validateCustomEntries(rows, { builtInIds: ["pwsh", "bash"] });
@@ -102,44 +109,76 @@ describe("registration validation matrix (#105) — every illegal shape is loudl
     expect(rejected[2]!.reasons.join(" ")).toContain("cwd must be an absolute path");
   });
 
-  it("rejected entries list EVERY reason, and the loud error names the position", () => {
+  it("rejected entries list EVERY reason (single-entry disable projects them verbatim)", () => {
     const { rejected } = validate([entry({ id: "pwsh", executable: ["nope exe"] })]);
     expect(rejected[0]!.reasons.length).toBeGreaterThanOrEqual(2);
-    const err = registrationError(rejected);
-    expect(err.message).toContain("[0]");
-    expect(err.message).toContain("RESTART");
-    // #171: same structured code family as resolveCustom's parse-time
-    // rejections — a consumer branches on `code`, never on prose.
-    expect(err.code).toBe("PRESET_CONFIG_INVALID");
   });
 });
 
-describe("registration gate at apply time (#105)", () => {
-  it("an illegal config file fails the row activation loudly — nothing registers", () => {
-    let caught: unknown;
-    try {
-      bootTerminal({ custom: [bootEntry({ id: "pwsh" })] as never }, fullDeps, { fakeSpawn: true });
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toMatch(/override the built-in/);
-    expect((caught as { code?: string }).code).toBe("PRESET_CONFIG_INVALID");
-  });
-
-  it("a legal registration reaches the preset table: source=custom, resolvable", async () => {
-    const boot = bootTerminal({ custom: [bootEntry({})] as never }, fullDeps, { fakeSpawn: true });
+describe("custom.d file family mount (#170, ADR-0018 修订)", () => {
+  it("a legal file reaches the preset table: source=custom, resolvable, ledger records it", async () => {
+    const boot = bootTerminal({}, fullDeps, { fakeSpawn: true, files: { [pf("my-shell.json")]: JSON.stringify(bootEntry()) } });
     const opened = await boot.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } });
     expect(opened.source).toBe("custom");
     expect(opened.executable).toBe(PWSH);
+    const events = boot.mountFs.lines().map((l) => JSON.parse(l) as { kind: string; id?: string; hash?: string });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: "registered", id: "my-shell", hash: `hash:C:/Program Files/PowerShell/7/pwsh.exe` });
   });
 
-  it("inheritance from an earlier accepted custom id works; from an unknown base it is rejected", async () => {
-    const rows = [
-      bootEntry({}),
-      bootEntry({ id: "child-shell", base: "my-shell", argv: ["--mine"] }),
-    ];
-    const boot = bootTerminal({ custom: rows as never }, fullDeps, { fakeSpawn: true });
+  it("a bad file disables ONLY that entry; the others mount (the whole-batch gate is retired)", async () => {
+    const boot = bootTerminal({}, fullDeps, {
+      fakeSpawn: true,
+      files: {
+        [pf("a-good.json")]: JSON.stringify(bootEntry({ id: "a-good" })),
+        [pf("bad-shell.json")]: JSON.stringify(bootEntry({ id: "bad-shell", executable: ["C:\\nope\\missing.exe"] })),
+      },
+    });
+    // The counter-sample: the GOOD entry mounts normally.
+    const opened = await boot.tool("shell_open").execute({ preset: "a-good" }, { agent: { name: "u" } });
+    expect(opened.source).toBe("custom");
+    // The BAD entry is not in the table...
+    await expect(
+      boot.tool("shell_open").execute({ preset: "bad-shell" }, { agent: { name: "u" } }),
+    ).rejects.toThrow(/unknown preset/);
+    // ...but visible on terminal_list with the original reasons.
+    const listed = await boot.tool("terminal_list").execute({}, { agent: { name: "u" } });
+    const bad = listed.presets.find((p: { id: string }) => p.id === "bad-shell");
+    expect(bad).toMatchObject({ disabled: true, source: "custom", file: "bad-shell.json" });
+    expect(bad.reasons.join(" ")).toContain("does not exist");
+    const good = listed.presets.find((p: { id: string }) => p.id === "a-good");
+    expect(good!.source).toBe("custom");
+    expect(good!.disabled).toBeUndefined();
+    // The ledger recorded both the registration and the disable.
+    const kinds = boot.mountFs.lines().map((l) => (JSON.parse(l) as { kind: string; id?: string }).kind);
+    expect(kinds.sort()).toEqual(["disabled", "registered"]);
+  });
+
+  it("an unreadable/invalid-JSON file disables that entry with its own reason; others mount", async () => {
+    const boot = bootTerminal({}, fullDeps, {
+      fakeSpawn: true,
+      files: {
+        [pf("a-good.json")]: JSON.stringify(bootEntry({ id: "a-good" })),
+        [pf("b-broken.json")]: "{ NOT JSON",
+      },
+    });
+    await expect(
+      boot.tool("shell_open").execute({ preset: "a-good" }, { agent: { name: "u" } }),
+    ).resolves.toMatchObject({ source: "custom" });
+    const listed = await boot.tool("terminal_list").execute({}, { agent: { name: "u" } });
+    const broken = listed.presets.find((p: { id: string }) => p.id === "b-broken");
+    expect(broken.disabled).toBe(true);
+    expect(broken.reasons.join(" ")).toContain("JSON");
+  });
+
+  it("inheritance from an earlier file works (file order = inheritance order); from an unknown base it is disabled", async () => {
+    const boot = bootTerminal({}, fullDeps, {
+      fakeSpawn: true,
+      files: {
+        [pf("a-base.json")]: JSON.stringify(bootEntry({ id: "a-base" })),
+        [pf("child-shell.json")]: JSON.stringify(bootEntry({ id: "child-shell", base: "a-base", argv: ["--mine"] })),
+      },
+    });
     const opened = await boot.tool("shell_open").execute({ preset: "child-shell" }, { agent: { name: "u" } });
     expect(opened.executable).toBe(PWSH);
     const { rejected: orphanRejected } = validateCustomEntries(
@@ -148,43 +187,76 @@ describe("registration gate at apply time (#105)", () => {
     );
     expect(orphanRejected[0]!.reasons.join(" ")).toContain("base preset");
   });
-});
 
-describe("restart-effect contract (#105): one snapshot per process", () => {
-  it("a second apply in the SAME process does NOT adopt new config — restart does", async () => {
-    const first = bootTerminal({ custom: [bootEntry({})] as never }, fullDeps, { fakeSpawn: true });
-    const ok = await first.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } });
-    expect(ok.source).toBe("custom");
-
-    // Same process, "config file edited + row re-applied" (the HMR shape):
-    // the new entry is NOT live mid-session.
-    const second = bootTerminal({ custom: [bootEntry({ id: "later-shell" })] as never }, fullDeps, { fakeSpawn: true });
+  it("the patch-row channel is 废止: config.custom entries are ignored with ONE audit event; custom.d still mounts", async () => {
+    const boot = bootTerminal(
+      { custom: [bootEntry({}), bootEntry({ id: "second-shell" })] as never },
+      fullDeps,
+      { fakeSpawn: true, files: { [pf("file-shell.json")]: JSON.stringify(bootEntry({ id: "file-shell" })) } },
+    );
+    // Neither patch row registered...
     await expect(
-      second.tool("shell_open").execute({ preset: "later-shell" }, { agent: { name: "u" } }),
+      boot.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } }),
     ).rejects.toThrow(/unknown preset/);
-    // ...and the first snapshot still serves.
-    const still = await second.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } });
-    expect(still.source).toBe("custom");
+    await expect(
+      boot.tool("shell_open").execute({ preset: "second-shell" }, { agent: { name: "u" } }),
+    ).rejects.toThrow(/unknown preset/);
+    // ...the file family still mounts...
+    await expect(
+      boot.tool("shell_open").execute({ preset: "file-shell" }, { agent: { name: "u" } }),
+    ).resolves.toMatchObject({ source: "custom" });
+    // ...and ONE ignored:patch-source event covers the whole channel (not one per entry).
+    const ignored = boot.mountFs.lines().map((l) => JSON.parse(l) as { kind: string; what?: string; count?: number }).filter((e) => e.kind === "ignored");
+    expect(ignored).toHaveLength(1);
+    expect(ignored[0]).toMatchObject({ what: "patch-source", count: 2 });
   });
 
-  it("mutating the config array AFTER apply does not leak into the live table", async () => {
-    const rows: unknown[] = [bootEntry({})];
-    const deps: LauncherDeps = fullDeps;
-    const boot = bootTerminal({ custom: rows as never }, deps, { fakeSpawn: true });
-    rows.push(bootEntry({ id: "sneaky" })); // the "config file changed underneath" shape
-    await expect(
-      boot.tool("shell_open").execute({ preset: "sneaky" }, { agent: { name: "u" } }),
-    ).rejects.toThrow(/unknown preset/);
+  it("relative customDir is a loud config error", () => {
+    expect(() => bootTerminal({ customDir: "relative/dir" } as never, fullDeps, { fakeSpawn: true })).toThrow(/absolute/);
   });
 });
 
-describe("agent-face guard (#105): the tool surface has no write path into the registration", () => {
-  it("the terminal entry registers exactly one tool — shell_open — with no registration parameters", () => {
-    const boot = bootTerminal({ custom: [bootEntry({})] as never }, fullDeps, { fakeSpawn: true });
+describe("the file family re-reads on every mount (#170 replaces the #105 restart contract)", () => {
+  it("fixing a file re-enables the preset on the NEXT MOUNT, with a disabled→enabled ledger trail", async () => {
+    const files: Record<string, string> = {
+      [pf("my-shell.json")]: JSON.stringify(bootEntry({ executable: ["C:\\nope\\missing.exe"] })),
+    };
+    const machine = fakeMountFs(files);
+    const first = bootTerminal({}, fullDeps, { fakeSpawn: true, machine });
+    await expect(
+      first.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } }),
+    ).rejects.toThrow(/unknown preset/);
+    expect(machine.lines().map((l) => (JSON.parse(l) as { kind: string }).kind)).toEqual(["disabled"]);
+
+    // Fix the file, then REMOUNT on the SAME machine (the HMR re-apply shape).
+    files[pf("my-shell.json")] = JSON.stringify(bootEntry());
+    const second = bootTerminal({}, fullDeps, { fakeSpawn: true, machine });
+    await expect(
+      second.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } }),
+    ).resolves.toMatchObject({ source: "custom" });
+    expect(machine.lines().map((l) => (JSON.parse(l) as { kind: string }).kind)).toEqual(["disabled", "enabled", "registered"]);
+  });
+
+  it("remount without a file change appends NO duplicate events (transition dedup)", async () => {
+    const files = { [pf("my-shell.json")]: JSON.stringify(bootEntry()) };
+    const machine = fakeMountFs(files);
+    bootTerminal({}, fullDeps, { fakeSpawn: true, machine });
+    expect(machine.lines()).toHaveLength(1); // one registered
+    bootTerminal({}, fullDeps, { fakeSpawn: true, machine });
+    expect(machine.lines()).toHaveLength(1); // the remount appended nothing
+  });
+});
+
+describe("agent-face guard (#105/#170): the tool surface has no write path into the registration", () => {
+  it("the terminal entry registers shell_open + the read-only terminal_list — no registration parameters", () => {
+    const boot = bootTerminal({}, fullDeps, { fakeSpawn: true, files: { [pf("my-shell.json")]: JSON.stringify(bootEntry()) } });
     const terminalTools = boot.registered.filter((t: { name: string }) => t.name === "shell_open");
     expect(terminalTools).toHaveLength(1);
     const paramKeys = Object.keys(terminalTools[0]!.parameters.properties);
     expect(paramKeys).toEqual(["preset", "cwd", "env", "idleTimeoutMs", "sandbox_permissions", "justification"]);
+    const listTools = boot.registered.filter((t: { name: string }) => t.name === "terminal_list");
+    expect(listTools).toHaveLength(1);
+    expect(Object.keys(listTools[0]!.parameters.properties)).toEqual([]);
     // No tool name on the whole bundle hints at a registration writer.
     for (const tool of boot.registered as { name: string }[]) {
       expect(tool.name).not.toMatch(/register|custom|preset[-_](add|set|write|remove|delete)/i);

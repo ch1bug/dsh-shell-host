@@ -8,10 +8,11 @@
  * reach the preset table.
  *
  * Postures:
- * - LOUD REJECTION, never silent repair: every rejected entry is listed with
- *   ALL of its reasons; the caller (`./terminal` apply) throws so the row
- *   fails to activate with the reason visible in the plugin manager
- *   (fail-closed: a bad registration must not leave a half-open table).
+ * - EVERY reason for EVERY rejected entry is reported (never silent repair):
+ *   since #170 (ADR-0018 修订) a rejected entry is SINGLE-ENTRY DISABLED —
+ *   the caller skips it at mount, surfaces it on terminal_list with these
+ *   reasons, and the OTHER entries mount normally (the old whole-batch
+ *   fail-closed gate is retired).
  * - NO BUILT-IN OVERRIDE: a custom id may not shadow a built-in preset id —
  *   the #54 merge semantics allowed it, #105 forbids it at the registration
  *   gate (the override flag on shell_open output stays for provenance
@@ -26,9 +27,8 @@
 
 import { statSync } from 'node:fs'
 import { isAbsolute, sep } from 'node:path'
-import type { CustomLauncherConfig, LauncherErrorCode } from '../launchers.ts'
+import type { CustomLauncherConfig } from '../launchers.ts'
 import { spawnableExists } from '../detect.ts'
-import { codedError } from '../coded-error.ts'
 
 /** Probe seams — tests fake the machine; production uses the real one. */
 export interface RegistrationDeps {
@@ -231,20 +231,4 @@ export function validateCustomEntries(custom: readonly unknown[], deps: Registra
     accepted.push(clean as unknown as CustomLauncherConfig)
   })
   return { accepted, rejected }
-}
-
-/**
- * The loud apply-time error for a registration with rejected entries.
- * Carries the same structured `code` as the parse-time rejections in
- * `resolveCustom` (#165 vocabulary, #171): same failure family — an illegal
- * custom preset config — so consumers branch on `code`, not prose. The
- * message text is unchanged; only the code is new.
- */
-export function registrationError(rejected: readonly RegistrationRejection[]): Error & { code: LauncherErrorCode } {
-  const lines = rejected.map(r => `  [${r.index}] id=${JSON.stringify(r.id)}: ${r.reasons.join('; ')}`)
-  return codedError(
-    `terminal: custom preset registration rejected ${rejected.length} entr${rejected.length === 1 ? 'y' : 'ies'} ` +
-    '(fix the config and RESTART to apply):\n' + lines.join('\n'),
-    'PRESET_CONFIG_INVALID',
-  )
 }
