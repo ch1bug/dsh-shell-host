@@ -32,12 +32,8 @@
   跳过必须显式写成 `not run locally: X`。
 - **响亮跳过（loud skip）**：门禁未满足时**必须打印 `!! SKIP (loud)` 并说明缺什么**，
   绝不静默当 pass。
-- **证据日志落地固定 `NO_COLOR=1`**：跨会话比对证据行格式会失配，固定 `NO_COLOR=1` 才有可比性。
-  **注意这已不是 `verify-all` 能否解析的前提**（#122 已把读数与颜色解耦）：`verify-all` 自己
-  spawn 测试运行器时把形态钉成 `NO_COLOR=1`，且解析层两种形态都认（裸 `|lane|` 与带色的
-  色块徽标），故调用者会话带不带色，逐文件表都完整。**你在 `verify-all` 之外**（例如直接跑
-  vitest 抓日志）落地证据时，仍请显式 `NO_COLOR=1`。
-  历史根因与修法见 #122；`verify-all` 侧另有响亮失败兜底（解析不到行但 vitest 报过用例数 ⇒ FAIL）。
+- **证据日志落地固定 `NO_COLOR=1`**（跨会话证据行格式才有可比性）；`verify-all` 钉 `NO_COLOR=1`
+  与解析口径的完整说明见 [dev-environment.md](../dev-environment.md) §4.6。
 - **证据必须点名层级**（mock 层 / 真实层），因为两层能证明的东西**不同**。
 - **票面的"根因 / Current behavior"是待验假设，不是事实**（#123 retro C1，
   同一形态已计次 3：`#91` → `#122` → `#123`）。实现前**必须**有一条自己造的读数，
@@ -96,8 +92,8 @@
   - **任何写盘之后都要在最终树上重跑交付读数**（批 E 聚合 E1，`#100` 实测）：
     **变异复原也算写盘** —— 复原后只复跑被变异的那一档，另两档的绿就**早于**最终树
     （`#100` 实测：挂具 12:13 复原，tarball 12:08 / 真实层 12:09 的绿都已过期，两轴各报一次
-    「交付态缺读数」）。顺序固定为 `改 → 单档 → 两轴 → 按发现改 → 全量 → 提交 → 车道`
-    （同一条写在 [code-review-brief.md](../code-review-brief.md) §1）。
+    「交付态缺读数」）。票内复核顺序（`改 → 单档 → 两轴 → …`）的**唯一来源**是
+    [code-review-brief.md](../code-review-brief.md) §1，此处不另写。
 - **修复改变了"被测面"时，AC 证据必须给同面 A/B**（#123 retro C2）。
   凡修复动的是**面本身**（车道划分、门禁条件、环境变量、开关、并行度），在**改变后的面**上
   重复跑 N 次**结构上不可能复现**原现象 —— 于是"N 次全绿"证明的是"改动被应用了"，
@@ -285,9 +281,8 @@ if (blamed.length === 0) ok('失败只指向 harness 缺失的服务')
 else bad('失败归咎于本仓新增行', blamed.join(', '))
 ```
 
-**为什么必须有**：只写 `package.json` 注册记录而不真安装时，loader 会
-`skipping profile bundle: cannot resolve`，但**实例照样起得来、会话照样建得成**——
-此时任何"请求里出现 `pty_open`"的断言都会**假绿**（那字符串可能是测试自己塞的）。
+**为什么必须有**：只写注册记录不真安装时实例照样起得来，请求断言会**假绿** ——
+机理与判据见 [profile-install.md](profile-install.md)「装好后必须 dump 组合树」。
 
 ### e2e 的安装必须走官方命令
 
@@ -334,12 +329,9 @@ profile + 起新会话**，不是重试；e2e 挂具每次全新安装 + 全新�
 
 ## 隔离契约（三实例）
 
-| 项 | 桌面 GUI | 隔壁（matt） | **本区（shell-host）** |
-|---|---|---|---|
-| DSH_HOME | `%USERPROFILE%\.dsh` | `~/dsh-matt-home` | `~/dsh-shellhost-home` |
-| profile | `desktop` | `matt-dev` | `dsh-host-dev` |
-| 宿主源码树 | 安装版 | `dsh-matt-src` | `dsh-host-src` |
-| 端口 | 19387 | 19501 | 19502 |
+三实例（桌面 GUI / 隔壁 matt / 本区 shell-host）各自的 DSH_HOME、profile、端口与源码树
+的**唯一来源**是 [dev-environment.md](../dev-environment.md) §1 的表，此处不复制；
+e2e 用临时 DSH_HOME + `--port 0`，不占上表任何资源。
 
 **宿主锚点统一 = `dsh-v0.2.1-rc.2`（`687f282e`）**，ADR-0005 口径（门禁走 `engines.dsh` 区间、认证走精确 —— 见 dev-environment §2.1）。
 

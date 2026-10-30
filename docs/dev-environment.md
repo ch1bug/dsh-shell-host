@@ -384,15 +384,11 @@ pnpm build                                                   # 见 §4.2/§4.3�
 # 本插件（部署副本）
 git clone <repo> ~/dsh-shellhost-src
 cd ~/dsh-shellhost-src && pnpm install && pnpm build
-
-# 把插件挂进 profile —— 官方两步命令，顺序固定
-export PATH="$HOME/.corepack/bin:$PATH"                      # dsh plugin 会调 pnpm
-dsh --profile dsh-host-dev --from-default-profile web --dump-config   # ① 播种 profile
-dsh plugin --profile dsh-host-dev add ~/dsh-shellhost-src             # ② 注册 + pnpm 安装
 ```
 
-**完整规则与理由见 [profile-install.md](agents/profile-install.md)**（为何 ① 不能省、
-为何不许手工 symlink、三处断言、dump 组合树验证）。此处只记部署侧要点：
+把插件挂进 profile：走**官方两步 CLI**（① 播种 profile → ② 注册 + pnpm 安装，
+顺序固定），命令原文的唯一来源是
+[profile-install.md](agents/profile-install.md)。此处只记部署侧要点：
 `dsh plugin` 需要 PATH 上有 pnpm shim；引导脚本已把它前置（`scripts/msys-env.sh` 把
 `$HOME/.corepack/bin` 放进 PATH）—— shim 落在**家目录**而不是 Program Files 下，
 避开写权限（写进去会 EPERM）。
