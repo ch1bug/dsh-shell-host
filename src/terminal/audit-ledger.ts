@@ -28,7 +28,7 @@ export interface AuditEvent {
   ts: string
   /** Global source field (D1): the audit face that produced the event. */
   source: 'terminal'
-  kind: 'registered' | 'disabled' | 'enabled' | 'changed' | 'ignored'
+  kind: 'registered' | 'disabled' | 'enabled' | 'changed' | 'ignored' | 'removed'
   /** Preset id, when the event is about one (the `ignored` event is about a
    * CHANNEL, not a preset — its `what` member names the channel). */
   id?: string

@@ -42,12 +42,13 @@ import z from '@deepseek-ai/schemastery'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, readdirSync, appendFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, appendFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { launcherError, resolveLauncherDetailed, resolveLaunchers, builtInLauncherIds, type CustomLauncherConfig, type LauncherDeps, type LocalLauncherPreset, type ResolvedLauncher } from '../launchers.ts'
 import { codedError } from '../coded-error.ts'
 import { validateCustomEntries } from './register.ts'
 import { createAuditLedger } from './audit-ledger.ts'
+import { initKnownIds, materializeCustom } from './materialize.ts'
 import { spawnableExists } from '../detect.ts'
 import { DEFAULT_MAX_SESSIONS as CORE_DEFAULT_MAX_SESSIONS } from '../pty/session-core.ts'
 import {
@@ -70,7 +71,10 @@ export const DEFAULT_MAX_SESSIONS = 8
 
 /** Runtime configuration schema — the `./terminal` entry's own settings
  * namespace. `custom` is the custom-preset data channel (the #54
- * CustomLauncherConfig shape, persisted; CRUD UI is a later ticket).
+ * CustomLauncherConfig shape). #169 (decision B): the field is VOLATILE and
+ * its semantics are TRANSPORT — a settings.mutate write (the config page's
+ * save) is materialized into the custom.d FILE FAMILY by
+ * `./materialize.ts`; the file family stays the one authoritative storage.
  * `maxSessions` is the concurrent-session soft cap counted over the pty
  * CORE's registry (#61/#62) for the owning agent. */
 export interface TerminalConfig {
@@ -87,8 +91,10 @@ export interface TerminalConfig {
 const Config = z.object({
   /** Custom launcher presets (the #54 data shape): local rows declare
    * executable (or inherit a built-in `base`), ssh rows declare host (+ the
-   * ssh connection fields). A custom id overrides a built-in view. */
-  custom: z.array(z.any()).default([]),
+   * ssh connection fields). #169: VOLATILE + transport semantics — the page
+   * save's write commits without a row remount and materializes into the
+   * file family; the patch copy is the transport's residual, not authority. */
+  custom: z.array(z.any()).default([]).volatile(),
   /** Concurrent-session soft cap (#56): shell_open fails loudly once an
    * owner's own active sessions reach this count. */
   maxSessions: z.number().default(DEFAULT_MAX_SESSIONS),
@@ -104,16 +110,34 @@ function resolveConfig(raw: unknown): TerminalConfig {
     throw new Error(`terminal: customDir must be an absolute path, got: ${JSON.stringify(c.customDir)}`)
   }
   return {
-    custom: Array.isArray(c.custom) ? c.custom : [],
+    custom: unwrapCustom(raw),
     maxSessions,
     ...(c.customDir === undefined ? {} : { customDir: c.customDir }),
   }
 }
 
-/** The tool-execution context slice the entry consumes (duck-typed seam). */
+/** Unwrap the `custom` field: a schema-parsed config carries the volatile
+ * field as a `Volatile<T>` reference (read with `.get()`, updated IN PLACE by
+ * the loader's volatile-only commit); tests and raw shapes carry a plain
+ * array. Both unwrap to a plain array — absent/non-array unwrap to []. */
+function unwrapCustom(raw: unknown): CustomLauncherConfig[] {
+  const value = (raw as { custom?: unknown } | undefined)?.custom
+  if (Array.isArray(value)) return value as CustomLauncherConfig[]
+  const ref = value as { get?: () => unknown } | undefined
+  if (ref !== null && typeof ref === 'object' && typeof ref.get === 'function') {
+    const got = ref.get()
+    return Array.isArray(got) ? got as CustomLauncherConfig[] : []
+  }
+  return []
+}
+
+/** The tool-execution context slice the entry consumes (duck-typed seam).
+ * `on` is the cordis event listener (present on the real ctx; optional —
+ * the #169 volatile-update transport only wires when the host provides it). */
 interface TerminalCtx {
   tools: { register: (tool: unknown) => void }
   get: (name: string) => unknown
+  on?: (event: string, listener: (payload: unknown) => void) => unknown
 }
 
 /** The pty entry's session core facade (provided as the `pty` service).
@@ -282,7 +306,9 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Termi
           'Close one with pty_close before opening another.',
         )
       }
-      const detail = resolveLauncherDetailed(args.preset, deps, config.custom)
+      // Read LIVE (#169): a page save materializes new files and refreshes
+      // mountState without a remount — the execute-time table, not a snapshot.
+      const detail = resolveLauncherDetailed(args.preset, deps, mountState.active)
       const launcher = detail.launcher
       let launched: { executable: string; command: string; probed: string[] } | undefined
       let command: string
@@ -373,6 +399,10 @@ export interface MountFs {
   appendFile(path: string, line: string): void
   /** Create a directory (recursively) — the ledger's parent on first append. */
   ensureDir(dir: string): void
+  /** #169: whole-file write (the config-page transport's materialization). */
+  writeFile(path: string, body: string): void
+  /** #169: file removal (the transport's delete path). */
+  unlinkFile(path: string): void
 }
 
 function defaultMountFs(): MountFs {
@@ -403,6 +433,16 @@ function defaultMountFs(): MountFs {
     },
     ensureDir: dir => {
       mkdirSync(dir, { recursive: true })
+    },
+    writeFile: (path, body) => {
+      writeFileSync(path, body, 'utf8')
+    },
+    unlinkFile: path => {
+      try {
+        unlinkSync(path)
+      } catch {
+        // Already gone: the deletion is idempotent by construction.
+      }
     },
   }
 }
@@ -437,6 +477,7 @@ let mountState: { active: readonly CustomLauncherConfig[]; disabled: readonly Di
 /** Test seam: reset the mount state (kept name for the #105 suite's shape). */
 export function _resetRegistrationForTests(): void {
   mountState = { active: [], disabled: [] }
+  materializedIds.clear()
 }
 
 function customDirOf(config: TerminalConfig, deps: TerminalDeps): string {
@@ -469,12 +510,15 @@ function mountCustom(resolved: TerminalConfig, deps: TerminalDeps): { active: Cu
   const fs = deps.mountFs ?? defaultMountFs()
   const ledger = ledgerFor(customDir, fs)
 
-  // D8: patch-row custom entries are 废止 — ignore + ONE audit event per
-  // mount (the channel, not each entry; no compatibility double-read). The
-  // `what` discriminator keeps the channel-level event unambiguous in the
-  // shared ledger (D1 reserves `source` for future audit faces).
-  if (resolved.custom.length > 0) {
-    ledger.append({ kind: 'ignored', what: 'patch-source', count: resolved.custom.length })
+  // D8/#169: patch-row custom entries are now the config-page TRANSPORT's
+  // residual — an array entry backed by its `<id>.json` file is already
+  // materialized and stays silent. The `ignored: patch-source` event survives
+  // only for LEGACY rows (array entry, no file): the pre-#170 patch customs
+  // this mount cannot serve, ONE event per mount covering the legacy count.
+  const fileNames = new Set(fs.listDir(customDir) ?? [])
+  const legacyCount = resolved.custom.filter(e => typeof e?.id === 'string' && !fileNames.has(`${e.id}.json`)).length
+  if (legacyCount > 0) {
+    ledger.append({ kind: 'ignored', what: 'patch-source', count: legacyCount })
   }
 
   const names = (fs.listDir(customDir) ?? []).filter(name => name.endsWith('.json')).sort()
@@ -614,8 +658,44 @@ function registerTerminalList(ctx: TerminalCtx, deps: TerminalDeps): void {
 function apply(ctx: TerminalCtx, config: unknown, deps: TerminalDeps = {}): void {
   const resolved = resolveConfig(config)
   mountState = mountCustom(resolved, deps)
-  registerShellOpen(ctx, { ...resolved, custom: [...mountState.active] }, deps)
+  // #169: seed the write-transport's provenance (array ∩ files — the restart
+  // shape) so a later page save only deletes what the transport wrote.
+  initKnownIds(resolved.custom, { customDir: customDirOf(resolved, deps), fs: deps.mountFs ?? defaultMountFs() }, materializedIds)
+  registerShellOpen(ctx, resolved, deps)
   registerTerminalList(ctx, deps)
+  registerConfigTransport(ctx, config, resolved, deps)
+}
+
+/** #169: the page-save transport's provenance set (ids materialized by
+ * previous settings writes). Module-level like mountState; reset with it. */
+const materializedIds = new Set<string>()
+
+/**
+ * #169 (decision B): wire the settings→file-family transport. The loader
+ * commits a volatile-only `custom` write into the running reference and
+ * emits `loader/volatile-update` on the owning fiber; THIS listener
+ * materializes the new array into the custom.d file family and refreshes
+ * mountState (a page save takes effect on the NEXT shell_open — no restart,
+ * no remount, spec D1). Without `ctx.on` (the fake-test shape that does not
+ * exercise the transport) nothing wires.
+ */
+function registerConfigTransport(ctx: TerminalCtx, rawConfig: unknown, resolved: TerminalConfig, deps: TerminalDeps): void {
+  if (typeof ctx.on !== 'function') return
+  ctx.on('loader/volatile-update', (payload: unknown) => {
+    const paths = Array.isArray(payload) ? payload : []
+    if (!paths.some(p => Array.isArray(p) && p[0] === 'custom')) return
+    const dir = customDirOf(resolved, deps)
+    const fs = deps.mountFs ?? defaultMountFs()
+    materializeCustom(unwrapCustom(rawConfig), {
+      customDir: dir,
+      fs,
+      ledger: ledgerFor(dir, fs),
+      known: materializedIds,
+    })
+    // The files are the authority: refresh the mount face so the new table
+    // is live for the next shell_open / terminal_list.
+    mountState = mountCustom(resolveConfig(rawConfig), deps)
+  })
 }
 
 export { Config, apply, inject, name }

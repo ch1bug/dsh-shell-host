@@ -123,19 +123,26 @@ describe("entryTargets", () => {
     expect(entryTargets({})).toEqual([]);
   });
 
-  it("THE PREMISE (#92): the real exports map has no `./client` entry — the dead condition stays dead", () => {
-    // `main()` 里 `importableEntries` 曾排除 `entry !== './client'`；ADR-0013 删掉 web bundle 后
-    // `exports` 里**没有** `./client`，该半边恒真（本票的清理依据）。这条锁**前提**而不是锁那段
-    // 代码：若将来有人把 `./client` 加回 `exports`，本用例立刻红，逼他重新审视那句排除到底还要不要
-    // —— 否则那句被删掉的排除会**静默**地不再成立（import smoke 会去 import 一个 web bundle，
-    // 在 node 侧必然失败）。
+  it("THE PREMISE (#92, updated by #169): `./client` is back as a real export — the import smoke must keep excluding it", () => {
+    // 历史：ADR-0013 删掉 web bundle 后 `exports` 里没有 `./client`，#92 借此把
+    // `importableEntries` 里的 `entry !== './client'` 排除清掉，并用本用例锁前提——
+    // 若有人把 `./client` 加回来，用例变红逼他重新审视那句排除。
+    // #169 正是那个「将来」：client 半幅（plugins.row.config 配置页）以
+    // `dsh.client{platform:'web'}` + `exports["./client"]` 回归（ADR-0013 修订）。
+    // 前提随之翻转：`./client` 是**真实指针**，但它指向**浏览器** bundle——node 侧
+    // import smoke 仍然必须排除它（`lib/client.js` 是 cjs + `require('react')`
+    // external，在 node 下没有模块表可解析）。排除的「还要不要」已重审：要。
     const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
-    expect(Object.keys(pkg.exports)).not.toContain("./client");
-    // 顺带锁住本判据读取的那份真实输入形状：15 个 entry、8 个具名 entry（`./src/*` 被通配过滤掉）。
+    expect(Object.keys(pkg.exports)).toContain("./client");
+    expect((pkg.exports as Record<string, { default: string }>)["./client"].default).toBe("./lib/client.js");
+    expect(Object.keys(pkg.dsh.client)).toEqual(["platform"]);
+    expect(pkg.dsh.client.platform).toBe("web");
+    // 顺带锁住本判据读取的那份真实输入形状：16 个 entry、9 个具名 entry（`./src/*` 被通配过滤掉）。
     // #136: `./ssh` is the fourth own entry (它把 ssh 四工具从 `./pty` 分了出去).
     // #137: `./remote` + `./remote-fs` are the remote workspace pair (ADR-0016 decision 1).
+    // #169: `./client` is the browser half (ADR-0013 revision — the tools-only exception).
     const entries = entryTargets(pkg.exports).filter(([, target]) => !target.includes("*"));
-    expect(entries).toHaveLength(15);
+    expect(entries).toHaveLength(16);
     expect([...new Set(entries.map(([entry]) => entry))]).toEqual([
       ".",
       "./package.json",
@@ -143,6 +150,7 @@ describe("entryTargets", () => {
       "./ssh",
       "./wsl",
       "./terminal",
+      "./client",
       "./remote",
       "./remote-fs",
     ]);
@@ -1432,9 +1440,9 @@ describe("判据 6 的 CLI 通路（#117）：临时副本里真跑，不写产�
       expect(run.stderr, "判据 1/1b 不该早退").not.toContain("pointers to missing files");
       // 判据 6 必须**真的跑过**并给出正常读数（否则"没报"可能只是它压根没执行）。
       expect(run.stdout).toContain("every lib/types/ declaration has a matching src/ file");
-      // 判据 3 的读数顺带证明走到了那一步（#137后15个导出指针；
-      // #136新增ssh，#137新增remote/remote-fs）。
-      expect(run.stdout).toContain("all 15 export entries packed and importable");
+      // 判据 3 的读数顺带证明走到了那一步（#137 后 15 个导出指针；
+      // #136 新增 ssh，#137 新增 remote/remote-fs，#169 新增 ./client）。
+      expect(run.stdout).toContain("all 16 export entries packed and importable");
     } finally {
       rmSync(root, { recursive: true, force: true });
       snapshot.dispose();

@@ -44,4 +44,24 @@ const lib = defineConfig({
   deps: { neverBundle: [/^@deepseek-ai\//, /^@lydell\/node-pty$/] },
 })
 
-export default [lib]
+// #169: the browser half (the plugins.row.config configuration page) — the
+// host serves lib/client.js as a lazy-CJS bundle (the decoration template
+// shape). The entry must be a SINGLE self-contained file: the lazy-CJS
+// protocol cannot synchronously require a sibling client*.js output. React is
+// a BASELINE module (host static table) — external, resolved by the host
+// module system at materialization; dsh.client.external stays empty.
+const client = defineConfig({
+  // Named entry: the bundle must land at lib/client.js (the ./client export's
+  // pointer), not lib/index.js (an entry STRING names itself by basename).
+  entry: { client: 'src/client/index.ts' },
+  outDir: 'lib',
+  format: 'cjs',
+  platform: 'browser',
+  target: 'es2024',
+  dts: false,
+  clean: false,
+  outExtensions: () => ({ js: '.js' }),
+  deps: { neverBundle: [/^react$/] },
+})
+
+export default [lib, client]

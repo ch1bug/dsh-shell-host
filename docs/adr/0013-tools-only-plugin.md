@@ -58,6 +58,28 @@ switch is unverified and not claimed here). Enabling does
 not reintroduce an executor: `./wsl` remains a plugin-layer entry running
 every `win_*` call through the platform shell seam.
 
+## Amendment (2026-10-30, #169): the client half returns as the ONE tools-only exception
+
+Human's ruling on #169 (merge decision with #116, route (b)): the package
+carries a BROWSER half again — but as a GUI over its own settings surface,
+never as an execution channel. Shape per the official decoration template
+(host asar L321541): `dsh.client{platform:'web'}` in package.json,
+`exports["./client"]` → `lib/client.js` (single self-contained lazy-CJS
+bundle; React comes from the host's baseline module table, so
+`dsh.client.external` stays empty), one row-config page registered at
+`plugins.row.config`, key `dsh-shell-host#terminal`. Boundaries:
+
+- The client half renders a FORM and issues `set` path ops over the terminal
+  entry's volatile `custom` subtree through the host's `settings.mutate`
+  transport — it cannot spawn, cannot touch the filesystem, and adds no tool.
+- It is the human's GUI; the agent face gains no write path (ADR-0018 §3
+  unchanged).
+- The removed `src/client/` of 2026-10-16 was the EXECUTOR settings card; the
+  #169 half is a different, narrower thing (a row-config page for the custom
+  preset surface), justified by the decoration template as the shape
+  precedent. `test:release`/verify-pack exclude `./client` from the Node-side
+  import smoke (a browser bundle cannot resolve under plain Node).
+
 ## Superseded scope
 
 - ADR-0001 (backend descriptor layer) — superseded: no backends remain here.

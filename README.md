@@ -601,11 +601,14 @@ preset table is read-only, surfaced live by the unknown-id error.
 
 - **权威存储（#170 起）：custom.d 文件族**。custom 预设每条一个 JSON 文件
   （`<customDir>/<id>.json`，文件名必须等于条目 id），目录由 terminal 行设置
-  `customDir`（绝对路径）给出，缺省 `<DSH_HOME 或用户家目录>/.dsh/custom.d`。**patch 行里
-  的 `config.custom` 数组写法已废止**：挂载时忽略并记一条审计事件，不做兼容
-  双读（一次性迁移见下）。
-- **写入方**：只由**人**经 custom.d 文件写入；工具面没有任何写注册口
-  （`terminal_list` 是纯只读面，守卫测试锁定）。
+  `customDir`（绝对路径）给出，缺省 `<DSH_HOME 或用户家目录>/.dsh/custom.d`。
+  **patch 行里的 `config.custom` 数组写法已不再是权威**：#170 起挂载忽略手写的
+  旧条目（legacy = 数组条目没有对应文件时记一条审计事件）；#169 起 `custom`
+  字段被定为**配置页写通道**（volatile + 传输语义）——页面保存的数组由宿主
+  半幅物化成文件族，patch 里留下的只是已物化的传输残影（一次性迁移见下）。
+- **写入方**：只由**人**写入——经 custom.d 文件直接改，或经**配置页**（#169，
+  human 的 GUI，不是 agent 写口）；工具面没有任何写注册口（`terminal_list`
+  是纯只读面，守卫测试锁定）。
 - **注册门（挂载期，单条禁用）**：逐条过校验矩阵——id 非空且字符集锁定、
   文件族内不重复、**禁止覆盖内置 id**；local 可执行候选必须绝对路径 + 含路径
   分隔符（拒裸名——沿 PATH 解析可被改名劫持）+ 无引号与 shell 元字符 + 存在
@@ -614,18 +617,27 @@ preset table is read-only, surfaced live by the unknown-id error.
   自定义 id。校验**不通过只禁用该条**（`terminal_list` 呈现 `disabled` + 原因
   原文），其余条目照常挂载；改好文件后**下次挂载自动放行**（无需任何命令）。
 - **注册审计账本（#170）**：`<customDir>/audit.jsonl`，append-only JSONL——
-  registered / disabled / enabled / changed / ignored 事件随 profile 持久。
-  每次 `shell_open` 启动 custom 预设时，对命中执行的 executable 做内容哈希
-  与账本基线比对，不符则在该次结果附**告警字段**（不阻断——阻断权归 #102
-  权限门；哈希一致或无账本记录则不告警）。基线只记首次注册，事后变化以
-  `changed` 事件观察、不动基线。
-- **配置页**：宿主的三个配置插槽全是 client 插槽（React 浏览器半幅，经
-  `dsh.client` 声明装载），且不存在通用 schema 渲染的插件配置页；配置页
-  （`plugins.row.config` 表单）为后续票。裁决与宿主读数见 ADR-0018。
+  registered / disabled / enabled / changed / ignored / removed 事件随
+  profile 持久；配置页发起的物化记 `changed` / `removed`（带
+  `origin: 'config-page'`）。每次 `shell_open` 启动 custom 预设时，对命中
+  执行的 executable 做内容哈希与账本基线比对，不符则在该次结果附**告警字段**
+  （不阻断——阻断权归 #102 权限门；哈希一致或无账本记录则不告警）。基线只记
+  首次注册，事后变化以 `changed` 事件观察、不动基线。
+- **配置页（#169，ADR-0013 修订）**：本包自带浏览器半幅（`dsh.client`
+  `{platform:'web'}` + `./client` 导出 → `lib/client.js`，React 走宿主基线
+  模块表、`dsh.client.external` 留空），在插件管理器的 terminal 行注册
+  `plugins.row.config` 配置页（key `dsh-shell-host#terminal`）：增删改自定义
+  预设、实时预览完整启动命令；**保存** = 经宿主 `settings.mutate` 写 terminal
+  行 user 层的 volatile `custom` 字段（乐观锁，冲突提示刷新重试），宿主半幅
+  监听 volatile 更新后把数组物化成 custom.d 文件——文件族仍是唯一权威，
+  保存即生效（下次 `shell_open` 无需重启/重挂）。浏览器半幅挂在本包唯一行上，
+  bundle 未来拆多行时页面随根行关闭。**内置预设不在页面列表**（浏览器面无
+  launcher 表通道，`terminal_list` 是 agent 面）——页面只管理自定义面。
 
 **一次性迁移（patch 行 → custom.d）**：把 terminal 行 `config.custom` 数组里的
 每条对象取出，逐条写成 `<customDir>/<id>.json`（UTF-8，内容 = 该条对象原样），
-然后删掉 patch 行里的 `custom` 数组。重启 profile 前旧写法只是被忽略（有审计
+然后删掉 patch 行里的 `custom` 数组（或改用 #169 的配置页重新保存一次——页面
+保存会把这些条目物化成文件）。重启 profile 前旧写法只是被忽略（有审计
 事件提醒），配置不会丢。
 
 ```js

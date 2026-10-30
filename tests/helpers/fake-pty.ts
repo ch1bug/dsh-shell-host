@@ -160,6 +160,8 @@ export function bootPlugin(opts?: {
   services?: Record<string, unknown>;
 }) {
   const provided = new Map<string, unknown>();
+  // #169: the ctx event registry (`on` records into it, `emit` drives it).
+  const listeners: Record<string, Array<(payload: unknown) => void>> = {};
   // Pre-mounted services (#137: a lane's own `workingDirectory` stand-in must
   // win over nothing — they are provided BEFORE the entries run, exactly as a
   // composition would).
@@ -177,6 +179,14 @@ export function bootPlugin(opts?: {
     provide: (name: string, value: unknown) => provided.set(name, value),
     effect: (fn: () => () => Promise<void>, label: string) => effects.push({ label, dispose: fn() }),
     tools: { register: (t: unknown) => registered.push(t) },
+    // #169: the cordis event seam (the terminal entry's volatile-update
+    // transport wires through it); `emit` drives the recorded listeners.
+    on: (event: string, listener: (payload: unknown) => void) => {
+      (listeners[event] ??= []).push(listener);
+      return () => {
+        listeners[event] = listeners[event].filter((l) => l !== listener);
+      };
+    },
     get: (name: string) => {
       // A service the lane itself `provide()`d wins over the shared fakes
       // (before #102 the permission fakes were consulted first, which silently
@@ -224,5 +234,20 @@ export function bootPlugin(opts?: {
     return t;
   };
   const core = provided.get("pty") as SessionCore;
-  return { registered, tool, core, provided, effects, systemPrompt, specs, handles, ctx, permissions };
+  return {
+    registered,
+    tool,
+    core,
+    provided,
+    effects,
+    systemPrompt,
+    specs,
+    handles,
+    ctx,
+    permissions,
+    // #169: drive the entry's event listeners (the volatile-update transport).
+    emit: (event: string, payload: unknown) => {
+      for (const l of listeners[event] ?? []) l(payload);
+    },
+  };
 }

@@ -42,6 +42,8 @@ export interface TerminalBoot {
   provided: Map<string, unknown>;
   /** The #170 fake custom.d machine — `lines()` reads the audit ledger. */
   mountFs: ReturnType<typeof fakeMountFs>;
+  /** #169: drive the ctx event listeners (the volatile-update transport). */
+  emit: (event: string, payload: unknown) => void;
 }
 
 /**
@@ -77,6 +79,14 @@ export function fakeMountFs(
       ledger.push(line);
     },
     ensureDir: () => {},
+    // #169: the config-page transport's write/delete — they mutate the SAME
+    // in-memory store, so a write is visible to the next read/mount.
+    writeFile: (path, body) => {
+      files[path] = body;
+    },
+    unlinkFile: (path) => {
+      delete files[path];
+    },
     append: (path, line) => {
       ledger.push(line);
     },
@@ -131,5 +141,6 @@ export function bootTerminal(
     registered: boot.registered,
     provided: boot.provided,
     mountFs,
+    emit: boot.emit,
   };
 }

@@ -89,6 +89,8 @@ function isStringArray(value: unknown): value is readonly string[] {
 /** A preset id: charset-locked so the config file cannot smuggle control
  * characters or whitespace into tool args and error messages. */
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+/** The charset lock, exported for the #169 write-transport's filename guard. */
+export { ID_PATTERN }
 
 function validateExecutableCandidate(candidate: unknown, deps: RegistrationDeps): string | undefined {
   if (typeof candidate !== 'string' || candidate.length === 0) return 'executable candidate must be a non-empty string'

@@ -279,3 +279,62 @@ describe("path shapes (#105): absoluteness is the rule, not 'no home'", () => {
     expect(tilde.rejected[0]!.reasons.join(" ")).toContain("absolute path");
   });
 });
+
+describe("#169 config-page transport (settings write = file-family materialization, decision B)", () => {
+  /** The volatile-reference shape the loader hands apply() (read via .get(),
+   * updated IN PLACE by the volatile-only commit) — the transport re-reads
+   * the CURRENT state at event time, exactly like production. */
+  const refConfig = (current: () => unknown) => ({ custom: { get: current } }) as never;
+
+  it("a volatile-update on custom materializes the array into files; the preset is LIVE for the next shell_open without a remount", async () => {
+    const next: unknown[] = [bootEntry()];
+    const boot = bootTerminal(refConfig(() => next), fullDeps, { fakeSpawn: true });
+    // Before the save: patch-only row — legacy, no file, not resolvable.
+    await expect(
+      boot.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } }),
+    ).rejects.toThrow(/unknown preset/);
+
+    boot.emit("loader/volatile-update", [["custom"]]);
+
+    // The file family now carries the preset (the one authority), ...
+    expect(boot.mountFs.readFile(pf("my-shell.json"))).toContain('"my-shell"');
+    // ...the preset is live WITHOUT a remount...
+    await expect(
+      boot.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } }),
+    ).resolves.toMatchObject({ source: "custom" });
+    // ...and the ledger carries the transport event + the mount transitions
+    // (changed with origin config-page; registered baseline from the refresh).
+    const events = boot.mountFs.lines().map((l) => JSON.parse(l) as { kind: string; id?: string; origin?: string });
+    expect(events).toContainEqual(expect.objectContaining({ kind: "changed", id: "my-shell", origin: "config-page" }));
+    expect(events).toContainEqual(expect.objectContaining({ kind: "registered", id: "my-shell" }));
+  });
+
+  it("a save that drops a transport-known id removes its file and unlists the preset without a remount", async () => {
+    let current: unknown[] = [bootEntry()];
+    const body = JSON.stringify(bootEntry());
+    const boot = bootTerminal(refConfig(() => current), fullDeps, {
+      fakeSpawn: true,
+      files: { [pf("my-shell.json")]: body }, // array ∩ file → transport-known
+    });
+    await expect(
+      boot.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } }),
+    ).resolves.toMatchObject({ source: "custom" });
+
+    current = []; // the page saved [] (the volatile commit)
+    boot.emit("loader/volatile-update", [["custom"]]);
+
+    expect(boot.mountFs.readFile(pf("my-shell.json"))).toBeUndefined();
+    await expect(
+      boot.tool("shell_open").execute({ preset: "my-shell" }, { agent: { name: "u" } }),
+    ).rejects.toThrow(/unknown preset/);
+    const events = boot.mountFs.lines().map((l) => JSON.parse(l) as { kind: string; origin?: string });
+    expect(events).toContainEqual(expect.objectContaining({ kind: "removed", origin: "config-page" }));
+  });
+
+  it("a volatile-update on a NON-custom path is a no-op", () => {
+    const boot = bootTerminal({}, fullDeps, { fakeSpawn: true });
+    boot.emit("loader/volatile-update", [["maxSessions"], ["deep", "path"]]);
+    expect(boot.mountFs.lines()).toHaveLength(0);
+    expect(boot.mountFs.listDir(pf("")) ?? []).toHaveLength(0);
+  });
+});

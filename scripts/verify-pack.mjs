@@ -638,13 +638,15 @@ export async function main({ detect } = {}) {
   // 同样被 tarball 的 `files` 面决定 —— 缺件只在装载期炸，故这里与 exports 同等对待。
   const manifestPointers = manifestTargets(pkg)
   // Node-side import smoke covers the host entries only: `./package.json` is not an
-  // ES module. `./src/*` never gets here because the wildcard targets are filtered
-  // out above. (`./client` used to be excluded here as well; ADR-0013 removed the
-  // web bundle, so `exports` carries no such entry and the exclusion was a dead
-  // branch — dropped in #92. `tests/verify-pack.spec.ts` pins that premise: if
-  // `./client` ever returns to `exports`, that case goes red.)
+  // ES module, and `./client` (#169 — the plugins.row.config configuration page,
+  // ADR-0013 revision) is a BROWSER bundle (cjs + `require('react')` external
+  // resolved by the host module table at materialization) — a node-side import
+  // cannot resolve it. `./src/*` never gets here because the wildcard targets
+  // are filtered out above. (#92 dropped the dead `./client` exclusion when the
+  // web bundle was gone; #169 brought `./client` back as a real export and the
+  // premise test in tests/verify-pack.spec.ts was flipped accordingly.)
   const importableEntries = [...new Map(entries.filter(([entry]) =>
-    entry !== './package.json'
+    entry !== './package.json' && entry !== './client'
   ).map(([entry]) => [entry, true])).keys()]
   // 判据 2/3/4/5 共同累积的退出码（#90）：这些分支**不提前返回**，末尾一次性 return。
   let exitCode = 0

@@ -16,6 +16,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "engines": {
@@ -47,6 +50,9 @@
       "types": "./lib/types/terminal/index.d.ts",
       "default": "./lib/terminal/index.js"
     },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./remote": {
       "types": "./lib/types/remote/index.d.ts",
       "default": "./lib/remote/index.js"
@@ -63,6 +69,7 @@
     "lib/ssh/index.js",
     "lib/wsl-plugin/index.js",
     "lib/terminal/index.js",
+    "lib/client.js",
     "lib/remote/index.js",
     "lib/remote-fs/index.js",
     "lib/permission-gate-*.js",

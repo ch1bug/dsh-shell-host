@@ -34,6 +34,23 @@ ADR 三点：
 的 disabled 投影）的边界与显式不做见 #170 票面 spec：审计面是可观测性设施，
 无任何强制语义，阻断权归 #102 权限门。
 
+## 修订（#169，2026-10-30）：配置页写通道 = 传输，权威仍是文件族
+
+#169（配置页，批 L 末票）落地后，修订节第 1 点的「patch 行 custom 条目废止」
+语义随之精确化（human 决策 B，票面留档）：
+
+- terminal entry 的 `custom` 字段标 **volatile**，语义为**配置页写通道**：
+  页面保存经宿主 `settings.mutate` 写入该字段（settings user 层），宿主半幅
+  监听 `loader/volatile-update` 后把数组**物化**成 `custom.d/<id>.json` 文件
+  （`src/terminal/materialize.ts`：upsert 按内容去重、删除只对传输已知条目、
+  敌意 id 拒绝落盘）。**文件族仍是唯一权威存储**——settings 写入只是传输，
+  patch 里留下的残影不是第二权威；挂载面只读文件族。
+- 挂载时的 `ignored: patch-source` 事件收窄为 **legacy 行**（数组条目没有
+  对应文件 = 手写旧 patch 行，尚未物化）；已物化的传输残影不再记事件。
+- 配置页是 **human 的 GUI**：决策 §3「注册只由人写」不变——页面不是 agent
+  写口（工具面守卫不变），保存的乐观锁/冲突语义由宿主 settings 协议承担。
+- 客户端半幅的形态先例与边界见 ADR-0013 修订（2026-10-30）。
+
 ## 背景
 
 `./terminal` 的 settings namespace 自带 `custom` 通道（#54 定形）：用户在配置文件

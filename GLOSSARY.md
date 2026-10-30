@@ -362,8 +362,15 @@ profile 并存；但**不宜同时开**官方持久终端与本仓 `pty_*` / `sh
 - **重启生效 = 进程级快照**：宿主 HMR 会因配置写重组插件树，「不重读文件」保不住契约，
   故 custom 表进程内第一次 apply 定型；行关-开也不换表（字面语义，代价显式接受）。
 - **配置页载体**：宿主三个配置插槽全是 client 插槽（React 浏览器半幅），无通用 schema
-  渲染页；配置写协议 `form.mutate(ops, revision)` 的 ops 形状未取证 ⇒ client 半幅出
-  候选票，配置文件是当前唯一权威存储与写入口。读数与裁决全文见 ADR-0018。
+  渲染页。**#169（2026-10-30）取证闭环 + 落地**：写协议 `form.mutate(ops,
+  expectedRevision)` 的 ops 形状已取证（app.asar L496740-496744 / L1903491-1903510）
+  = `{op:'set', path:string[], value}` / `{op:'unset', path}`，ns = Loader entry
+  id，非 volatile 路径 fail-closed 拒写（`Config field "…" is not volatile`）；
+  client 半幅（`plugins.row.config`，key `dsh-shell-host#terminal`）以
+  `dsh.client{platform:'web'}` + `./client` 回归（ADR-0013 修订 = tools-only
+  唯一例外）。权威存储不变 = custom.d 文件族（ADR-0018 修订）：settings 写
+  `custom`（volatile）= **传输**，宿主半幅监听 `loader/volatile-update` 物化成
+  文件（human 决策 B，#169）；`ignored: patch-source` 收窄为 legacy 行。
 
 ## 术语表(惰性)
 
