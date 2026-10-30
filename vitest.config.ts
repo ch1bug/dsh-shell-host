@@ -68,6 +68,10 @@ const machineLane = [
   'tests/e2e-tarball-machine.spec.ts',
   // #148：真实例 tool loop 真驱动 pty_list / pty_signal（dogfooding 证据）。
   'tests/e2e-pty-loop-machine.spec.ts',
+  // #175：真实宿主 sandbox/mode 事件写路径（/permission 命令）→ projection 折叠
+  // → resolve → assertSessionWritable 的同步约束，跨三条真实 prompt 驱动；多轮
+  // 真实例 + 墙钟成本，串行同其 e2e 兄弟档。
+  'tests/sandbox-mode-machine.spec.ts',
 ]
 // #123: the WRITER lane. `tests/clean-lib.spec.ts` really runs `node --run build`
 // twice, and each build first DELETES lib/'s four entry directories plus the

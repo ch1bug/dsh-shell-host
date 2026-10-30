@@ -246,12 +246,18 @@ export async function stopChild(child: ChildProcess, budgetMs = 15_000): Promise
  *  zero-argument methods want either `{ _request: {} }` or plain `{}` — and the
  *  host REJECTS the wrong one ("unexpected _request" for `session/modelCatalog`).
  *  Callers pass the value, never a hand-wrapped envelope: the wire spelling is
- *  written once, in `envelope()`. */
-export type ArgShape = "request" | "named" | "none";
+ *  written once, in `envelope()`. `'raw'` (#175) sends the args object VERBATIM
+ *  as payload.args — the shape of a NAMED-parameter descriptor
+ *  (e.g. `commands/execute`'s agentId/line/submittedAttachments), which none of
+ *  the three historical shapes can express. */
+export type ArgShape = "request" | "named" | "none" | "raw";
 
 /** The ONE place the typert Remote envelope is written. */
 function envelope(method: string, args: unknown, argShape: ArgShape): string {
-  const wrapped = argShape === "request" ? { request: args } : argShape === "named" ? { _request: {} } : {};
+  const wrapped = argShape === "request" ? { request: args }
+    : argShape === "named" ? { _request: {} }
+    : argShape === "raw" ? args
+    : {};
   return JSON.stringify({ type: "client-request", rpcId: `e2e-${method}`, method, payload: { args: wrapped } });
 }
 

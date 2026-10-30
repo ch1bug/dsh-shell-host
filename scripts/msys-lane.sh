@@ -242,7 +242,7 @@ per_file=$(node -e '
   // 清单漂移的表现只是表里标记错，不影响判绿红（判据是退出码与标记本身）。
   const MACHINE = [
     "ssh-pty-live", "terminal-machine", "e2e-tool-call-machine",
-    "e2e-real-llm-machine", "e2e-tarball-machine",
+    "e2e-real-llm-machine", "e2e-tarball-machine", "sandbox-mode-machine",
   ];
   const rows = (report.testResults ?? []).map((file) => {
     const rel = String(file.name ?? "").replace(/\\/gu, "/").replace(/^.*?\/tests\//u, "tests/");
