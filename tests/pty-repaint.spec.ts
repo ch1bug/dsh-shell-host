@@ -3,8 +3,9 @@
  * re-printed old content (banner, previous command's echo) must not reenter
  * the session buffer as fresh output; `pty_send` deltas and `pty_tail` pages
  * carry only genuinely new lines. Two-signal contract (repaint-suppress.ts):
- * a repaint-marker CSI in the raw chunk arms suppression; while armed, only
- * the leading duplicate-of-buffer-tail run is dropped; without the marker
+ * a chunk carrying a full-screen repaint-marker CSI has its own leading
+ * duplicate-of-buffer-tail lines dropped, in that same chunk only
+ * (stateless — no armed state survives between chunks); without the marker
  * repeated output is never touched (fidelity first). Unit lane: hermetic
  * fake ptys feeding raw terminal bytes.
  * @module tests/pty-repaint
