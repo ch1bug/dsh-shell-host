@@ -8,20 +8,30 @@
  * echo (#177 现象二: 11,619 B on the wire vs 5,400 B one-shot, 2.15×).
  *
  * Two-signal contract (deliberately conservative — output fidelity first):
- *  1. RAW signal — the chunk carries a repaint-marker CSI sequence (final
- *     byte H/f/J/K: cursor home/position, erase display/line). Scanned on
- *     the raw chunk, BEFORE sanitization; a marker torn across chunks may be
- *     missed (documented limitation — the sanitizer's own state machine is a
- *     verbatim vendored face this module deliberately does not extend).
- *  2. TEXT signal — only while armed (marker seen, see `append` wiring),
- *     the longest leading run of incoming complete lines that duplicates the
- *     trailing lines already in the buffer is dropped; the rest passes.
- *     Without a marker nothing is ever dropped: legitimate repeated output
- *     (e.g. `type f` twice in a row) must survive untouched.
+ *  1. RAW signal — the chunk carries a full-screen repaint-marker CSI
+ *     sequence (cursor HOME or erase-display; see REPAINT_CSI). Ordinary
+ *     prompt rendering (parameterized cursor positioning, line-erase) is NOT
+ *     a marker — arming on it eats legitimate repeated command output
+ *     (measured on the #149 AC2 real-ConPTY lane and the raw-chunk probe).
+ *     Scanned on the raw chunk, BEFORE
+ *     sanitization. Suppression is STATELESS, per chunk: only the chunk
+ *     carrying the marker has its duplicate prefix dropped. A repaint frame
+ *     torn across chunks loses protection on its marker-free continuation
+ *     chunks (documented limitation — a text-level filter cannot tell a
+ *     frame continuation from legitimate output that happens to repeat the
+ *     previous command's identical echo/output, which real sessions produce
+ *     on every repeated command; the marker-carrying chunk still loses its
+ *     re-printed block, which is the bulk of the #177 现象二 cost).
+ *  2. TEXT signal — in a marker chunk, the longest leading run of incoming
+ *     complete lines that duplicates the trailing lines already in the
+ *     buffer is dropped; the rest passes. Without a marker nothing is ever
+ *     dropped: legitimate repeated output (e.g. `type f` twice in a row)
+ *     must survive untouched.
  *
- * Arming/disarming lives in session-core's `append`: a marker arms the
- * session; the frame disarms itself on the first append whose incoming
- * lines carry NO duplicate prefix (fresh output = frame over / false alarm).
+ * The wiring lives in session-core's `append` — stateless, no per-session
+ * arming (an armed state that survives an all-duplicates chunk necessarily
+ * eats the NEXT identical command's output; measured on the #149 AC2 real
+ * ConPTY lane, batch N #177).
  * @module src/pty/repaint-suppress
  */
 
@@ -29,9 +39,14 @@
  * window only needs to cover that. Generous bound, ratcheted in tests. */
 export const REPAINT_WINDOW_LINES = 500
 
-/** CSI sequences that reposition the cursor or erase the display/line —
- * the structural signature of a ConPTY repaint frame's start. */
-const REPAINT_CSI = /\x1b\[[0-9;?]*[HfJK]/
+/** CSI sequences that HOME the cursor or erase the whole display — the
+ * structural signature of a ConPTY full-screen repaint frame's start
+ * (`\x1b[H\x1b[J` measured on the real #177 reproduction). Parameterized
+ * cursor positioning (`\x1b[6;1H`, measured on every msys2 bash prompt line)
+ * and line-erase (`\x1b[K`) are deliberately excluded: interactive prompts
+ * render those on every command, and arming on them eats legitimate
+ * repeated command output (measured on the #149 AC2 real-ConPTY lane). */
+const REPAINT_CSI = /\x1b\[(?:[01]?;?[01]?[Hf]|[012]?J)/
 
 /** Whether one raw chunk carries a repaint marker.
  * @param chunk - raw (pre-sanitization) terminal data. */

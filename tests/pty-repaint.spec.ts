@@ -76,32 +76,34 @@ describe("#177 现象二: repaint suppression at ingestion", () => {
     expect(page.text).toBe("C:\\>type med.txt\nmed-output-line\n");
   });
 
-  it("a repaint frame torn across chunks is suppressed whole (armed stays until fresh output)", async () => {
+  it("a repaint frame torn across chunks: the marker chunk's re-print is suppressed, new output survives (marker-free continuation is a documented limitation)", async () => {
     const { h, opened } = await bootWithOldScreen();
     const sending = h.core.send(agent, opened.sessionId, { data: "noop" });
     await new Promise((r) => setTimeout(r, 5));
-    // Chunk 1: marker + the re-printed screen (no new content yet).
+    // Chunk 1: marker + the re-printed screen (suppressed whole).
     h.spawned[0].emitData("\x1b[H\x1b[J" + OLD_SCREEN);
-    // Chunk 2: the frame continues with the genuinely new command output.
+    // Chunk 2: continuation WITHOUT a marker — legitimately indistinguishable
+    // from repeated output, so it passes (fidelity first, limitation documented).
     h.spawned[0].emitData("C:\\>type med.txt\r\nmed-output-line\r\n");
     const sent = await sending;
     expect(sent.delta).toBe("C:\\>type med.txt\nmed-output-line\n");
   });
 
-  it("suppression disarms on fresh output: a LATER legitimate repeat survives", async () => {
+  it("repeated identical commands survive: each run's output is delivered whole", async () => {
     const { h, opened } = await bootWithOldScreen();
-    // Redraw frame with new output at its end (arms then keeps armed);
-    const sending = h.core.send(agent, opened.sessionId, { data: "noop" });
+    // A marker chunk first (a real repaint happened).
+    const first = h.core.send(agent, opened.sessionId, { data: "noop" });
     await new Promise((r) => setTimeout(r, 5));
-    h.spawned[0].emitData("\x1b[H\x1b[J" + OLD_SCREEN + "C:\\>type med.txt\r\nmed-output-line\r\n");
-    await sending;
-    // Marker-free chunk after the frame: printing the SAME content again is
-    // legitimate output and must NOT be dropped.
+    h.spawned[0].emitData("\x1b[H\x1b[J" + OLD_SCREEN + "C:\\>echo NOISE-1\r\nNOISE-1\r\n");
+    expect((await first).delta).toBe("C:\\>echo NOISE-1\nNOISE-1\n");
+    // The SAME command again — marker-free, so its identical echo + output
+    // (a full duplicate of the buffer tail) must NOT be dropped (the #149
+    // AC2 real-ConPTY lesson: an armed state that survives all-duplicate
+    // chunks eats exactly this).
     const again = h.core.send(agent, opened.sessionId, { data: "noop" });
     await new Promise((r) => setTimeout(r, 5));
-    h.spawned[0].emitData("C:\\>type med.txt\r\nmed-output-line\r\n");
-    const sent = await again;
-    expect(sent.delta).toBe("C:\\>type med.txt\nmed-output-line\n");
+    h.spawned[0].emitData("C:\\>echo NOISE-1\r\nNOISE-1\r\n");
+    expect((await again).delta).toBe("C:\\>echo NOISE-1\nNOISE-1\n");
   });
 
   it("repeated output WITHOUT a repaint marker is never touched (fidelity first)", async () => {
@@ -141,11 +143,16 @@ describe("#177 现象二: repaint suppression at ingestion", () => {
 });
 
 describe("repaint-suppress unit contract", () => {
-  it("hasRepaintMarker matches cursor-home / erase sequences only", () => {
+  it("hasRepaintMarker matches full-screen repaint sequences only", () => {
     expect(hasRepaintMarker("\x1b[H")).toBe(true);
     expect(hasRepaintMarker("\x1b[2J")).toBe(true);
-    expect(hasRepaintMarker("\x1b[K")).toBe(true);
-    expect(hasRepaintMarker("\x1b[5;10f")).toBe(true);
+    expect(hasRepaintMarker("\x1b[J")).toBe(true);
+    expect(hasRepaintMarker("\x1b[H\x1b[J")).toBe(true);
+    // Parameterized cursor positioning (measured on EVERY msys2 bash prompt
+    // line) and line-erase are ordinary rendering, NOT markers.
+    expect(hasRepaintMarker("\x1b[6;1H")).toBe(false);
+    expect(hasRepaintMarker("\x1b[10;1H")).toBe(false);
+    expect(hasRepaintMarker("\x1b[K")).toBe(false);
     expect(hasRepaintMarker("plain\r\n")).toBe(false);
     expect(hasRepaintMarker("\x1b[31mred\x1b[0m")).toBe(false);
   });

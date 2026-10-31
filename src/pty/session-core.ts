@@ -192,12 +192,6 @@ interface Session {
    * (its escape-carry state is per-stream); EVERY session kind passes
    * through the same single ingestion point (`append`). */
   sanitizer: TerminalSanitizer
-  /** #177 (现象二): armed while a ConPTY repaint frame is in flight — a
-   * chunk carrying a repaint-marker CSI arms it; an append whose incoming
-   * lines carry fresh (non-duplicate) output disarms it. While armed,
-   * leading lines duplicating the buffer tail are dropped (see
-   * repaint-suppress.ts); nothing is ever dropped while disarmed. */
-  repaintArmed: boolean
   /** Retained complete lines; `lines[0]` sits at absolute index absBase. */
   lines: string[]
   absBase: number
@@ -667,14 +661,13 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
    * single ingestion point; control sequences die here, torn sequences carry
    * in the sanitizer's pending buffer), then split complete lines (CR
    * stripped, LF the terminator), hold the partial tail back, enforce the
-   * scrollback cap. #177 (现象二): a chunk carrying a repaint-marker CSI
-   * arms suppression; while armed, leading incoming lines that duplicate the
-   * buffer tail are the re-printed part of a ConPTY repaint frame and are
-   * dropped — fresh output in an armed chunk disarms (an all-duplicates
-   * chunk stays armed so a torn frame continues). Fidelity: without the raw
-   * marker signal, repeated output is never touched. */
+   * scrollback cap. #177 (现象二): a chunk carrying a full-screen
+   * repaint-marker CSI has its leading duplicate-of-buffer-tail lines (the
+   * re-printed part of a ConPTY repaint frame) dropped — stateless, that
+   * chunk only. Fidelity: chunks without the raw marker signal are never
+   * touched, repeated output always survives. */
   const append = (s: Session, chunk: string): void => {
-    if (hasRepaintMarker(chunk)) s.repaintArmed = true
+    const repaint = hasRepaintMarker(chunk)
     s.pending += s.sanitizer.push(chunk).text
     let idx: number
     const fresh: string[] = []
@@ -683,13 +676,7 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       s.pending = s.pending.slice(idx + 1)
       fresh.push(line)
     }
-    if (s.repaintArmed && fresh.length > 0) {
-      const kept = stripRepaintPrefix(s.lines, fresh)
-      if (kept.length > 0) s.repaintArmed = false
-      s.lines.push(...kept)
-    } else {
-      s.lines.push(...fresh)
-    }
+    s.lines.push(...(repaint ? stripRepaintPrefix(s.lines, fresh) : fresh))
     if (s.lines.length > config.scrollbackLines) {
       const drop = s.lines.length - config.scrollbackLines
       s.lines.splice(0, drop)
@@ -1008,7 +995,6 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         owner,
         pty,
         sanitizer: new TerminalSanitizer(DEFAULT_SANITIZER_PENDING_BYTES),
-        repaintArmed: false,
         lines: [],
         absBase: 0,
         pending: '',
