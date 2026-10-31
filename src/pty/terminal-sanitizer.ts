@@ -12,16 +12,11 @@
  * does NOT export it (root exports are only BashTerminalBackend, Config,
  * PWSH_PROMPT_SETUP, apply, inject, name — verified on 0.2.1-rc.2,
  * 0.2.1-rc.5 and 0.2.2-alpha.2 tarballs; the exports map admits no subpath),
- * and loading the root module drags a six-package peer closure. Upstream gap
- * Origin note (provenance only): the class originates upstream
- * (deepseek-ai/deepseek-harness, MIT, upstream copyright DeepSeek AI); the
- * npm package bundles it internally but does NOT export it (root exports are
- * only BashTerminalBackend, Config, PWSH_PROMPT_SETUP, apply, inject, name —
- * verified on 0.2.1-rc.2, 0.2.1-rc.5 and 0.2.2-alpha.2 tarballs; the exports
- * map admits no subpath), and loading the root module drags a six-package
- * peer closure. Per the 2026-10-31 human ruling this copy is adopted as OUR
- * OWN implementation: it is maintained HERE, edited here first, and carries
- * no commitment to switch back to a dependency.
+ * and loading the root module drags a six-package peer closure.
+ *
+ * Ownership (2026-10-31 human ruling): this copy is adopted as OUR OWN
+ * implementation — maintained HERE, edited here first, and carrying no
+ * commitment to switch back to a dependency; no upstream issue is filed.
  *
  * Anchor discipline: when the release anchor (ADR-0005) moves, re-diff this
  * file against the new anchor's source and re-record the hash here.

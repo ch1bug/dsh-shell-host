@@ -34,6 +34,9 @@ pagination) stays untouched — #177 already proved it loses no data.
    session kind. The buffer's byte-fidelity semantics are dropped
    deliberately: a line-oriented, printable-text contract from here on
    (progress-bar `CR` redraws become line breaks; control sequences vanish).
+   One upstream-faithful edge: an exit-time flush carrying a trailing `CR`
+   yields a bare newline — one empty buffer line, harmless and kept for
+   verbatim fidelity with the upstream semantics.
 2. **The sanitizer is a vendored verbatim copy, adopted as our own
    implementation.** The ruling's original premise — reuse
    `@deepseek-ai/dsh-terminal-bash`'s published `TerminalSanitizer` export —
