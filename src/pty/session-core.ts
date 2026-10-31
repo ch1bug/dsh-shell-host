@@ -31,6 +31,7 @@ import { resolveExecutable } from '../detect.ts'
 import type { SandboxMode } from '../permission-gate.ts'
 import { codedError } from '../coded-error.ts'
 import { TerminalSanitizer } from './terminal-sanitizer.ts'
+import { hasRepaintMarker, stripRepaintPrefix } from './repaint-suppress.ts'
 
 /** Default concurrent-session soft cap (#56 ruling 3, migrated onto the
  * core: the registry is the single source of truth, so an entry remount
@@ -191,6 +192,12 @@ interface Session {
    * (its escape-carry state is per-stream); EVERY session kind passes
    * through the same single ingestion point (`append`). */
   sanitizer: TerminalSanitizer
+  /** #177 (现象二): armed while a ConPTY repaint frame is in flight — a
+   * chunk carrying a repaint-marker CSI arms it; an append whose incoming
+   * lines carry fresh (non-duplicate) output disarms it. While armed,
+   * leading lines duplicating the buffer tail are dropped (see
+   * repaint-suppress.ts); nothing is ever dropped while disarmed. */
+  repaintArmed: boolean
   /** Retained complete lines; `lines[0]` sits at absolute index absBase. */
   lines: string[]
   absBase: number
@@ -660,14 +667,28 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
    * single ingestion point; control sequences die here, torn sequences carry
    * in the sanitizer's pending buffer), then split complete lines (CR
    * stripped, LF the terminator), hold the partial tail back, enforce the
-   * scrollback cap. */
+   * scrollback cap. #177 (现象二): a chunk carrying a repaint-marker CSI
+   * arms suppression; while armed, leading incoming lines that duplicate the
+   * buffer tail are the re-printed part of a ConPTY repaint frame and are
+   * dropped — fresh output in an armed chunk disarms (an all-duplicates
+   * chunk stays armed so a torn frame continues). Fidelity: without the raw
+   * marker signal, repeated output is never touched. */
   const append = (s: Session, chunk: string): void => {
+    if (hasRepaintMarker(chunk)) s.repaintArmed = true
     s.pending += s.sanitizer.push(chunk).text
     let idx: number
+    const fresh: string[] = []
     while ((idx = s.pending.indexOf('\n')) >= 0) {
       const line = s.pending.slice(0, idx).replace(/\r$/, '')
       s.pending = s.pending.slice(idx + 1)
-      s.lines.push(line)
+      fresh.push(line)
+    }
+    if (s.repaintArmed && fresh.length > 0) {
+      const kept = stripRepaintPrefix(s.lines, fresh)
+      if (kept.length > 0) s.repaintArmed = false
+      s.lines.push(...kept)
+    } else {
+      s.lines.push(...fresh)
     }
     if (s.lines.length > config.scrollbackLines) {
       const drop = s.lines.length - config.scrollbackLines
@@ -987,6 +1008,7 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         owner,
         pty,
         sanitizer: new TerminalSanitizer(DEFAULT_SANITIZER_PENDING_BYTES),
+        repaintArmed: false,
         lines: [],
         absBase: 0,
         pending: '',
