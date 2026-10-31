@@ -118,6 +118,23 @@ export GH_CONFIG_DIR="$(cygpath -u "$USERPROFILE")/AppData/Roaming/GitHub CLI"
   （实测生效，且 `GIT_CONFIG_SYSTEM` 一并认到）。
 - **不要把它当 `.sh` 执行**：`source` 是用法（脚本里没有 `exit`，就是为了不把调用方 shell 退掉）。
 
+#### 推送/车道环境的三个坑（批 N 末实测，2026-10-31；retro 聚合 N8）
+
+1. **`git push` 不在 msys bash 里跑**：msys bash 无 tty 时凭据助手拿不到登录态
+   （`could not read Username` + `/dev/tty` 报错）。push 用 **Windows 侧 git**
+   （凭据管理器在 git 进程内，正常工作）；pre-push 钩子由 Git for Windows 自带
+   sh 调起，msys 车道在钩子内照常跑，不受影响。
+2. **PATH 上的 `bash` 可能是 WSL**：`bash -lc` 无 `cygpath`、无 `/c/` 即 WSL bash，
+   找副本/跑车道全落空。msys2 要**显式路径**调起：`C:\msys64\usr\bin\bash.exe -lc …`。
+   接手会话第一步先核 bash 身份（`bash -lc 'command -v cygpath'`）。
+3. **改过 lockfile 的批，推送前置副本 install**：权威树装过 ≠ 副本装过（G14）；
+   批 N 又实测副本 vitest 版本落后权威树一版（`4.1.11` vs lockfile 的 `4.1.12`）。
+   推送前在副本 `corepack pnpm install --frozen-lockfile`（走本地 store，秒级）。
+4. **非本批的未跟踪文件会把车道判脏**（`tree_status` 按 `--porcelain` 非空判）：
+   批末推送前 `git status --short` 看到的外来未跟踪文件**先查来历**再定——
+   是漏提交的既有产物就按「docs 随下一次推送」补提交（批 N 实测：#170 时代的
+   `CONTEXT.md` 由 `a55c0ac` 补提交随批推送），是在途改动就等收尾，不要静默移开。
+
 ### 0.1.1 副本的 msys 侧全流程验证（**第三条车道**，2026-10-17 落地）
 
 **三条车道用哪个 node**（**订正**：本节开篇此前写「默认的副本验证是『Windows 侧 PowerShell +
