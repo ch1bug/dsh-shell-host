@@ -14,6 +14,10 @@
  *    `permission-gate.ts` 只 `resolve` / `MODE_RANK` / 拒绝文案，不含这些
  *    字面量——若未来读侧需要其中某个字面量，该改动必须显式改这里的豁免表
  *    （棘轮口径与 patch-shape 相同）。
+ *    票面形态黑名单里的 `sandbox.?mode` 在工具名层由**完全一致的集合棘轮**
+ *    兜住（任何新名字本就即红，黑名单只是纵深），在源码层以事件字面量
+ *    `sandbox/mode` 替代——`sandbox.?mode` 正则会误伤读侧/消费描述的
+ *    `sandboxMode` 字段与英文文案，故不作源码扫描形态（复核留档）。
  * 2. **工具面级**：以假 ctx 挂载本仓全部六行（`cordis.patch.yml` 的
  *    `{pty, ssh, terminal, remote, remote-fs, wsl}`，挂载口径与
  *    `tests/permission-gate.spec.ts` / `remote-registry.spec.ts` /
@@ -33,9 +37,8 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { apply as applyTerminal, _resetRegistrationForTests } from "../src/terminal/index.ts";
 import * as wslPlugin from "../src/wsl-plugin/index.js";
-import { bootPlugin } from "./helpers/fake-pty.ts";
+import { bootPlugin, echoFakePty } from "./helpers/fake-pty.ts";
 import { fakeChannelHarness } from "./helpers/fake-channel.ts";
-import { echoFakePty } from "./helpers/fake-pty.ts";
 
 // ---------------------------------------------------------------------------
 // 源码级检查器
@@ -182,7 +185,7 @@ describe("活体仓：src/** 对权限写面零引用（#179 AC1）", () => {
 
 describe("活体仓：全部行的注册工具名棘轮（#179 AC2）", () => {
   /** 挂载一次，全 describe 共享（挂载面是静态事实，不是每个用例的状态）。 */
-  const state: { names: string[]; error?: unknown } = { names: [] };
+  const state = { names: [] as string[] };
   beforeAll(() => {
     // remote 行的通道 seam：假 harness（离线，不起实例——remote-registry 同款）。
     const harness = fakeChannelHarness();
