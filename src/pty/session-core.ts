@@ -30,6 +30,7 @@ import { spawn as nodePtySpawn } from '@lydell/node-pty'
 import { resolveExecutable } from '../detect.ts'
 import type { SandboxMode } from '../permission-gate.ts'
 import { codedError } from '../coded-error.ts'
+import { TerminalSanitizer } from './terminal-sanitizer.ts'
 
 /** Default concurrent-session soft cap (#56 ruling 3, migrated onto the
  * core: the registry is the single source of truth, so an entry remount
@@ -53,6 +54,14 @@ const DEFAULT_IDLE_TICK_MS = 250
 const DEFAULT_SCROLLBACK_LINES = 10_000
 /** Bounded wait for a kill to surface its exit event. */
 const CLOSE_EXIT_WAIT_MS = 5000
+
+/** #180 (contract A): the sanitizer's pending-escape budget in bytes — the
+ * largest torn control sequence it will carry across chunks before giving up
+ * on it. Every session's buffer ingestion runs through the sanitizer, so a
+ * hostile stream cannot grow that carry without bound; 64 KiB is generous
+ * for any real sequence while keeping the bound firm. The guard spec pins
+ * the magnitude, not the value. */
+export const DEFAULT_SANITIZER_PENDING_BYTES = 64 * 1024
 
 /** Default hard deadline (#159) for a one-shot exec (autoClose: true): the
  * WHOLE tool call (wall clock) may take this long before the session's own
@@ -175,6 +184,13 @@ interface Session {
    * carries it too so kill/cleanup never needs a reverse scan. */
   owner: unknown
   pty: PtyLike
+  /** #180 (contract A): streaming terminal sanitizer owning the RAW chunk
+   * face — VT/CSI/OSC noise (banners' escape sequences, ConPTY redraw
+   * frames) is stripped here, before line splitting, so the line buffer
+   * below holds sanitized printable text only. One instance per session
+   * (its escape-carry state is per-stream); EVERY session kind passes
+   * through the same single ingestion point (`append`). */
+  sanitizer: TerminalSanitizer
   /** Retained complete lines; `lines[0]` sits at absolute index absBase. */
   lines: string[]
   absBase: number
@@ -640,10 +656,13 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
 
   const totalLines = (s: Session): number => s.absBase + s.lines.length
 
-  /** Append a raw output chunk: split complete lines (CR stripped, LF the
-   * terminator), hold the partial tail back, enforce the scrollback cap. */
+  /** Append one raw output chunk: sanitize it first (#180 contract A — the
+   * single ingestion point; control sequences die here, torn sequences carry
+   * in the sanitizer's pending buffer), then split complete lines (CR
+   * stripped, LF the terminator), hold the partial tail back, enforce the
+   * scrollback cap. */
   const append = (s: Session, chunk: string): void => {
-    s.pending += chunk
+    s.pending += s.sanitizer.push(chunk).text
     let idx: number
     while ((idx = s.pending.indexOf('\n')) >= 0) {
       const line = s.pending.slice(0, idx).replace(/\r$/, '')
@@ -967,6 +986,7 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         id,
         owner,
         pty,
+        sanitizer: new TerminalSanitizer(DEFAULT_SANITIZER_PENDING_BYTES),
         lines: [],
         absBase: 0,
         pending: '',
@@ -984,6 +1004,10 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       held.set(id, s)
       pty.onData((d) => append(s, d))
       pty.onExit(({ exitCode }) => {
+        // #180: drain the sanitizer before the exit is recorded — a trailing
+        // printable fragment (no newline yet) still belongs to the output,
+        // an incomplete escape sequence is discarded (never printable).
+        append(s, s.sanitizer.flush())
         s.exited = true
         s.exitCode = exitCode
         // #146: the one-shot open call is waiting on THIS event — release it

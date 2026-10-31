@@ -170,7 +170,7 @@ export function runnerRefsIn(
  * `639ed015` / `639ed01539` = 旧锚 `dsh-v0.2.0-rc.2`（历史引用仍在，见 dev-environment.md §2）；
  * `ed25519` = SSH 密钥类型名（Ed25519），非提交哈希——7 位全 hex 被 :177 的正则误捕（#141 实测）。
  */
-export const HASH_ALLOWLIST = new Set(["687f282e", "1600d8a1", "639ed015", "639ed01539", "ed25519"]);
+export const HASH_ALLOWLIST = new Set(["687f282e", "687f282e8625c6b8d11ff58211a90524be2e4317", "1600d8a1", "639ed015", "639ed01539", "ed25519"]);
 
 /** 文本块里的提交哈希引用（7–40 位 hex；纯数字的版本号片段 / 权限位不算）。 */
 export function hashRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
