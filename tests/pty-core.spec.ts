@@ -137,13 +137,72 @@ describe("self-managed session core (#61 ADR-0010)", () => {
     const page2 = await h.tool("pty_tail").execute({ id: opened.sessionId }, { agent });
     expect(page2.text).toContain("partial");
     expect(page2.offset).toBe(4); // "partial" is buffer line 4
-    // Budget cap: backlog beyond `limit` is dropped and flagged (#185 word).
+    // Budget cap (#181): the page walks FORWARD from the cursor — nothing is
+    // skipped; repeat tails drain the rest. truncated flags REAL loss only
+    // (scrollback overflow), which this small backlog is not.
     h.spawned[0].emitData("a\r\nb\r\nc\r\nd\r\n");
     await new Promise((r) => setTimeout(r, 10));
     const page3 = await h.tool("pty_tail").execute({ id: opened.sessionId, limit: 2 }, { agent });
-    expect(page3.offset).toBe(7); // newest two of a/b/c/d = buffer lines 7–8
+    expect(page3.offset).toBe(5); // "a"/"b" from the cursor = buffer lines 5–6
     expect(page3.totalLines).toBe(8);
-    expect(page3.truncated).toBe(true);
+    expect(page3.truncated).toBe(false);
+    const page4 = await h.tool("pty_tail").execute({ id: opened.sessionId, limit: 2 }, { agent });
+    expect(page4.offset).toBe(7); // "c"/"d" = buffer lines 7–8
+    expect(page4.text).toContain("c");
+    expect(page4.text).toContain("d");
+    expect(page4.truncated).toBe(false);
+    const page5 = await h.tool("pty_tail").execute({ id: opened.sessionId, limit: 2 }, { agent });
+    expect(page5.text).toBe("");
+    expect(page5.offset).toBe(9); // empty page keeps its cursor line (#185)
+  });
+
+  it("tail loop drains a 2000-line backlog completely (#181 现象一 regression): nothing skipped between pages", async () => {
+    const h = bootFast();
+    const pending = h.tool("pty_open").execute({ command: "repl" }, { agent });
+    await new Promise((r) => setTimeout(r, 10));
+    h.spawned[0].emitData("banner\r\n");
+    const opened = await pending;
+    // The #177 repro shape: 2000 lines flood the buffer (the send-settle
+    // window's delta covers only part of them — the rest face the first
+    // tail). The pre-#181 implementation anchored each page on the NEWEST
+    // line and jumped the cursor past the backlog: lines 0..1799 became
+    // permanently unreachable (measured hermetically in .scratch/verify181/
+    // probe-tailskip). The drain loop must reach line-1999.
+    for (let i = 0; i < 2000; i++) h.spawned[0].emitData(`line-${String(i).padStart(4, "0")}\r\n`);
+    await new Promise((r) => setTimeout(r, 50));
+    const have = new Set<string>();
+    let empties = 0;
+    let pages = 0;
+    while (empties < 2 && pages < 30) {
+      const page = (await h.tool("pty_tail").execute({ id: opened.sessionId, limit: 200 }, { agent })) as {
+        text: string
+        truncated: boolean
+      };
+      pages += 1;
+      if (page.text === "") {
+        empties += 1;
+        continue;
+      }
+      empties = 0;
+      // No real loss on a backlog inside the scrollback cap (10000 lines).
+      expect(page.truncated, `page ${pages} must not flag truncation for a paged backlog`).toBe(false);
+      for (const m of page.text.matchAll(/line-(\d{4})/gu)) have.add(m[1]);
+    }
+    expect(have.size, "the tail loop drains every line").toBe(2000);
+    expect(have.has("0000"), "line-0000 retrievable").toBe(true);
+    expect(have.has("1999"), "line-1999 retrievable (the #177 现象一 acceptance line)").toBe(true);
+  });
+
+  it("non-positive / non-integer limit is refused loudly (never folds the cursor backward)", async () => {
+    // 复审 #181-2: a budget < 1 would drive `end` behind the cursor and
+    // silently rewind it (re-delivering seen lines); a fractional one has
+    // no page meaning. The core refuses all three shapes loudly; the tool
+    // schema declares the bound in words.
+    const h = bootFast();
+    const opened = await h.tool("pty_open").execute({ command: "repl" }, { agent });
+    await expect(h.tool("pty_tail").execute({ id: opened.sessionId, limit: 0 }, { agent })).rejects.toMatchObject({ code: "INVALID_ARGS" });
+    await expect(h.tool("pty_tail").execute({ id: opened.sessionId, limit: -3 }, { agent })).rejects.toMatchObject({ code: "INVALID_ARGS" });
+    await expect(h.tool("pty_tail").execute({ id: opened.sessionId, limit: 1.5 }, { agent })).rejects.toMatchObject({ code: "INVALID_ARGS" });
   });
 
   it("send writes payload with submit Enter and returns the settled delta", async () => {

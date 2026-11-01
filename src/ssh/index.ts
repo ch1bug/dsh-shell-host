@@ -288,7 +288,7 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
       'Incrementally read the ssh session\'s new output since the last tail (per-session cursor; repeated tails do not resend old lines). Core passthrough.',
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
-      limit: { type: 'number', description: 'Max lines to return this call (default from config; excess is marked truncated). #185: renamed from `lines` — the read/spill pagination word.' },
+      limit: { type: 'number', description: 'Max lines to return this call (the page walks FORWARD from the cursor; repeat the call to keep draining — nothing is skipped). Must be a positive integer; smaller values are refused loudly, never folded. #185: renamed from `lines` — the read/spill pagination word.' },
     },
     output: {
       schema: {
@@ -299,7 +299,7 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
           offset: { type: 'number', description: '1-based absolute line number of the page\'s first line (kept even when the page is empty).' },
           limit: { type: 'number', description: 'The page budget in effect for this call.' },
           totalLines: { type: 'number', description: 'Exact retained-line count the page covers.' },
-          truncated: { type: 'boolean', description: 'True when older backlog exceeded the budget and was dropped.' },
+          truncated: { type: 'boolean', description: 'True only on REAL loss: the scrollback cap dropped lines before the cursor reached them. A backlog larger than the budget is NOT loss — repeat the tail to drain it.' },
         },
       },
       render: (_args: unknown, value: { text?: string }) => [{ type: 'text' as const, text: value.text || '(no new output)' }],

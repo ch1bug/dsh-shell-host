@@ -113,7 +113,7 @@ describe("incremental tail cursor", () => {
     expect(t3.text).not.toContain("line-a");
   });
 
-  it("backlog beyond the budget returns the newest lines and marks truncated", async () => {
+  it("backlog beyond the budget pages forward from the cursor; nothing is skipped (#181)", async () => {
     const agent = makeAgent("a");
     const s = await tool("pty_open").execute({ command: "boot" }, exec(agent));
     for (const n of ["n1", "n2", "n3"]) {
@@ -121,10 +121,13 @@ describe("incremental tail cursor", () => {
     }
     const t = await tool("pty_tail").execute({ id: s.sessionId, limit: 2 }, exec(agent));
     expect(t.limit).toBe(2);
-    expect(t.truncated).toBe(true);
-    expect(t.text).toContain("n3");
+    expect(t.truncated).toBe(false); // paging, not loss: the backlog is still in the buffer
+    expect(t.text).toContain("n1");
+    expect(t.text).toContain("n2");
+    expect(t.text).not.toContain("n3");
     const t2 = await tool("pty_tail").execute({ id: s.sessionId }, exec(agent));
-    expect(t2.totalLines).toBe(t.totalLines); // cursor fully advanced past the dropped backlog
+    expect(t2.text).toContain("n3"); // the rest drains on the next page
+    expect(t2.truncated).toBe(false);
   });
 });
 

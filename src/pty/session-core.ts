@@ -12,11 +12,13 @@
  * The spawner is injectable (deps.spawnPty): the unit lane drives fakes,
  * the machine lane runs the real node-pty spawn (#51 precedent).
  *
- * Read contract (the seam-era one, restated): a read's `offset` counts
- * back from the NEWEST retained line (0 = newest); complete lines only
- * (a partial trailing line is held back until its newline arrives); a
- * tail reports `truncated` when the backlog exceeded the requested
- * budget (older lines are then lost).
+ * Read contract (the seam-era one, restated; #181 revised the tail half):
+ * a read's `offset` counts back from the NEWEST retained line (0 = newest);
+ * complete lines only (a partial trailing line is held back until its
+ * newline arrives); a tail pages FORWARD from the session cursor in
+ * `limit`-sized pages — repeated tails drain the buffer with nothing
+ * skipped between calls, and `truncated` flags REAL loss only (lines the
+ * scrollback cap dropped before the cursor ever reached them).
  *
  * Signal/listing surface (#119): `list(owner)` is the registry's structured
  * view (id + status + pid, stable creation order) and `signal(owner, id,
@@ -438,13 +440,22 @@ export interface SendResult {
 /** One tail page. #185: the pagination vocabulary is aligned with the
  * `read`/spill window face (`{offset, limit}` + `totalLines` + a truncation
  * flag — the same words, same meanings: `offset` is the 1-based absolute
- * line number of the page's first line, KEPT EVEN WHEN THE PAGE IS EMPTY
- * exactly like `read`'s offset; `limit` is the page budget in effect;
- * `totalLines` the exact retained-line count; `truncated` flags the
- * backlog-loss case as before, which is the official `read`'s truncation
- * word too). The old `{text, lines: number, truncated}` counting shape is
- * RETIRED, not aliased — the rename is declared on the tool schema and in
- * the entry docs (the migration note), never silently kept dual. */
+ * line number of the page's first line — unlike `read`'s offset, which is a
+ * relative count back from the newest line; what IS shared with `read` is
+ * the kept-when-empty rule, KEPT EVEN WHEN THE PAGE IS EMPTY);
+ * `limit` is the page budget in effect;
+ * `totalLines` the exact retained-line count; `truncated` flags REAL loss —
+ * lines the scrollback cap dropped before the cursor reached them; a
+ * backlog larger than `limit` is NOT loss, it just pages — repeat the tail
+ * to keep draining). #181 revised the page ANCHOR from "the newest lines"
+ * to "forward from the cursor": the previous anchor skipped the undelivered
+ * middle of a backlog that exceeded the budget and jumped the cursor past
+ * it, making those lines permanently unreachable — the #177 现象一
+ * "86KB → 58.6KB then no new output" mechanism, measured hermetically in
+ * .scratch/verify181/ (probe-tailskip). The old
+ * `{text, lines: number, truncated}` counting shape is RETIRED, not aliased
+ * — the rename is declared on the tool schema and in the entry docs (the
+ * migration note), never silently kept dual. */
 export interface TailPage {
   text: string
   offset: number
@@ -1127,36 +1138,50 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
 
     tail(owner, id, limit) {
       const s = requireSession(owner, id)
+      // 复审 #181-2: a non-positive / non-integer `limit` is a caller error —
+      // refused LOUDLY, never silently folded (a budget < 1 would drive
+      // `end` behind the cursor and silently rewind it, re-delivering lines
+      // the caller already saw). The config side keeps its positiveInt
+      // fallback (resolveCoreConfig); only the per-call argument is refused.
+      if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
+        throw terr('INVALID_ARGS', `pty tail: limit must be a positive integer (got ${JSON.stringify(limit)})`)
+      }
       const budget = limit ?? config.tailLimit
       const consumed = cursors.get(s) ?? 0
-      // Incremental read: fetch only lines past the session cursor, advance
-      // the cursor to the newest retained line, and report truncation when
-      // the backlog exceeded the requested budget (the seam-era tailPage
-      // contract, kept verbatim — including the live-anchor retry).
+      // Incremental read (#181): the page is anchored on the CURSOR, not on
+      // the live newest line — the contract is "new output since the last
+      // tail", so paging FORWARD from the cursor drains the buffer with
+      // repeated tails and NOTHING between calls is skipped. (The previous
+      // implementation anchored each page on the newest line and jumped the
+      // cursor past the whole backlog when it exceeded the budget: the
+      // undelivered middle became permanently unreachable — the #177 现象一
+      // "86KB → 58.6KB then (no new output)" mechanism, measured hermetically
+      // in .scratch/verify181/ probe-tailskip.) The page interval
+      // [begin, end) is absolute, so output arriving during the read cannot
+      // shift it — the old live-anchor retry has nothing left to defend.
       // #185: the page facts use the `read`/spill pagination vocabulary —
       // `offset` = 1-based absolute line number of the page's first line
       // (kept even on an empty page), `limit` = the budget in effect,
-      // `totalLines` = the exact retained-line count the page covers.
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const total = totalLines(s)
-        const backlog = total - consumed
-        if (backlog <= 0) return { text: '', offset: consumed + 1, limit: budget, totalLines: total, truncated: false }
-        const count = Math.min(budget, backlog)
-        // The page read anchors on the LIVE newest line; output arriving
-        // between probe and read would shift the window. Retry until the
-        // probed total is stable, so the cursor only advances to a total
-        // the returned page actually covers — nothing silently skipped.
-        const page = readNewest(s, count, count)
-        if (page.totalLines === total) {
-          cursors.set(s, total)
-          return { text: page.text, offset: total - count + 1, limit: budget, totalLines: total, truncated: backlog > count || page.truncated }
-        }
+      // `totalLines` = the exact retained-line count.
+      const total = totalLines(s)
+      const backlog = total - consumed
+      if (backlog <= 0) return { text: '', offset: consumed + 1, limit: budget, totalLines: total, truncated: false }
+      // REAL loss only: the scrollback cap dropped lines between the cursor
+      // and the retained window (begin > consumed) — flagged, never silent.
+      // A backlog larger than the budget is paging, not loss.
+      const begin = Math.max(consumed, s.absBase)
+      const lost = begin > consumed
+      const count = Math.min(budget, total - begin)
+      const end = begin + count
+      const slice = s.lines.slice(begin - s.absBase, end - s.absBase)
+      cursors.set(s, end)
+      return {
+        text: slice.length === 0 ? '' : slice.join('\n') + '\n',
+        offset: begin + 1,
+        limit: budget,
+        totalLines: total,
+        truncated: lost,
       }
-      // Persistently drifting: report no page rather than a misaligned one;
-      // the cursor is untouched, so the next tail retries the whole backlog.
-      // `totalLines: consumed` is the deterministic part (everything below
-      // the untouched cursor) — the live total is unstable by definition.
-      return { text: '', offset: consumed + 1, limit: budget, totalLines: consumed, truncated: true }
     },
 
     async close(owner, id) {

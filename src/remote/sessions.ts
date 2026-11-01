@@ -123,7 +123,8 @@ export async function openRemoteSession(core: RemoteSessionCore, owner: unknown,
         return { ...opened, status: row.status, initialOutput: lines.join('\n'), transport, remoteShell: { uname, shell } }
       }
       const page = core.tail(owner, opened.sessionId, MAX_STARTUP_BUDGET)
-      // truncated也可能指已经消费过的历史行，不等于本次delta丢失；缺nonce仍fail closed。
+      // #181 起 truncated 只表真丢失（scrollback 裁掉 cursor 未及的行）；
+      // 超预算的 backlog 是分页不是丢失。缺 nonce 仍 fail closed。
       if (page.text !== '') output += page.text
       else await new Promise<void>((resolve) => {
         const finish = () => { clearTimeout(wait); controller.signal.removeEventListener('abort', finish); resolve() }

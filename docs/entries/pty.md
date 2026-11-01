@@ -28,6 +28,17 @@ and the default-budget config key is `tailLimit` (was `tailLines`; the old
 key is no longer read). The rename is declared here and on the tool schema,
 never aliased silently.
 
+**Semantics revision (#181)**: the tail page now walks FORWARD from the
+session cursor (the contract's own words — "new output since the last
+tail"). Previously each page was anchored on the NEWEST lines and the
+cursor jumped past the whole backlog when it exceeded `limit`, so the
+undelivered middle became permanently unreachable (the #177 现象一
+"86KB → ~58.6KB then (no new output)" loss — a large `type` output drained
+by a tail loop lost everything the first page did not cover). Now repeated
+tails drain the buffer with nothing skipped, and `truncated` flags REAL
+loss only: lines the scrollback cap dropped before the cursor reached
+them. A backlog larger than `limit` is paging, not loss.
+
 ```js
 import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
 ```

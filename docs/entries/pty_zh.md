@@ -26,6 +26,14 @@ the package does not merge config surfaces.
 `tailLimit`（原 `tailLines`；旧键不再读取）。改名在此处与工具 schema 上显式声明，
 不做静默别名。
 
+**语义修订（#181）**：tail 页现在从会话游标**向后**推进（即契约原文——「自上次
+tail 以来的新输出」）。此前每页锚定在**最新的**若干行、backlog 超过 `limit` 时
+游标直接跳过整个积压——未交付的中段因此永久不可达（#177 现象一「86KB →
+~58.6KB 后 (no new output)」丢失的机制：用 tail 循环排干一次大 `type` 输出时，
+首页未覆盖的行全部丢失）。现在反复调用 tail 即可完整排干缓冲、行与行之间
+零跳过；`truncated` 只标记**真丢失**：scrollback 上限在游标到达之前裁掉的行。
+backlog 大于 `limit` 是分页，不是丢失。
+
 ```js
 import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
 ```
