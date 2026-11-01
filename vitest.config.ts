@@ -48,6 +48,14 @@ import { standardDecoratorPlugin } from './vitest.shared.ts'
 // e2e-pty-loop-machine (#148) drives pty_list / pty_signal through a REAL
 // instance's tool loop over a REAL long-lived PTY process: the same
 // boot-a-real-instance cost as its e2e peers, so it is serial too.
+// #182：成员为何被隔离出争用——vitest 4.1.12 的调度器（dist 的 groupSpecs/executeTests）
+// 把 fileParallelism:false（⇒ maxWorkers 1）project 的文件收进**排序末尾的 sequential 组**：
+// 它只在所有并发池组全部 settle 之后起跑，组内文件一次一个。因此进本清单在**两种调用形态**
+// 下都把该档移出并发 worker 池：逐车道 `&&` 链（scripts/verify-all.mjs）与单次调用全量
+// （scripts/msys-lane.sh，即 pre-push 车道）。sequential 组**内部**顺序 = 排序器
+// （groupOrder 优先，其后按 project 名），而 'machine' < 'writers' —— 故本清单成员仍排在
+// clean-lib 重建（#123 的写者/读者序）之前；该序靠的是 project **名字**字母序而非声明语义，
+// 改名 project 时必须复查这一条。
 const machineLane = [
   'tests/ssh-pty-live.spec.ts',
   'tests/terminal-machine.spec.ts',
@@ -72,13 +80,24 @@ const machineLane = [
   // → resolve → assertSessionWritable 的同步约束，跨三条真实 prompt 驱动；多轮
   // 真实例 + 墙钟成本，串行同其 e2e 兄弟档。
   'tests/sandbox-mode-machine.spec.ts',
+  // #182：verify-pack 每例真 spawn 子进程（import 零副作用由子进程实测、#118 守卫自检
+  // 真 CLI 通路）且 cpSync 整棵 lib/ 做 fixture——CPU/磁盘负载重，在 unit 并发池里被
+  // 拖过 60s 用例超时（#179 会话全量首跑 6 例假红，单跑 8s 全绿）；真 spawn 档串行同族。
+  'tests/verify-pack.spec.ts',
+  // #182：win32 用例经 PTY facade 真 spawn bash 组合 ssh 命令（detectPlainBash 门），
+  // settle 时序对 CPU 争用敏感——并发池里进程提前退出报 REMOTE_SESSION_EXITED 假红
+  // （#177 会话 pre-push 车道；副本单跑 17 例全绿）；真 CLI 档串行同族。
+  'tests/remote-session-launch.spec.ts',
 ]
 // #123: the WRITER lane. `tests/clean-lib.spec.ts` really runs `node --run build`
 // twice, and each build first DELETES lib/'s four entry directories plus the
 // top-level chunks before tsc/tsdown rebuilds them. So that spec is a WRITER of
-// `lib/`, while `tests/verify-pack.spec.ts` (copies lib/ into a fixture repo) and
-// `tests/built-artifact.spec.ts` (imports lib/pty/index.js) are READERS of the
-// same tree. Sharing one worker pool made the readers observe a half-rebuilt
+// `lib/`, while `tests/built-artifact.spec.ts` (imports lib/pty/index.js) is a
+// READER of the same tree in this pool; `tests/verify-pack.spec.ts` (copies lib/
+// into a fixture repo) is the other reader — #182 moved it into the machine lane
+// (serial) for its own contention reds, and it still runs before this writer
+// (see the #182 scheduling note above the machineLane list). Sharing one worker
+// pool made the readers observe a half-rebuilt
 // tree — the intermittent red this ticket is about (measured: 1 red in 5
 // single-lane repeats, both failures inside verify-pack.spec.ts, reporting
 // exactly the entry directories missing while the old prelude gate
