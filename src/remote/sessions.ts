@@ -11,7 +11,8 @@ import type { RemoteWorkspaceDeclaration } from './service.ts'
 /** 公开PTY服务的消费面：无原始进程访问，不在探测阶段写输入。 */
 export interface RemoteSessionCore {
   open(owner: unknown, spec: { command: string; cwd?: string; shell?: boolean; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<OpenResult>
-  tail(owner: unknown, id: string, lines?: number): TailPage
+  /** #185: `limit`（was `lines`）——与 core.tail 的分页词汇对齐同批改名。 */
+  tail(owner: unknown, id: string, limit?: number): TailPage
   list(owner: unknown): SessionSummary[]
   close(owner: unknown, id: string): Promise<unknown>
 }

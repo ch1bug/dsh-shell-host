@@ -24,7 +24,7 @@ let boot: ReturnType<typeof bootPlugin>;
  * permission fakes by default). `deps` reaches the core, so a case can swap
  * in the signal seam (#119: `platform` / `procKill`). */
 function setup(deps: { platform?: NodeJS.Platform; procKill?: (pid: number, signal: string) => void } = {}) {
-  boot = bootPlugin({ config: { tailLines: 200, maxSessions: 8 }, spawnPty: echoFakePty, deps });
+  boot = bootPlugin({ config: { tailLimit: 200, maxSessions: 8 }, spawnPty: echoFakePty, deps });
 }
 const tool = (n: string) => boot.tool(n);
 const pty = () => boot.core;
@@ -104,7 +104,7 @@ describe("incremental tail cursor", () => {
     expect(t1.truncated).toBe(false);
 
     const t2 = await tool("pty_tail").execute({ id: s.sessionId }, exec(agent));
-    expect(t2.lines).toBe(0);
+    expect(t2.totalLines).toBe(t1.totalLines); // #185: empty page, nothing new
     expect(t2.text).toBe("");
 
     await tool("pty_send").execute({ id: s.sessionId, data: "line-b" }, exec(agent));
@@ -119,12 +119,12 @@ describe("incremental tail cursor", () => {
     for (const n of ["n1", "n2", "n3"]) {
       await tool("pty_send").execute({ id: s.sessionId, data: n }, exec(agent));
     }
-    const t = await tool("pty_tail").execute({ id: s.sessionId, lines: 2 }, exec(agent));
-    expect(t.lines).toBe(2);
+    const t = await tool("pty_tail").execute({ id: s.sessionId, limit: 2 }, exec(agent));
+    expect(t.limit).toBe(2);
     expect(t.truncated).toBe(true);
     expect(t.text).toContain("n3");
     const t2 = await tool("pty_tail").execute({ id: s.sessionId }, exec(agent));
-    expect(t2.lines).toBe(0); // cursor fully advanced past the dropped backlog
+    expect(t2.totalLines).toBe(t.totalLines); // cursor fully advanced past the dropped backlog
   });
 });
 

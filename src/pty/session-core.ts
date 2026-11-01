@@ -38,8 +38,10 @@ import { hasRepaintMarker, stripRepaintPrefix } from './repaint-suppress.ts'
  * can no longer reset the count — the #62 root cause dies here). */
 export const DEFAULT_MAX_SESSIONS = 8
 
-/** Default line budget for tail when the caller omits `lines`. */
-export const DEFAULT_TAIL_LINES = 200
+/** Default line budget for tail when the caller omits `limit`.
+ * #185: renamed from `DEFAULT_TAIL_LINES` with the pagination-vocabulary
+ * alignment (the `{offset, limit}` face of `read`/spill) — same value. */
+export const DEFAULT_TAIL_LIMIT = 200
 
 /** Output quiescence window for a send/open settle: the write settles once
  * no new bytes arrived for this long. */
@@ -76,7 +78,9 @@ export const DEFAULT_DEADLINE_MS = 600_000
 export const DEFAULT_DEADLINE_GRACE_MS = 2_000
 
 export interface SessionCoreConfig {
-  tailLines: number
+  /** #185: renamed from `tailLines` with the pagination-vocabulary alignment
+   * (the tail default budget uses the `read`/spill `limit` word now). */
+  tailLimit: number
   maxSessions: number
   settleQuietMs: number
   settleTickMs: number
@@ -107,7 +111,7 @@ export function resolveCoreConfig(raw: Partial<SessionCoreConfig> | undefined): 
   const positiveInt = (value: unknown, fallback: number): number =>
     Number.isInteger(value) && (value as number) > 0 ? (value as number) : fallback
   return {
-    tailLines: positiveInt(c.tailLines, DEFAULT_TAIL_LINES),
+    tailLimit: positiveInt(c.tailLimit, DEFAULT_TAIL_LIMIT),
     maxSessions: positiveInt(c.maxSessions, DEFAULT_MAX_SESSIONS),
     settleQuietMs: positiveInt(c.settleQuietMs, DEFAULT_SETTLE_QUIET_MS),
     settleTickMs: positiveInt(c.settleTickMs, DEFAULT_SETTLE_TICK_MS),
@@ -431,16 +435,32 @@ export interface SendResult {
   status: SessionStatus
 }
 
+/** One tail page. #185: the pagination vocabulary is aligned with the
+ * `read`/spill window face (`{offset, limit}` + `totalLines` + a truncation
+ * flag — the same words, same meanings: `offset` is the 1-based absolute
+ * line number of the page's first line, KEPT EVEN WHEN THE PAGE IS EMPTY
+ * exactly like `read`'s offset; `limit` is the page budget in effect;
+ * `totalLines` the exact retained-line count; `truncated` flags the
+ * backlog-loss case as before, which is the official `read`'s truncation
+ * word too). The old `{text, lines: number, truncated}` counting shape is
+ * RETIRED, not aliased — the rename is declared on the tool schema and in
+ * the entry docs (the migration note), never silently kept dual. */
 export interface TailPage {
   text: string
-  lines: number
+  offset: number
+  limit: number
+  totalLines: number
   truncated: boolean
 }
 
 export interface SessionCore {
   open(owner: unknown, spec: OpenSpec, signal?: AbortSignal): Promise<OpenResult>
   send(owner: unknown, id: string, request: SendRequest): Promise<SendResult>
-  tail(owner: unknown, id: string, lines?: number): TailPage
+  /** #185: the budget argument uses the `read`/spill `limit` word (was
+   * `lines`). The tail stays cursor-incremental — no request-side `offset`
+   * is added, because the offset vocabulary lives on the RESULT (where the
+   * page reports the absolute position it covers), not on the request. */
+  tail(owner: unknown, id: string, limit?: number): TailPage
   close(owner: unknown, id: string): Promise<{ closed: boolean }>
   /** Registry-derived liveness: every session id currently held for the
    * owner (the #62 fix — counting derives from HERE, not from any entry's
@@ -1105,18 +1125,22 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       return { delta, status: statusOf(s) }
     },
 
-    tail(owner, id, lines) {
+    tail(owner, id, limit) {
       const s = requireSession(owner, id)
-      const budget = lines ?? config.tailLines
+      const budget = limit ?? config.tailLimit
       const consumed = cursors.get(s) ?? 0
       // Incremental read: fetch only lines past the session cursor, advance
       // the cursor to the newest retained line, and report truncation when
       // the backlog exceeded the requested budget (the seam-era tailPage
       // contract, kept verbatim — including the live-anchor retry).
+      // #185: the page facts use the `read`/spill pagination vocabulary —
+      // `offset` = 1-based absolute line number of the page's first line
+      // (kept even on an empty page), `limit` = the budget in effect,
+      // `totalLines` = the exact retained-line count the page covers.
       for (let attempt = 0; attempt < 3; attempt += 1) {
         const total = totalLines(s)
         const backlog = total - consumed
-        if (backlog <= 0) return { text: '', lines: 0, truncated: false }
+        if (backlog <= 0) return { text: '', offset: consumed + 1, limit: budget, totalLines: total, truncated: false }
         const count = Math.min(budget, backlog)
         // The page read anchors on the LIVE newest line; output arriving
         // between probe and read would shift the window. Retry until the
@@ -1125,12 +1149,14 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         const page = readNewest(s, count, count)
         if (page.totalLines === total) {
           cursors.set(s, total)
-          return { text: page.text, lines: count, truncated: backlog > count || page.truncated }
+          return { text: page.text, offset: total - count + 1, limit: budget, totalLines: total, truncated: backlog > count || page.truncated }
         }
       }
       // Persistently drifting: report no page rather than a misaligned one;
       // the cursor is untouched, so the next tail retries the whole backlog.
-      return { text: '', lines: 0, truncated: true }
+      // `totalLines: consumed` is the deterministic part (everything below
+      // the untouched cursor) — the live total is unstable by definition.
+      return { text: '', offset: consumed + 1, limit: budget, totalLines: consumed, truncated: true }
     },
 
     async close(owner, id) {

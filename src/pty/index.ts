@@ -24,8 +24,11 @@
  *       HOST job (`ctx.jobs`, the `@deepseek-ai/dsh-jobs` +
  *       `@deepseek-ai/dsh-tool-jobs` pair) and returns its id immediately —
  *       the foreground settle path is byte-for-byte unchanged;
- *   pty_tail({ id, lines? })         → incremental read from a per-session
- *       cursor — repeated tails never resend old lines;
+ *   pty_tail({ id, limit? })         → incremental read from a per-session
+ *       cursor — repeated tails never resend old lines; the page facts use
+ *       the read/spill `{offset, limit}` pagination vocabulary (#185: was
+ *       `{ id, lines? }` → `{ text, lines, truncated }`, renamed & declared
+ *       in the schema, never aliased silently);
  *   pty_close({ id })                → clean termination + reclaim;
  *   pty_list({})                     → the owner's own sessions (id +
  *       status + pid, stable creation order);
@@ -54,7 +57,7 @@
 
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LINES, DEFAULT_MAX_SESSIONS, DEFAULT_DEADLINE_MS, extractSpec, AUTO_CLOSE_SEMANTICS, DEADLINE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LIMIT, DEFAULT_MAX_SESSIONS, DEFAULT_DEADLINE_MS, extractSpec, AUTO_CLOSE_SEMANTICS, DEADLINE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
 import { codedError } from '../coded-error.ts'
 import {
   ENVIRONMENT_CONTEXT_NAME,
@@ -123,8 +126,11 @@ export interface PtyConfig extends SessionCoreConfig {
  * settings-section wiring lands with the consumer tickets that need it.
  */
 const Config = z.object({
-  /** Default line budget for pty_tail when the caller omits `lines`. */
-  tailLines: z.number().default(DEFAULT_TAIL_LINES),
+  /** Default line budget for pty_tail when the caller omits `limit`.
+   * #185: renamed from `tailLines` with the pagination-vocabulary alignment
+   * (`read`/spill `limit` word) — the old key is no longer read; declared
+   * here and in the entry docs, not silently kept as an alias. */
+  tailLimit: z.number().default(DEFAULT_TAIL_LIMIT),
   /** Concurrent-session soft cap per owning agent (#56/#61). */
   maxSessions: z.number().default(DEFAULT_MAX_SESSIONS),
   /** Global default session shell (#149): used by the argument-less
@@ -283,7 +289,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       core.send(owner, id, request),
 
     /** Incremental read from the per-session cursor. */
-    tail: (owner: Owner, id: string, lines?: number): any => core.tail(owner, id, lines),
+    tail: (owner: Owner, id: string, limit?: number): any => core.tail(owner, id, limit),
 
     /** Awaited cleanup; idempotent per close; foreign ids propagate loudly. */
     close: (owner: Owner, id: string): Promise<any> => core.close(owner, id),
@@ -540,7 +546,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
       'Incrementally read a PTY session\'s new output since the last tail (per-session cursor; repeated tails do not resend old lines).',
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from pty_open.' },
-      lines: { type: 'number', description: 'Max lines to return this call (default from config; excess is marked truncated).' },
+      limit: { type: 'number', description: 'Max lines to return this call (default from config; excess is marked truncated). #185: renamed from `lines` — the read/spill pagination word.' },
     },
     output: {
       schema: {
@@ -548,22 +554,27 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         additionalProperties: true,
         properties: {
           text: { type: 'string', description: 'New output since the cursor, chronological.' },
-          lines: { type: 'number', description: 'Number of new lines returned.' },
+          offset: { type: 'number', description: '1-based absolute line number of the page\'s first line (kept even when the page is empty).' },
+          limit: { type: 'number', description: 'The page budget in effect for this call.' },
+          totalLines: { type: 'number', description: 'Exact retained-line count the page covers.' },
           truncated: { type: 'boolean', description: 'True when older backlog exceeded the budget and was dropped.' },
         },
       },
       render: (_args: unknown, value: { text?: string }) => [{ type: 'text' as const, text: value.text || '(no new output)' }],
       // #121: pure display metadata on `tool/result.meta` — the page facts
       // without duplicating the (already model-facing) text itself.
-      presentationMeta: (_args: unknown, value: { lines?: number; truncated?: boolean }) => ({
+      // #185: the page facts carry the read/spill pagination vocabulary.
+      presentationMeta: (_args: unknown, value: { offset?: number; limit?: number; totalLines?: number; truncated?: boolean }) => ({
         // Lossless JSON: absent members are omitted, never undefined-valued.
-        ...(value.lines === undefined ? {} : { lines: value.lines }),
+        ...(value.offset === undefined ? {} : { offset: value.offset }),
+        ...(value.limit === undefined ? {} : { limit: value.limit }),
+        ...(value.totalLines === undefined ? {} : { totalLines: value.totalLines }),
         ...(value.truncated === undefined ? {} : { truncated: value.truncated }),
       }),
     },
-    async execute(args: { id: string; lines?: number }, exec: { agent?: Owner }) {
+    async execute(args: { id: string; limit?: number }, exec: { agent?: Owner }) {
       const owner = requireAgent(exec)
-      return facade.tail(owner, args.id, args.lines)
+      return facade.tail(owner, args.id, args.limit)
     },
     presentCall: (args: { id: string }) => ({ card: 'terminal', title: `tail ${args.id}` }),
   }))

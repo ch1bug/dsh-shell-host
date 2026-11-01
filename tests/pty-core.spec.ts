@@ -113,29 +113,36 @@ describe("self-managed session core (#61 ADR-0010)", () => {
     await new Promise((r) => setTimeout(r, 10));
     h.spawned[0].emitData("banner\r\n");
     const opened = await pending;
-    // Cursor is at publication: the banner is NOT re-sent.
+    // Cursor is at publication: the banner is NOT re-sent (it is line 1, the
+    // cursor sits past it). #185: the empty page keeps its offset (the
+    // cursor's next line, 1-based) — read's "kept even when lines is empty"
+    // semantics; the default limit is 200.
     expect(await h.tool("pty_tail").execute({ id: opened.sessionId }, { agent })).toEqual(
-      { text: "", lines: 0, truncated: false },
+      { text: "", offset: 2, limit: 200, totalLines: 1, truncated: false },
     );
     h.spawned[0].emitData("one\r\ntwo\r\n");
     await new Promise((r) => setTimeout(r, 10));
     const page = await h.tool("pty_tail").execute({ id: opened.sessionId }, { agent });
-    expect(page.lines).toBe(2);
+    expect(page.offset).toBe(2); // "one" is buffer line 2
+    expect(page.totalLines).toBe(3);
+    expect(page.limit).toBe(200);
     expect(page.text).toContain("one");
     expect(page.text).toContain("two");
     // A partial line is held back until complete (complete lines only).
     h.spawned[0].emitData("par");
     await new Promise((r) => setTimeout(r, 10));
-    expect((await h.tool("pty_tail").execute({ id: opened.sessionId }, { agent })).lines).toBe(0);
+    expect((await h.tool("pty_tail").execute({ id: opened.sessionId }, { agent })).totalLines).toBe(3);
     h.spawned[0].emitData("tial\r\n");
     await new Promise((r) => setTimeout(r, 10));
     const page2 = await h.tool("pty_tail").execute({ id: opened.sessionId }, { agent });
     expect(page2.text).toContain("partial");
-    // Budget cap: backlog beyond `lines` is dropped and flagged.
+    expect(page2.offset).toBe(4); // "partial" is buffer line 4
+    // Budget cap: backlog beyond `limit` is dropped and flagged (#185 word).
     h.spawned[0].emitData("a\r\nb\r\nc\r\nd\r\n");
     await new Promise((r) => setTimeout(r, 10));
-    const page3 = await h.tool("pty_tail").execute({ id: opened.sessionId, lines: 2 }, { agent });
-    expect(page3.lines).toBe(2);
+    const page3 = await h.tool("pty_tail").execute({ id: opened.sessionId, limit: 2 }, { agent });
+    expect(page3.offset).toBe(7); // newest two of a/b/c/d = buffer lines 7–8
+    expect(page3.totalLines).toBe(8);
     expect(page3.truncated).toBe(true);
   });
 

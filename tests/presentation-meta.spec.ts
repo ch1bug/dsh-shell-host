@@ -22,7 +22,7 @@ const exec = () => ({ agent, signal: new AbortController().signal });
 
 describe("pty_send presentationMeta (#121)", () => {
   it("foreground: projects the structured send read (delta + status)", async () => {
-    const boot = bootPlugin({ config: { tailLines: 200, maxSessions: 8 }, spawnPty: echoFakePty });
+    const boot = bootPlugin({ config: { tailLimit: 200, maxSessions: 8 }, spawnPty: echoFakePty });
     const opened = await boot.tool("pty_open").execute({ command: "boot" }, exec());
     const args = { id: opened.sessionId, data: "meta-probe" };
     const sent = await boot.tool("pty_send").execute(args, exec());
@@ -36,7 +36,7 @@ describe("pty_send presentationMeta (#121)", () => {
   });
 
   it("the model-facing render is untouched: the foreground result stays one JSON block", async () => {
-    const boot = bootPlugin({ config: { tailLines: 200, maxSessions: 8 }, spawnPty: echoFakePty });
+    const boot = bootPlugin({ config: { tailLimit: 200, maxSessions: 8 }, spawnPty: echoFakePty });
     const opened = await boot.tool("pty_open").execute({ command: "boot" }, exec());
     const sent = await boot.tool("pty_send").execute({ id: opened.sessionId, data: "render-probe" }, exec());
     expect(boot.tool("pty_send").output.render({}, sent)).toEqual([{ type: "text", text: JSON.stringify(sent) }]);
@@ -44,14 +44,15 @@ describe("pty_send presentationMeta (#121)", () => {
 });
 
 describe("pty_tail presentationMeta (#121)", () => {
-  it("projects the page facts (lines / truncated) without duplicating the text", async () => {
-    const boot = bootPlugin({ config: { tailLines: 200, maxSessions: 8 }, spawnPty: echoFakePty });
+  it("projects the page facts (offset / limit / totalLines / truncated) without duplicating the text", async () => {
+    const boot = bootPlugin({ config: { tailLimit: 200, maxSessions: 8 }, spawnPty: echoFakePty });
     const opened = await boot.tool("pty_open").execute({ command: "boot" }, exec());
     await boot.tool("pty_send").execute({ id: opened.sessionId, data: "tail-probe" }, exec());
     const args = { id: opened.sessionId };
     const page = await boot.tool("pty_tail").execute(args, exec());
     const meta = boot.tool("pty_tail").output.presentationMeta(args, page);
-    expect(meta).toEqual({ lines: page.lines, truncated: page.truncated });
+    // #185: the page facts carry the read/spill pagination vocabulary.
+    expect(meta).toEqual({ offset: page.offset, limit: page.limit, totalLines: page.totalLines, truncated: page.truncated });
     expect(JSON.stringify(meta)).not.toContain("tail-probe");
   });
 });

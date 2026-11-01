@@ -16,8 +16,17 @@ root cause is structurally gone) and the opt-in per-session
 programmatic facade (`ctx.provide("pty")`) for consumer plugins. Persistent/
 interactive session ownership (ADR-0004 decision 5) is unchanged, and the
 entry keeps its own settings namespace (`dsh-pty-session` plugin name,
-`maxSessions` + `tailLines` + `defaultShellCommand` config) — ADR-0007: sharing
+`maxSessions` + `tailLimit` + `defaultShellCommand` config) — ADR-0007: sharing
 the package does not merge config surfaces.
+
+**Migration note (#185)**: the tail pagination vocabulary is aligned with the
+`read`/spill `{offset, limit}` face — `pty_tail`/`ssh_tail` take `limit`
+(was `lines`), the page reports `{ text, offset, limit, totalLines,
+truncated }` (was `{ text, lines, truncated }`; `offset` = 1-based absolute
+line number of the page's first line, kept even when the page is empty),
+and the default-budget config key is `tailLimit` (was `tailLines`; the old
+key is no longer read). The rename is declared here and on the tool schema,
+never aliased silently.
 
 ```js
 import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
@@ -270,7 +279,8 @@ names (known boundary, unchanged).
 - **`pty_send`**: projects the foreground `{ delta, status }` (same posture
   as the official `terminal_send`'s "structured readings in the foreground,
   `null` in the background"); `pty_tail` projects page facts
-  `{ lines, truncated }` (not copying the body); `shell_open` projects
+  `{ offset, limit, totalLines, truncated }` (#185 vocabulary) (not copying
+  the body); `shell_open` projects
   preset-resolution facts `{ preset, source, executable, probed, cwd,
   overrode }`.
 - **Zero model-surface change**: `output.schema` / `output.render` are
@@ -281,7 +291,7 @@ names (known boundary, unchanged).
 - **`finalizeContent` not aligned** (assessed along the way per the
   ticket): the official `maxResultBytes` is a byte ceiling on rendered
   text; this repo's output **is already capped per structured surface**
-  (the settle window is bounded, `pty_tail` has a lines budget + a
+  (the settle window is bounded, `pty_tail` has a limit budget + a
   scrollback ceiling, and #162's cutoff watermark truncates one-shot
   results); stacking one more ceiling would only change the semantics of
   model-visible content (at odds with #162's "distinguish real output from

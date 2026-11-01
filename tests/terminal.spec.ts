@@ -103,7 +103,7 @@ describe("shell_open (#55)", () => {
     await tool("pty_send").execute({ id: a.sessionId, data: "MARK-A" }, { agent });
     const tb = await tool("pty_tail").execute({ id: b.sessionId }, { agent });
     expect(tb.text).not.toContain("MARK-A");
-    expect(tb.lines).toBe(0);
+    expect(tb.totalLines).toBe(0);
   });
 
   it("unknown preset fails loudly enumerating the resolved preset ids", async () => {

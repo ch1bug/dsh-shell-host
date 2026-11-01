@@ -458,7 +458,7 @@ describe("#102 AC5: an existing session stops accepting writes after a downgrade
         expect(handle.writes).toHaveLength(before);
 
         // Reads and the close path do not widen anything: they stay available.
-        expect(await h.tool("pty_tail").execute({ id: opened.sessionId }, exec())).toEqual({ text: "", lines: 0, truncated: false });
+        expect(await h.tool("pty_tail").execute({ id: opened.sessionId }, exec())).toEqual({ text: "", offset: 1, limit: 200, totalLines: 0, truncated: false });
 
         // Widening is not a downgrade: the same session accepts a write again.
         h.sandboxPolicy.setMode("danger-full-access");

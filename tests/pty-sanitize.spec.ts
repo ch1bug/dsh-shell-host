@@ -61,7 +61,11 @@ describe("session-core sanitized ingestion (#180 contract A)", () => {
 
     const page = h.core.tail(agent, opened.sessionId, 50);
     expect(page.text).toBe("plain\n");
-    expect(page.lines).toBe(1);
+    expect(page.limit).toBe(50);
+    // totalLines counts the whole retained buffer (banner + plain) — the
+    // read-window word, not the returned-line count (#185).
+    expect(page.totalLines).toBe(2);
+    expect(page.offset).toBe(2);
   });
 
   it("a control sequence torn across chunks does not leak its pieces into the text", async () => {

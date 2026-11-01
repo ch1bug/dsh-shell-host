@@ -16,8 +16,15 @@ root cause is structurally gone) and the opt-in per-session
 programmatic facade (`ctx.provide("pty")`) for consumer plugins. Persistent/
 interactive session ownership (ADR-0004 decision 5) is unchanged, and the
 entry keeps its own settings namespace (`dsh-pty-session` plugin name,
-`maxSessions` + `tailLines` + `defaultShellCommand` config) — ADR-0007: sharing
+`maxSessions` + `tailLimit` + `defaultShellCommand` config) — ADR-0007: sharing
 the package does not merge config surfaces.
+
+**迁移注记（#185）**：tail 分页词汇已与 `read`/spill 的 `{offset, limit}` 面对齐
+—— `pty_tail`/`ssh_tail` 参数收 `limit`（原 `lines`），页事实报
+`{ text, offset, limit, totalLines, truncated }`（原 `{ text, lines, truncated }`；
+`offset` = 页首行的 1-based 绝对行号，空页同样保留），默认预算配置键为
+`tailLimit`（原 `tailLines`；旧键不再读取）。改名在此处与工具 schema 上显式声明，
+不做静默别名。
 
 ```js
 import * as pty from 'dsh-shell-host/pty'   // { name, inject, Config, apply }
@@ -176,13 +183,13 @@ agent 自己持有的会话**（数据源就是核心的 owner 注册表，与 `
 dispatch 日志；Web 卡片对本仓工具名仍是 generic（已知边界，不改）。
 
 - **`pty_send`**：前台投影 `{ delta, status }`（官方 `terminal_send` 同款「前台给结构化
-  读数、后台给 `null`」姿态）；`pty_tail` 投影页事实 `{ lines, truncated }`（不复制正文）；
+  读数、后台给 `null`」姿态）；`pty_tail` 投影页事实 `{ offset, limit, totalLines, truncated }`（#185 词汇；不复制正文）；
   `shell_open` 投影预设解析事实 `{ preset, source, executable, probed, cwd, overrode }`。
 - **模型面零变化**：`output.schema` / `output.render` 逐字不动 —— 元数据是纯展示，
   不进模型上下文（PTC 路径只写 `tool/ptc-dispatch` 事件的 meta，见
   [docs/research/research-ptc-third-party-tools.md §1.4](../../docs/research/research-ptc-third-party-tools.md)）。
 - **`finalizeContent` 不对齐**（票面顺带评估）：官方的 `maxResultBytes` 是对渲染文本的
-  字节上限；本仓的输出**已被结构面各自封顶**（settle 窗有界、`pty_tail` 有 lines 预算 +
+  字节上限；本仓的输出**已被结构面各自封顶**（settle 窗有界、`pty_tail` 有 limit 预算 +
   scrollback 上限、#162 截止水位截断 one-shot 结果），再叠一层上限只会改变模型可见内容
   的语义（与 #162 的「按构造区分真实输出与截断残留」口径相抵），收益不成比例 —— 不做。
 

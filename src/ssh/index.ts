@@ -8,7 +8,8 @@
  *       compose the ssh command line (`src/ssh/compose.ts`, the single source
  *       shared with the launcher layer) and open it on the core PTY — a
  *       long-lived remote shell with intermediate output visible;
- *   ssh_tail({ id, lines? })  → incremental read from the per-session cursor;
+ *   ssh_tail({ id, limit? })  → incremental read from the per-session cursor;
+ *       page facts on the read/spill `{offset, limit}` vocabulary (#185);
  *   ssh_send({ id, data, submit?, run_in_background? }) → write bytes, return
  *       the delta read (or a host job id when run in background);
  *   ssh_close({ id })         → clean termination + reclaim (idempotent).
@@ -120,7 +121,8 @@ interface SshCtx {
 interface SshSessionCore {
   open(owner: unknown, spec: { command: string; cwd?: string; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any>
   send(owner: unknown, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>
-  tail(owner: unknown, id: string, lines?: number): any
+  /** #185: `limit` (was `lines`) — same rename as the core's tail. */
+  tail(owner: unknown, id: string, limit?: number): any
   close(owner: unknown, id: string): Promise<{ closed: boolean }>
   modeOf(owner: unknown, id: string): SandboxMode | undefined
 }
@@ -286,7 +288,7 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
       'Incrementally read the ssh session\'s new output since the last tail (per-session cursor; repeated tails do not resend old lines). Core passthrough.',
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
-      lines: { type: 'number', description: 'Max lines to return this call (default from config; excess is marked truncated).' },
+      limit: { type: 'number', description: 'Max lines to return this call (default from config; excess is marked truncated). #185: renamed from `lines` — the read/spill pagination word.' },
     },
     output: {
       schema: {
@@ -294,15 +296,17 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
         additionalProperties: true,
         properties: {
           text: { type: 'string', description: 'New output since the cursor, chronological.' },
-          lines: { type: 'number', description: 'Number of new lines returned.' },
+          offset: { type: 'number', description: '1-based absolute line number of the page\'s first line (kept even when the page is empty).' },
+          limit: { type: 'number', description: 'The page budget in effect for this call.' },
+          totalLines: { type: 'number', description: 'Exact retained-line count the page covers.' },
           truncated: { type: 'boolean', description: 'True when older backlog exceeded the budget and was dropped.' },
         },
       },
       render: (_args: unknown, value: { text?: string }) => [{ type: 'text' as const, text: value.text || '(no new output)' }],
     },
-    async execute(args: { id: string; lines?: number }, exec: { agent?: unknown }) {
+    async execute(args: { id: string; limit?: number }, exec: { agent?: unknown }) {
       const owner = requireAgent(exec)
-      return core.tail(owner, args.id, args.lines)
+      return core.tail(owner, args.id, args.limit)
     },
     presentCall: (args: { id: string }) => ({ card: 'terminal', title: `tail ${args.id}` }),
   }))

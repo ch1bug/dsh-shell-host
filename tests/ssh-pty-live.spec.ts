@@ -117,7 +117,7 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
       const seen = new Set<string>();
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
-        const page = await tool("ssh_tail").execute({ id: opened.sessionId, lines: 600 }, { agent });
+        const page = await tool("ssh_tail").execute({ id: opened.sessionId, limit: 600 }, { agent });
         for (const line of page.text.split("\n")) {
           // End-anchored: the remote prompt can glue onto the first mark.
           const m = line.match(/MARK-(\d+)\s*$/);
@@ -139,8 +139,9 @@ describe("ssh 四工具 live round-trip (#24 AC)", () => {
       expect(seen.size).toBe(500);
       expect(lastMark).toBe(500);
       // Cursor is at the end: a repeat tail is an empty page (no resend).
-      const again = await tool("ssh_tail").execute({ id: opened.sessionId, lines: 600 }, { agent });
-      expect(again.lines).toBe(0);
+      const again = await tool("ssh_tail").execute({ id: opened.sessionId, limit: 600 }, { agent });
+      expect(again.text).toBe("");
+      expect(again.truncated).toBe(false);
 
       const closed = await tool("ssh_close").execute({ id: opened.sessionId }, { agent });
       expect(closed.closed).toBe(true);
