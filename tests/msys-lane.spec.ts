@@ -77,12 +77,39 @@ export function laneViolations(text: string): string[] {
         "`$log` 里没有 `!! SKIP (loud)`，loud skip 行数会结构性恒 0（加 `--reporter=default`）",
     );
   }
+  // 契约 5（批 O retro）：环境身份判据 —— 副本缺失的 FAIL 必须给**跨身份**修法（DSH_MSYS_COPY
+  // 指认），否则消息会把人引去 clone 第二份副本（副本多半在别的 bash 身份家里）；node 必须有
+  // 版本下限（msys 自带 v18 溜过 ucrt64 检查，套件跑在错工具链上）。两坑实录：批 O 编排批末门
+  // 两次假红（无 /d 挂载的 bash / msys64 家目录无副本）。
+  const copyFailAt = lines.findIndex((line) => line.includes("没有部署副本"));
+  if (copyFailAt === -1) {
+    problems.push("缺部署副本缺失判据：环境身份不对时会跑到一半才炸，或把「身份不对」读成「测试红」");
+  } else {
+    const hintAt = lines.findIndex(
+      (line, i) => i >= copyFailAt && i <= copyFailAt + 4 && line.includes("DSH_MSYS_COPY"),
+    );
+    if (hintAt === -1) {
+      problems.push(
+        `部署副本 FAIL（第 ${String(copyFailAt + 1)} 行）没给 DSH_MSYS_COPY 指认提示：跨身份时该消息会误导去 clone 第二份副本`,
+      );
+    }
+  }
+  const nodeFloorAt = lines.findIndex(
+    (line) => !isComment(line) && line.includes("process.versions.node.split"),
+  );
+  if (nodeFloorAt === -1) {
+    problems.push("缺 node 版本下限判据：msys 自带的旧 node（v18）会溜过 ucrt64 检查，套件跑在错工具链上");
+  }
   return problems;
 }
 
 /** 合成文本：形状正确的最小脚本（负例由它删/挪一处得到，**不依赖临时改真文件**）。 */
 const HEALTHY = [
   "#!/bin/bash",
+  'NODE_MAJOR=$(node -p \'process.versions.node.split(".")[0]\' 2>/dev/null || echo 0)',
+  '[ "$NODE_MAJOR" -ge 20 ] || fail "生效的 node 过旧 —— 本车道要求 Windows 侧 node ≥ 20"',
+  '[ -d "$COPY/.git" ] || fail "没有部署副本（探测过：$COPY）"',
+  '    b) 跨身份跑的正解：DSH_MSYS_COPY=<副本路径> 指认现有副本；',
   'step "同步：副本 …"',
   'if ! (cd "$COPY" && node --run build) >"$buildlog" 2>&1; then',
   '  fail "副本重建失败"',
@@ -105,8 +132,15 @@ describe("车道形状检查器（合成文本）", () => {
   });
 
   it("构建步挪到跑套件之后 → 报顺序违规", () => {
+    // 动态定位（HEALTHY 会增长——硬编码切片在 #185 批 O retro 扩行后失配过一次）：
+    // 把构建步三行（if/fail/fi）滤出，插到跑套件行之后。
     const lines = HEALTHY.split("\n");
-    const moved = [...lines.slice(0, 2), ...lines.slice(6), ...lines.slice(2, 6)].join("\n");
+    const isBuild = (line: string) =>
+      line.includes("node --run build") || line.includes("副本重建失败") || line === "fi";
+    const buildBlock = lines.filter(isBuild);
+    const rest = lines.filter((line) => !isBuild(line));
+    const runAt = rest.findIndex((line) => /vitest\.mjs"? run/u.test(line));
+    const moved = [...rest.slice(0, runAt + 1), ...buildBlock, ...rest.slice(runAt + 1)].join("\n");
     expect(laneViolations(moved).join(" | ")).toContain("之后：被测的仍是旧构件");
   });
 
@@ -137,6 +171,20 @@ describe("车道形状检查器（合成文本）", () => {
       .filter((line) => !line.includes("含 loud 的档"))
       .join("\n");
     expect(laneViolations(noAttrib).join(" | ")).toContain("缺逐档归因行");
+  });
+
+  it("变异：副本 FAIL 没给 DSH_MSYS_COPY 指认 → 报跨身份误导（批 O 两次假红的第一个坑）", () => {
+    const noHint = HEALTHY.split("\n")
+      .filter((line) => !line.includes("DSH_MSYS_COPY"))
+      .join("\n");
+    expect(laneViolations(noHint).join(" | ")).toContain("跨身份时该消息会误导");
+  });
+
+  it("删掉 node 版本下限 → 报「缺 node 版本下限判据」（msys v18 溜过 ucrt64 检查的第二个坑）", () => {
+    const noFloor = HEALTHY.split("\n")
+      .filter((line) => !line.includes("process.versions.node.split"))
+      .join("\n");
+    expect(laneViolations(noFloor).join(" | ")).toContain("缺 node 版本下限判据");
   });
 
   // 契约 4 的判据**不锚行尾**（`includes`），按 `docs/agents/TESTING.md` 的 E11(b)：只需一条

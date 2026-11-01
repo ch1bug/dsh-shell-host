@@ -107,10 +107,15 @@ command -v node >/dev/null 2>&1 || fail "PATH 上仍没有 node —— 见 scrip
 case "$(command -v node)" in
   */ucrt64/*) fail "生效的 node 是 ucrt64：构建/套件会崩在原生件绑定上（rolldown 与 gnu 绑定，见 docs/dev-environment.md §4.2）。设 DSH_MSYS_WIN_NODE_DIR 后重试" ;;
 esac
+# 环境身份判据（批 O retro）：msys 自带的 node（如 v18）同样跑不动本套件——只拒 ucrt64 挡不住它。
+NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+[ "$NODE_MAJOR" -ge 20 ] || fail "生效的 node 是 v${NODE_MAJOR}.x（$(command -v node)）——本车道要求 Windows 侧 node ≥ 20（msys 自带的 node 跑不动本套件）。修法：DSH_MSYS_WIN_NODE_DIR 前置 Windows node，或切到部署副本在位的 bash 身份重跑（身份判别见 docs/dev-environment.md §0.1.1）"
 
 # —— 1. 副本前置检查 ——
-[ -d "$COPY/.git" ] || fail "没有部署副本（$COPY）。先按 docs/dev-environment.md §0 建立：
-    git clone <origin> \"\$HOME/dsh-shellhost-src\"   # 依赖随仓 node_modules，本仓不需要额外接线"
+[ -d "$COPY/.git" ] || fail "没有部署副本（探测过：$COPY；候选家目录：$MSYS_HOME 与 \$HOME）。三种修法任一：
+    a) 副本多半在**别的 bash 身份**家里（常见：Git Bash 侧 \$HOME = Windows 用户目录）——切到那个身份重跑；
+    b) 跨身份跑的正解：DSH_MSYS_COPY=<副本路径> 指认现有副本；
+    c) 真没有才 clone：git clone <origin> \"\$HOME/dsh-shellhost-src\"   # 依赖随仓 node_modules（docs/dev-environment.md §0）"
 [ -d "$SRC/.git" ] || fail "权威树路径不像 git 检出：$SRC（用 DSH_MSYS_SRC 覆盖）"
 
 tree_status "$SRC" "权威树" || fail "权威树工作树不干净（先在权威树收尾，别在有未提交改动时跑车道）"
