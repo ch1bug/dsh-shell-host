@@ -19,7 +19,8 @@
  *    文档 / 注释里对旧提交的引用会集体失效。人肉逐条 `git cat-file -t` 才发现过 6 处
  *    （还写错过一轮"中间态"哈希）—— 机械掉它。口径：引用优先写 `git log -S '<符号>'`
  *    （本仓 handoff 就是这条），要写 SHA 就必须能解；跨仓的引用（宿主锚点）进
- *    `HASH_ALLOWLIST`，显式留档。
+ *    `HASH_ALLOWLIST`，显式留档（`#183` 起按**前缀**匹配：登记 ≥8 位前缀即覆盖该前缀下
+ *    任意长度的引用，不必与正文同形——判据与碰撞取舍见 `HASH_ALLOWLIST` 头注）。
  * 4. **docs 与根文档里的 markdown 链接目标必须存在**（`#112` 的扩展）：`[label](target)` 的目标
  *    按 markdown 真实语义**相对所在文件目录**解析（不是仓库根）—— 基准写错一级是本仓
  *    实测过的缺陷（`docs/code-review-brief.md` §3 曾有 6 条这样的死链）。
@@ -166,17 +167,37 @@ export function runnerRefsIn(
 
 /**
  * 引用哈希的**允许清单**：跨仓引用，本仓历史里必然解析不到，故显式留档。
- * `687f282e` = **宿主**仓现锚 `dsh-v0.2.1-rc.2`；`1600d8a1` = 前一锚 `dsh-v0.2.1-rc.1`；
- * `639ed015` / `639ed01539` = 旧锚 `dsh-v0.2.0-rc.2`（历史引用仍在，见 dev-environment.md §2）；
- * `ed25519` = SSH 密钥类型名（Ed25519），非提交哈希——7 位全 hex 被 :177 的正则误捕（#141 实测）。
+ *
+ * **匹配语义（`#183`）：前缀匹配** —— 条目是正文 token 的**前缀**即豁免（判定在
+ * `hashAllowlisted`）。登记 ≥8 位短前缀即覆盖该前缀下的全哈希与短写法引用，
+ * **不必与正文同形**（整串比对时代登记面被迫冗长：`#180` 落地时正文是全 40 位、
+ * 登记 `687f282e` 挡不住，被迫全哈希登记绕过——本票回改短前缀）。
+ * **碰撞取舍**：前缀越短放行面越宽（非登记哈希恰以同前缀开头 ⇒ 假阴性）；
+ * 40 位 SHA-1 取 8 位前缀（2^32 空间）误放行概率工程上可忽略，故**登记请 ≥8 位**；
+ * 更短的前缀须在本头注写明理由。与登记前缀仅差末位的近邻哈希**不豁免**（合成用例钉住）。
+ *
+ * `687f282e` = **宿主**仓现锚 `dsh-v0.2.1-rc.2`（覆盖 `src/pty/terminal-sanitizer.ts`
+ * 头注引用的全 40 位哈希）；`1600d8a1` = 前一锚 `dsh-v0.2.1-rc.1`；
+ * `639ed015` / `639ed01539` = 旧锚 `dsh-v0.2.0-rc.2`（历史引用仍在，见 dev-environment.md §2；
+ * 前缀语义下前者已覆盖后者，条目并存只为登记处可读）；
+ * `ed25519` = SSH 密钥类型名（Ed25519），非提交哈希——7 位全 hex 被 `hashRefsIn`
+ * 的正则误捕（#141 实测），豁免其自身（无其他 hex token 以它开头，无前缀外溢）。
  */
-export const HASH_ALLOWLIST = new Set(["687f282e", "687f282e8625c6b8d11ff58211a90524be2e4317", "1600d8a1", "639ed015", "639ed01539", "ed25519"]);
+export const HASH_ALLOWLIST = new Set(["687f282e", "1600d8a1", "639ed015", "639ed01539", "ed25519"]);
 
 /** 文本块里的提交哈希引用（7–40 位 hex；纯数字的版本号片段 / 权限位不算）。 */
 export function hashRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
   return collectRefs(blocks, (text) =>
     [...text.matchAll(/\b[0-9a-f]{7,40}\b/gu)].map((m) => m[0]).filter((t) => !/^[0-9]+$/u.test(t)),
   );
+}
+
+/**
+ * `HASH_ALLOWLIST` 的命中判定（`#183` 起 = **前缀语义**）：条目是 token 的前缀即豁免。
+ * 判据与碰撞取舍的单一来源见 `HASH_ALLOWLIST` 头注（登记 ≥8 位前缀；近邻仍红）。
+ */
+export function hashAllowlisted(token: string): boolean {
+  return [...HASH_ALLOWLIST].some((entry) => token.startsWith(entry));
 }
 
 /**
@@ -979,6 +1000,28 @@ describe("引用腐烂检查器自身的边界（合成文本）", () => {
     expect(hashRefsIn(["无引用"])).toEqual([]);
   });
 
+  it("HASH_ALLOWLIST 前缀语义：短前缀豁免全哈希引用；近邻前缀仍红（#183）", () => {
+    // 正例：登记 8 位前缀 `687f282e`，正文引用全 40 位哈希（#180 vendored 头注的被迫形态）
+    // 不再 dangling —— 活体判定的完整链路 = hashRefsIn 提取 → 前缀命中过滤。
+    const full = "687f282e8625c6b8d11ff58211a90524be2e4317";
+    expect(hashRefsIn([`锚定 ${full} 与 687f282e`]).filter((t) => !hashAllowlisted(t))).toEqual([]);
+    // 同前缀的中间长度写法同享豁免。
+    expect(hashAllowlisted("687f282e")).toBe(true);
+    expect(hashAllowlisted("687f282e8625")).toBe(true);
+    // 负例：与名单前缀仅差**一位**的近邻哈希仍红（`687f282e` 末位 e→d / e→f 两个近邻，
+    // 完整字面量见下方断言——注释里不写它们，免得本判据自己扫出自己）——
+    // 前缀匹配不把放行面外溢到相邻前缀。
+    const near = ["687f282d8625c6b8d11ff58211a90524be2e4317", "687f282f8625"];
+    expect(hashRefsIn([`见 ${near[0]} 与 ${near[1]}`]).filter((t) => !hashAllowlisted(t))).toEqual(near);
+    // 无关哈希不豁免。
+    expect(hashAllowlisted("6ac27a2")).toBe(false);
+    // 既有条目按前缀语义复验（不得放行此前不在名单内的哈希前缀）：只覆盖自己前缀。
+    expect(hashAllowlisted("1600d8a1")).toBe(true);
+    expect(hashAllowlisted("1600d8a100000000000000000000000000000000")).toBe(true);
+    expect(hashAllowlisted("1600d8a200000000000000000000000000000000")).toBe(false);
+    expect(hashAllowlisted("ed25519")).toBe(true);
+  });
+
   it("链接目标只认相对路径：URL 与纯锚点不误报", () => {
     const block = [
       "- [上游](https://github.com/ch1bug/dsh-shell-host/issues/80)",
@@ -1726,15 +1769,17 @@ describe("文档引用腐烂（活体仓库扫描）", () => {
       "vitest.config.ts",
       ...ROOT_DOCS,
     ];
+    // allowlist 按**前缀**命中（#183，判据与碰撞取舍见 HASH_ALLOWLIST 头注 / hashAllowlisted）：
+    // 登记短前缀即覆盖该前缀下的全哈希与短写法引用，登记面不必与正文同形。
     const dangling = files.flatMap((rel) =>
       hashRefsIn(blocksOf(rel))
-        .filter((token) => !HASH_ALLOWLIST.has(token) && !resolvable(token))
+        .filter((token) => !hashAllowlisted(token) && !resolvable(token))
         .map((token) => `${rel} -> ${token}`),
     );
     expect(
       dangling,
       "引用了本仓解析不到的提交哈希（历史重写会改写全部 SHA）：重映射到终态、或改用 `git log -S '<符号>'`；" +
-        "跨仓引用（宿主锚点）请登记进 HASH_ALLOWLIST",
+        "跨仓引用（宿主锚点）请登记进 HASH_ALLOWLIST（前缀语义，≥8 位前缀即可）",
     ).toEqual([]);
   });
 });
