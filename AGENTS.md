@@ -163,6 +163,12 @@ pre-commit 守卫一次性启用：`git config core.hooksPath .githooks`（查�
 
 Gotchas (learned the hard way):
 
+- **grill 拍「复用某包的公开导出 / 某外部接口面」类决策前，先实测导出面**（#184；
+  实证案例 = #180 决策 3：三个已发布版本 tarball 均未导出 `TerminalSanitizer`、
+  exports map 无 subpath，加载根模块还拖 6 包 peer 闭包——试装后全撤改 vendored，
+  human 二次拍板）。前置证据：`npm view <pkg> exports main` + 下载 tarball 核对
+  根导出与 exports map（约 2 分钟）。上游技能面改进跟踪在
+  `ch1bug/dsh-matt-preset#174`（用户级 `~/.dsh/skills` 分发面，不直改已装副本）。
 - 提交或复核前先 `git add -A` 再 `git diff --staged` —— **否则新增文件不进 diff**
   （`docs/code-review-brief.md` §1；此前真实踩过：审出的面少了新文件）
 - **但同一个工作树可能有并行会话在写**（本机实测多次：两个会话共用一个 `<repo>` 检出，
