@@ -1,7 +1,6 @@
 {
   "name": "dsh-shell-host",
   "version": "0.2.1-rc.2-r1",
-  "private": true,
   "description": "dsh-shell-host: tools-only DSH plugin (ADR-0013) — persistent PTY sessions (./pty), interactive ssh sessions (./ssh), launcher-preset terminals (shell_open, ./terminal), and WSL bridge tools (./wsl). No shell executor, no upstream loader-row takeover.",
   "type": "module",
   "license": "MIT",
