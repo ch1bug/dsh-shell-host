@@ -88,6 +88,10 @@ const machineLane = [
   // settle 时序对 CPU 争用敏感——并发池里进程提前退出报 REMOTE_SESSION_EXITED 假红
   // （#177 会话 pre-push 车道；副本单跑 17 例全绿）；真 CLI 档串行同族。
   'tests/remote-session-launch.spec.ts',
+  // #186：真 ConPTY + 真 msys2/git-bash 会话的哨兵透传验证（OSC 133 哨兵对是否
+  // 原样穿过 ConPTY 到达摄取点）——真 bash spawn 墙钟成本，串行同族；无 bash 的
+  // 机器上 skip（用例自带 resolveBash 门）。
+  'tests/pty-marker-machine.spec.ts',
 ]
 // #123: the WRITER lane. `tests/clean-lib.spec.ts` really runs `node --run build`
 // twice, and each build first DELETES lib/'s four entry directories plus the

@@ -108,3 +108,17 @@ Live verification (machine lane): `tests/ssh-pty-live.spec.ts` runs the full
 start → interactive → incremental tail → close round-trip against a real
 host; it is gated on `DSH_SSH_LIVE_HOST` (optionally `DSH_SSH_LIVE_JUMP`)
 and skips loudly when unset — no network in the default test lanes.
+
+### Marker sessions (#186, ADR-0020): a DECLARED bash remote shell carries the sentinel
+
+When `ssh_start` is given `shell: "bash --login"` (or any bash-named remote
+shell text), the session is opened with `marker: "bash"` — after the initial
+settle the core writes the ONE setup line into the interactive remote bash
+(`PS0` open sentinel + `PROMPT_COMMAND` close sentinel, the user's existing
+hook appended in bash syntax), so `ssh_tail` / `ssh_send` read the FILTERED
+view by default: the remote commands' own output, with the banner, the echo
+and the prompt lines out. `view: "raw"` names the full sanitized stream.
+An OMITTED `shell` leaves the remote login shell unknown and arms nothing
+(declaration over inference); a non-bash `shell` value likewise. The
+mechanism, the trust rules and the declared limits are the pty entry's —
+see the `./pty` entry doc, #186 section.

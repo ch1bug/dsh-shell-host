@@ -287,3 +287,79 @@ dispatch 日志；Web 卡片对本仓工具名仍是 generic（已知边界，�
 
 单元读数载体：`tests/pty-deadline.spec.ts`（等待 stdin 的 / 持续输出不退出的 / 长任务显式延长的 /
 正常快速命令的假件，全部有界）。
+
+### 哨兵包装输出——过滤视图（#186，ADR-0020）
+
+开面**声明**了 marker 方言的会话，core 在同一份消毒后缓冲上维护**两个视图**
+（ADR-0019 的 raw 契约不动——过滤视图是增量面）：
+
+- **raw（原始视图）**——消毒器保留的全部：回显、横幅、提示符、重绘残留、
+  命令输出。`view: "raw"` 显式点名（证据面；`pty_tail`/`ssh_tail` 接受该参数，
+  未知拼写响亮拒绝，raw 视图从自己独立的游标翻页）。
+- **filtered（过滤视图）**——所有读取面的**默认**（`pty_tail` / `ssh_tail` /
+  `pty_send` / `ssh_send` 的增量读数）：只有**命令自己的输出**。回显输入行、
+  横幅/提示符行、重绘残留都不进。分页词汇沿用 #185 的
+  `{ text, offset, limit, totalLines, truncated }` 原样，语义限定在过滤坐标内
+  （`offset`/`totalLines` 只数视图内行；scrollback 裁行移动基线、不重编号——
+  与 raw 的 `absBase` 同构的绝对连续坐标）。
+
+**哨兵格式（Q3）**：随机 per-session payload（8 字节 hex）装进 OSC 私有序列壳
+——`ESC ] 133 ; C ; <payload> BEL` 开段（命令输出开始），`ESC ] 133 ; D ;
+<payload> BEL` 闭段。闭标记**只有与本会话的开标记配对才被信任**——结构性强制：
+扫描器按本会话 payload 构造，别的什么都不认（外来/通用 OSC-133 序列原样流过、
+在消毒器处死掉）。不被信任的闭永远闭不了段——不可信输入只会**少滤**（输出继续
+进视图），不会吞数据。
+
+**方言范围（Q1，v1）**：只做 bash 一档——顶层进程是 bash 的会话
+（`pty_open`/`shell_open` 用 `bashMarkerDialect` 在解析后的命令上检测；`sh`
+**有意不认**——它可能是 dash，既无 `PS0` 也无 `PROMPT_COMMAND`），以及**声明了**
+远端 shell 是 bash 的 ssh 会话（`ssh_start` 的 `shell` 参数经
+`sshBashShellDialect`；不传 `shell` 则不注入）。包装型可执行（wsl.exe 内的
+bash、pwsh、cmd）在 v1 矩阵**之外**——已验证机制的复制扩展，另行决策。
+
+**注入点**：不动任何启动文件。初始 settle 之后（profile 已跑完，我们的
+**前缀追加**赢过 rcfile 里的 `PROMPT_COMMAND`）core 写入**一行** setup：`PS0`
+携带开哨兵（每条交互命令执行前展开），闭哨兵 printf **前缀追加**到
+`PROMPT_COMMAND`（每次 prompt 前执行；标量或未设的钩子经
+`${PROMPT_COMMAND:+;…}` 拼接保留——已声明边界：bash 5.1+ 的 `PROMPT_COMMAND`
+也可以是**数组**（rcfile 常见 `PROMPT_COMMAND+=('hook')` 写法），我们的标量赋值
+会把数组整体替换，元素[0] 之外的钩子丢失；丢失方向是用户自己的 prompt 钩子退化，
+绝不是命令输出丢失，而 `+=` 写法在标量形态会坏分号——如实声明，不粉饰）。
+写入结果**可观测**：open 结果携带 `markerArmed: true`（已送达）或 `false`
+（写入失败——出生即死的会话：marker 永不武装、一切读数留在 raw 面——降级可观测
+而非静默吞掉）。这一行自身的回显只有**字面** `\e` 两字符——没有真实 ESC
+字节——碰不到扫描器。实测真 msys2 会话中哨兵**原样穿透 ConPTY**（字节时间线：
+`.scratch/verify186/probe-raw-stream.log`；行为面钉在
+`tests/pty-marker-machine.spec.ts`）。
+
+**镜像兜底（Q2 并存）**：第一个受信 OPEN 之前，过滤视图**镜像 raw**（横幅/回显
+尚不可区分——什么都不滤，setup 永远不落地的会话退化到 #186 之前的面，绝不丢
+输出）。因此过滤视图第一页实际拿到的形态（点名申报，消费面不意外）：setup 行
+自身的回显与其后的 prompt，加上**第一条**命令的回显（它在自己的 `PS0` OPEN
+之前完成）——首个受信 OPEN 之前的一切都过。第一个 OPEN 之后，段外行不再进
+视图。#177 重绘启发式继续守共享缓冲——它剥掉的行根本不进缓冲，过滤视图自动
+受益；启发式的退役另立票（Q2 拍板）。`pty_send` 增量读数：完整行按段过滤；
+仍成形中的 pending 尾按 settle 结束时的段状态处理——段开着或仍镜像则保留；
+armed 且已闭时，**close 之前**产生的字节保留（无尾换行的命令输出残片，
+`printf abc` 这种——复审确认早前整尾丢弃会把输出残片一起吞掉，是真实的数据
+丢失方向），只丢弃 **close 之后**到达的字节（停在 pending 里的 prompt 残片
+——本票要除掉的那类；此前真 msys2 的 delta 会以裸 `$ ` 收尾，实测见
+`.scratch/verify186/`）。
+
+**对抗面（如实声明，不粉饰）**：会话**内**的程序若读 `$PS0` 并经 printf 展开，
+可以伪造本会话的哨兵——同用户威胁模型，在 ADR-0020 信封之外（payload 防的是
+偶然/通用发射，不是读了变量的同权限伪造）。若 `PROMPT_COMMAND` 钩子事后被覆盖、
+或会话中途换 shell（`exec zsh`），闭哨兵不再到来、段保持开——输出继续进视图
+（少滤，安全方向）。行级过滤只覆盖完整行；`initialOutput` 的 pending 尾保持
+raw 面。过滤视图的语义边界（复审的可观测点）：**段外完成**的输出——后台任务
+的迟到输出（`sleep 5 &` 在 close 之后落地）、慢尾行、与后续回显行糅在一起的
+无换行残片——不携带视图内标记，留在**默认过滤面之外**（raw 视图始终有；
+`view: "raw"` 点名它）。过滤 tail 页的语义因此是「视图内的新输出」，
+不是「没有输出发生」——两者需要区分时读 raw 视图。
+
+响亮拒绝：未知 `marker` 方言；one-shot exec 上带 `marker`（`autoClose: true`——
+哨兵依赖交互行生命周期）。单测载体：`tests/pty-markers.spec.ts`（28 例：
+payload 范围信任、撕裂哨兵、过滤坐标下的 #185 词汇、过滤视图里的 #181
+2000 行排干回归、#177 启发式并存、工具面接线、close 边界 pending 交付、
+markerArmed 可观测）；machine 载体：
+`tests/pty-marker-machine.spec.ts`（真 ConPTY 透传，无本地 bash 时响亮 skip）。

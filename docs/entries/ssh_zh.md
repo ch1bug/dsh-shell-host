@@ -91,3 +91,13 @@ Live verification (machine lane): `tests/ssh-pty-live.spec.ts` runs the full
 start → interactive → incremental tail → close round-trip against a real
 host; it is gated on `DSH_SSH_LIVE_HOST` (optionally `DSH_SSH_LIVE_JUMP`)
 and skips loudly when unset — no network in the default test lanes.
+
+### marker 会话（#186，ADR-0020）：声明 bash 的远端 shell 带哨兵
+
+`ssh_start` 传入 `shell: "bash --login"`（或任何 bash 名的远端 shell 文本）时，
+会话以 `marker: "bash"` 打开——初始 settle 之后 core 向交互远端 bash 写入那一行
+setup（`PS0` 开哨兵 + `PROMPT_COMMAND` 闭哨兵，用户既有钩子按 bash 语法接在后
+面），于是 `ssh_tail` / `ssh_send` 默认读**过滤视图**：远端命令自己的输出，
+横幅、回显与提示符行不进。`view: "raw"` 点名完整消毒流。**不传** `shell` 则远端
+登录 shell 未知、不注入（声明不推断）；非 bash 的 `shell` 值同样不注入。机制、
+信任规则与已声明局限都在 pty entry——见 `./pty` entry 文档 #186 节。

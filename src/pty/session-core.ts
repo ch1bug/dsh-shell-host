@@ -34,6 +34,7 @@ import type { SandboxMode } from '../permission-gate.ts'
 import { codedError } from '../coded-error.ts'
 import { TerminalSanitizer } from './terminal-sanitizer.ts'
 import { hasRepaintMarker, stripRepaintPrefix } from './repaint-suppress.ts'
+import { MarkerScanner, buildBashMarkerSetup, defaultRandomPayload, type MarkerToken } from './marker-wrapper.ts'
 
 /** Default concurrent-session soft cap (#56 ruling 3, migrated onto the
  * core: the registry is the single source of truth, so an entry remount
@@ -198,6 +199,42 @@ export interface SessionCoreDeps {
   /** Platform guard for the signal semantics (#119), defaults to
    * `process.platform`. Injected for the same reason. */
   platform?: NodeJS.Platform
+  /** #186: the per-session sentinel payload generator, defaults to
+   * `defaultRandomPayload` (8 random bytes, hex). Injected so the unit lane
+   * can pin exact sentinel bytes. The payload is session-private state — it
+   * never appears on any tool result. */
+  randomPayload?: () => string
+}
+
+/** #186 (ADR-0020): the per-session marker state — present exactly when the
+ * opening surface declared a marker dialect (`marker: 'bash'`). Owns the
+ * scanner, the segment state machine and the filtered-view bookkeeping. */
+export interface SessionMarker {
+  /** This session's high-entropy payload (the trust boundary: only
+   * sentinels carrying exactly it are ever recognized). */
+  payload: string
+  scanner: MarkerScanner
+  /** Whether a trusted OPEN has been seen — before it the filtered view
+   * MIRRORS raw (banner/prompt/echo cannot be told apart yet, so nothing is
+   * filtered out; the #186 Q2 fallback). From the first trusted open on, the
+   * view filters to in-segment lines. */
+  segMode: boolean
+  /** Whether the stream is currently inside a trusted open..close segment. */
+  segOpen: boolean
+  /** The pending-buffer length AT the most recent trusted close — the
+   * boundary between bytes the command had already produced before the
+   * segment closed (an unterminated output tail, e.g. `printf abc` with no
+   * trailing newline) and bytes that arrived after the close (the prompt
+   * fragment parked in pending). The send-delta pending rule keeps the
+   * former and drops only the latter; the review round flagged that the
+   * previous whole-tail drop ate the output tail with it (a real data-loss
+   * direction that contradicted the documented "never a data loss" face). */
+  closePendingLen?: number
+  /** Filtered-view accounting: lines the scrollback cap dropped that
+   * BELONGED to the filtered view (the `truncated` real-loss base), and the
+   * exact filtered line count (the filtered `totalLines`). */
+  fDropped: number
+  fCount: number
 }
 
 interface Session {
@@ -253,6 +290,27 @@ interface Session {
    * current mode is NARROWER than this — a one-shot grant never outlives its
    * call, so it cannot become a standing write permission. */
   authorizedMode?: SandboxMode
+  /** #186 (ADR-0020): present exactly when the opening surface declared a
+   * marker dialect. When present, `append` runs the chunk through the
+   * sentinel scanner first (the sentinels are stripped before the sanitizer
+   * sees them) and maintains the per-line filtered-view flags; when absent
+   * the ingestion path is byte-for-byte the pre-#186 one. */
+  marker?: SessionMarker
+  /** #186: true exactly when the arming setup line FAILED to be written into
+   * the session (a dead-at-birth session): the marker never arms, every read
+   * stays on the raw face, and the open result reports `markerArmed: false`
+   * so the mirror degradation is observable at runtime instead of silently
+   * swallowed (the review round's observability point). */
+  markerSetupFailed?: boolean
+  /** #186: parallel to `lines` (same indices, same splice points) — per-line
+   * filtered-view membership. Present exactly for marker sessions (`undefined`
+   * = every line is raw-only bookkeeping and the filtered view IS the raw
+   * view, computed by the same code paths as before). */
+  segFlags?: boolean[]
+  /** #186: the raw-view tail cursor for a marker session (the default-view
+   * cursor in `cursors` is the FILTERED coordinate there; raw-view evidence
+   * readers page independently from this). */
+  rawCursor?: number
 }
 
 /** Session status shape — the seam's sessionStatus contract, kept. */
@@ -360,6 +418,19 @@ export interface OpenSpec {
    */
   authorizedMode?: SandboxMode
   /**
+   * #186 (ADR-0020), declared by the OPENING SURFACE: the marker dialect this
+   * session should carry — `'bash'` is the only v1 dialect (a top-level bash
+   * shell, or an ssh session whose DECLARED remote shell is bash; the opening
+   * surfaces decide via `bashMarkerDialect` / `sshBashShellDialect`).
+   * Declaration over inference (#119 `shell` precedent). When present, the
+   * core generates the per-session payload, writes the ONE bash setup line
+   * after the initial settle (PS0 open sentinel + PROMPT_COMMAND close
+   * sentinel), and maintains the filtered view; tail/send reads then consume
+   * the filtered view by default (`view: 'raw'` names the raw one explicitly).
+   * A one-shot exec (autoClose) never carries a marker.
+   */
+  marker?: 'bash'
+  /**
    * #189, declared by the OPENING SURFACE: the initial settle waits for the
    * FIRST printable output before it judges quiescence (bounded by the
    * configured `settleFirstOutputMs`, default 5000ms). A cold spawn's early
@@ -453,6 +524,14 @@ export interface OpenResult {
    * timeout reclaims a session WITHOUT a call result (it is a watcher, not
    * an awaited exec). Absent = the call ended by exit or abort. */
   timeout?: boolean
+  /** #186: present exactly on a marker session. TRUE = the arming setup line
+   * was written into the shell (the sentinel pipeline is delivered; the
+   * filtered view still mirrors raw until the session's first trusted open —
+   * the documented fallback). FALSE = the write itself failed (a
+   * dead-at-birth session): the marker never arms, every read stays on the
+   * raw face, and the mirror degradation is observable instead of silently
+   * swallowed. The per-session payload never appears on any result. */
+  markerArmed?: boolean
 }
 
 export interface SendRequest {
@@ -484,7 +563,12 @@ export interface SendResult {
  * .scratch/verify181/ (probe-tailskip). The old
  * `{text, lines: number, truncated}` counting shape is RETIRED, not aliased
  * — the rename is declared on the tool schema and in the entry docs (the
- * migration note), never silently kept dual. */
+ * migration note), never silently kept dual.
+ *
+ * #186: on a marker session the page is the FILTERED view by default (the
+ * core's `view: 'raw'` names the raw coordinate explicitly) — `offset` and
+ * `totalLines` are filtered-view counts (out-of-view lines neither page nor
+ * count), with the same kept-when-empty and real-loss-only rules. */
 export interface TailPage {
   text: string
   offset: number
@@ -500,7 +584,7 @@ export interface SessionCore {
    * `lines`). The tail stays cursor-incremental — no request-side `offset`
    * is added, because the offset vocabulary lives on the RESULT (where the
    * page reports the absolute position it covers), not on the request. */
-  tail(owner: unknown, id: string, limit?: number): TailPage
+  tail(owner: unknown, id: string, limit?: number, view?: 'filtered' | 'raw'): TailPage
   close(owner: unknown, id: string): Promise<{ closed: boolean }>
   /** Registry-derived liveness: every session id currently held for the
    * owner (the #62 fix — counting derives from HERE, not from any entry's
@@ -683,6 +767,8 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
    * lane injects its own (the unit lane pins both branches hermetically). */
   const platform = deps.platform ?? process.platform
   const procKill = deps.procKill ?? ((pid: number, signal: string): void => { process.kill(pid, signal) })
+  /** #186: the sentinel payload generator (the unit lane pins exact bytes). */
+  const randomPayload = deps.randomPayload ?? defaultRandomPayload
 
   /** owner (Agent) -> Map<sessionId, Session>. THE registry — the fact
    * source for the cap, the idle watch, and dispose. */
@@ -717,45 +803,161 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
 
   const totalLines = (s: Session): number => s.absBase + s.lines.length
 
-  /** Append one raw output chunk: sanitize it first (#180 contract A — the
-   * single ingestion point; control sequences die here, torn sequences carry
-   * in the sanitizer's pending buffer), then split complete lines (CR
-   * stripped, LF the terminator), hold the partial tail back, enforce the
-   * scrollback cap. #177 (现象二): a chunk carrying a full-screen
-   * repaint-marker CSI has its leading duplicate-of-buffer-tail lines (the
-   * re-printed part of a ConPTY repaint frame) dropped — stateless, that
-   * chunk only. Fidelity: chunks without the raw marker signal are never
-   * touched, repeated output always survives. */
+  /** Append one raw output chunk. #186: when the session carries a marker
+   * (`s.marker`), the chunk runs through the sentinel scanner FIRST (the
+   * scanner peels THIS session's open/close sentinels and reports them as
+   * events, in stream order; every other byte — other control sequences
+   * included — flows to the sanitizer untouched), and every complete line
+   * gets a filtered-view flag taken from the segment state at the moment the
+   * line completed. Without a marker the path is byte-for-byte the pre-#186
+   * one (the scanner is simply not mounted). Both faces then do the same
+   * thing: sanitize (#180 contract A — the single ingestion point; control
+   * sequences die here, torn sequences carry in the sanitizer's pending
+   * buffer), split complete lines (CR stripped, LF the terminator), hold the
+   * partial tail back, enforce the scrollback cap. #177 (现象二): a chunk
+   * carrying a full-screen repaint-marker CSI has its leading
+   * duplicate-of-buffer-tail lines (the re-printed part of a ConPTY repaint
+   * frame) dropped — stateless, that chunk only — and because the dropped
+   * lines never reach the buffer, the filtered view never sees them either
+   * (the Q2 coexistence: the heuristic guards the shared buffer, the
+   * filtered view rides it). Fidelity: chunks without the raw marker signal
+   * are never touched, repeated output always survives.
+   *
+   * The repaint decision scans the scanner's TEXT tokens (the chunk minus
+   * our own sentinels) — equivalent to scanning the whole chunk, since an
+   * OSC sentinel cannot carry the REPAINT_CSI signatures. */
   const append = (s: Session, chunk: string): void => {
-    const repaint = hasRepaintMarker(chunk)
-    s.pending += s.sanitizer.push(chunk).text
-    let idx: number
+    const m = s.marker
+    const tokens: MarkerToken[] = m === undefined
+      ? [{ kind: 'text', text: chunk }]
+      : m.scanner.push(chunk)
+    let repaintChunk = ''
     const fresh: string[] = []
-    while ((idx = s.pending.indexOf('\n')) >= 0) {
-      const line = s.pending.slice(0, idx).replace(/\r$/, '')
-      s.pending = s.pending.slice(idx + 1)
-      fresh.push(line)
+    const freshFlags: boolean[] = []
+    for (const token of tokens) {
+      if (token.kind === 'open') {
+        // A trusted OPEN (payload verified by the scanner). The first one
+        // also switches the filtered view out of mirror mode (from here on,
+        // out-of-segment lines — echo, banner, prompt — stop entering it).
+        m!.segMode = true
+        m!.segOpen = true
+        continue
+      }
+      if (token.kind === 'close') {
+        // The scanner only emits closes for THIS session's payload, so a
+        // trusted open..close pair is structurally guaranteed (the grill
+        // ruling: a close is trusted only when paired with this session's
+        // open). A close before any open, or a repeated close, is ignored.
+        if (m!.segMode) {
+          m!.segOpen = false
+          // Record the pending boundary AT the close: everything in pending
+          // up to here is the command's own (unterminated) output tail;
+          // everything after is prompt residue.
+          m!.closePendingLen = s.pending.length
+        }
+        continue
+      }
+      repaintChunk += token.text
+      s.pending += s.sanitizer.push(token.text).text
+      let idx: number
+      while ((idx = s.pending.indexOf('\n')) >= 0) {
+        const line = s.pending.slice(0, idx).replace(/\r$/, '')
+        s.pending = s.pending.slice(idx + 1)
+        fresh.push(line)
+        // The flag is the segment state at line-COMPLETION time. Sentinel
+        // events land on line boundaries in practice (PS0 fires after the
+        // echoed line's Enter, PROMPT_COMMAND before the next prompt), and a
+        // line split across an event takes the newer state. A session
+        // without a marker keeps the array parallel but all-true (its flag
+        // array is never consulted — every read takes the raw path).
+        freshFlags.push(m !== undefined && m.segMode ? m.segOpen : true)
+      }
     }
-    s.lines.push(...(repaint ? stripRepaintPrefix(s.lines, fresh) : fresh))
+    const repaint = hasRepaintMarker(repaintChunk)
+    const kept = repaint ? stripRepaintPrefix(s.lines, fresh) : fresh
+    const keptFlags = repaint ? freshFlags.slice(fresh.length - kept.length) : freshFlags
+    s.lines.push(...kept)
+    if (m !== undefined) {
+      s.segFlags!.push(...keptFlags)
+      for (const flag of keptFlags) if (flag) m.fCount += 1
+    }
     if (s.lines.length > config.scrollbackLines) {
       const drop = s.lines.length - config.scrollbackLines
+      if (m !== undefined) {
+        for (let i = 0; i < drop; i += 1) {
+          if (s.segFlags![i]) {
+            m.fDropped += 1
+            m.fCount -= 1
+          }
+        }
+        s.segFlags!.splice(0, drop)
+      }
       s.lines.splice(0, drop)
       s.absBase += drop
     }
   }
 
+  /** The filtered view's exact ABSOLUTE line count — the same construction
+   * as the raw `totalLines` (`absBase + lines.length`, the drop base plus
+   * the survivors): the filtered drop base (`fDropped`) plus the in-view
+   * survivors (`fCount`). Absolute continuity is what the #185 `offset`
+   * semantics need (a scrollback drop moves the base, never renumbers). */
+  const filteredTotal = (s: Session): number => s.marker === undefined ? totalLines(s) : s.marker.fDropped + s.marker.fCount
+
+  /** The filtered view's absolute base: the number of in-view lines the
+   * scrollback cap has already dropped (the filtered `absBase`). */
+  const filteredBase = (s: Session): number => s.marker === undefined ? s.absBase : s.marker.fDropped
+
+  /** Slice `count` in-view lines starting at filtered-ABSOLUTE `start`
+   * (0-based in the filtered coordinate, where the surviving flag array
+   * begins at `fDropped`) — a linear walk of the flag array; the buffer is
+   * scrollback-capped, so this is bounded and cheap. */
+  const filteredSlice = (s: Session, start: number, count: number): string[] => {
+    const out: string[] = []
+    if (count <= 0 || s.marker === undefined) return out
+    // Shift the absolute start into the surviving array's local index space:
+    // the first surviving in-view line IS global line `fDropped`.
+    let seen = s.marker.fDropped
+    const flags = s.segFlags!
+    for (let i = 0; i < flags.length && out.length < count; i += 1) {
+      if (!flags[i]) continue
+      if (seen >= start) out.push(s.lines[i])
+      seen += 1
+    }
+    return out
+  }
+
   /** Read the newest `count` complete lines, `offset` lines back from the
-   * newest retained line (the seam's read contract, kept verbatim). */
-  const readNewest = (s: Session, offset: number, count: number): { text: string; totalLines: number; truncated: boolean } => {
-    const total = totalLines(s)
-    const newestStart = Math.max(s.absBase, total - Math.min(offset, total))
+   * newest retained line (the seam's read contract, kept verbatim).
+   * #186: `view` picks the coordinate — `'filtered'` (the default for every
+   * consumer) counts in-view lines only, with `offset`/`totalLines`
+   * scoped to the filtered view (the #185 vocabulary, same words, filtered
+   * semantics); `'raw'` is the untouched ADR-0019 face. A session without a
+   * marker has ONE view: both spellings take the raw path. */
+  const readNewest = (s: Session, offset: number, count: number, view: 'filtered' | 'raw' = 'filtered'): { text: string; totalLines: number; truncated: boolean } => {
+    if (view === 'raw' || s.marker === undefined) {
+      const total = totalLines(s)
+      const newestStart = Math.max(s.absBase, total - Math.min(offset, total))
+      const end = Math.min(total, newestStart + count)
+      const begin = Math.max(newestStart, end - count)
+      const slice = s.lines.slice(begin - s.absBase, end - s.absBase)
+      return {
+        text: slice.length === 0 ? '' : slice.join('\n') + '\n',
+        totalLines: total,
+        truncated: begin > s.absBase || end < total,
+      }
+    }
+    const m = s.marker!
+    const total = m.fDropped + m.fCount
+    const base = m.fDropped
+    const newestStart = Math.max(base, total - Math.min(offset, total))
     const end = Math.min(total, newestStart + count)
     const begin = Math.max(newestStart, end - count)
-    const slice = s.lines.slice(begin - s.absBase, end - s.absBase)
+    const slice = filteredSlice(s, begin, end - begin)
     return {
       text: slice.length === 0 ? '' : slice.join('\n') + '\n',
       totalLines: total,
-      truncated: begin > s.absBase || end < total,
+      truncated: begin > base || end < total,
     }
   }
 
@@ -1030,6 +1232,21 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       if (spec.waitForFirstOutput !== undefined && typeof spec.waitForFirstOutput !== 'boolean') {
         throw new Error(`waitForFirstOutput must be a boolean, got: ${JSON.stringify(spec.waitForFirstOutput)}`)
       }
+      // #186: the marker dialect is declared, never inferred — and 'bash' is
+      // the only v1 dialect (ADR-0020 Q1: one dialect to proven status, the
+      // wider matrix undecided). An unknown spelling is a caller error.
+      if (spec.marker !== undefined && spec.marker !== 'bash') {
+        throw new Error(`marker must be "bash" (the only v1 dialect), got: ${JSON.stringify(spec.marker)}`)
+      }
+      // #186: a marker is a PERSISTENT-shell feature (the sentinels ride the
+      // interactive line lifecycle: PS0 before each command, PROMPT_COMMAND
+      // before each prompt). A one-shot exec has no such lifecycle.
+      if (spec.marker !== undefined && spec.autoClose === true) {
+        throw codedError(
+          'pty open: marker is a persistent-shell contract (the bash sentinels ride the interactive line lifecycle) — a one-shot exec (autoClose: true) cannot carry it',
+          'INVALID_ARGS',
+        )
+      }
       if (spec.idleTimeoutMs !== undefined && (!Number.isInteger(spec.idleTimeoutMs) || spec.idleTimeoutMs <= 0)) {
         throw new Error(`idleTimeoutMs must be a positive integer (ms), got: ${JSON.stringify(spec.idleTimeoutMs)}`)
       }
@@ -1076,6 +1293,7 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         env: spec.env,
       }))
       const id = `pty-${nextId++}`
+      const payload = spec.marker === undefined ? undefined : randomPayload()
       const s: Session = {
         id,
         owner,
@@ -1091,7 +1309,18 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
           autoClose: spec.autoClose,
           shell: spec.shell,
           authorizedMode: spec.authorizedMode,
+          ...(payload === undefined ? {} : {
+            marker: {
+              payload,
+              scanner: new MarkerScanner(payload),
+              segMode: false,
+              segOpen: false,
+              fDropped: 0,
+              fCount: 0,
+            } satisfies SessionMarker,
+          }),
         }),
+        ...(payload === undefined ? {} : { segFlags: [] as boolean[] }),
         idleLastLines: 0,
         lastActivityAt: Date.now(),
       }
@@ -1101,6 +1330,9 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         // #180: drain the sanitizer before the exit is recorded — a trailing
         // printable fragment (no newline yet) still belongs to the output,
         // an incomplete escape sequence is discarded (never printable).
+        // #186: the marker scanner's torn-carry needs no flush — it only
+        // ever holds a strict prefix of one of our sentinels (control bytes,
+        // nothing printable).
         append(s, s.sanitizer.flush())
         s.exited = true
         s.exitCode = exitCode
@@ -1120,7 +1352,31 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       // output (a cold spawn's first bytes are ConPTY control sequences the
       // sanitizer strips — quiet must not be judged on an empty buffer).
       await settleFor(s, signal, spec.waitForFirstOutput === true ? { waitForFirstOutput: true } : undefined)
-      cursors.set(s, totalLines(s))
+      // #186 (ADR-0020 Q1, the injection point): after the settle (the shell
+      // is interactive-ready — profiles have run, so our PREPEND wins over
+      // any rcfile PROMPT_COMMAND) write the ONE setup line that arms the
+      // sentinels. Until the first trusted open arrives the filtered view
+      // mirrors raw (the Q2 fallback), so a session whose setup never lands
+      // (dead shell, exotic bash) degrades to the pre-#186 face, never to
+      // lost output. A write failure on a dead-at-birth session is recorded
+      // on the session and reported as `markerArmed: false` on the open
+      // result — the degradation is observable at runtime, never silently
+      // swallowed (the review round's observability point).
+      if (s.marker !== undefined) {
+        try {
+          s.pty.write(buildBashMarkerSetup(s.marker.payload) + '\r')
+        } catch {
+          // The session died between the settle and the arming write — the
+          // marker never arms; every read stays on the raw face.
+          s.markerSetupFailed = true
+        }
+      }
+      // #186: the default-view cursor lives in the DEFAULT coordinate —
+      // filtered for a marker session (tail consumes it by default), raw
+      // otherwise (where both views are one view). A marker session's raw
+      // cursor starts independently so evidence readers page the raw view.
+      cursors.set(s, s.marker === undefined ? totalLines(s) : s.marker.fDropped + s.marker.fCount)
+      if (s.marker !== undefined) s.rawCursor = totalLines(s)
       if (spec.autoClose === true) {
         // #146: a one-shot is an EXEC — wait for the real exit, then drain the
         // output that raced the exit event (the #64 quiet-window rule) BEFORE
@@ -1186,6 +1442,10 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         // exit or an abort (the marker's mutual exclusion, stated in
         // DEADLINE_SEMANTICS and on the tool's output schema).
         ...(s.deadlineExceeded ? { timeout: true as const } : {}),
+        // #186: present exactly on a marker session — whether the arming
+        // setup line reached the shell (false = the write failed and the
+        // session stays on the raw face; observable, not swallowed).
+        ...(s.marker === undefined ? {} : { markerArmed: s.markerSetupFailed !== true }),
       }
     },
 
@@ -1195,6 +1455,10 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       const payload = request.data + (request.submit ?? true ? '\r' : '')
       const startAbs = totalLines(s)
       const startPendingLen = s.pending.length
+      // #186: consume the previous window's close boundary — only a close
+      // INSIDE this window may bound this window's pending-tail delivery
+      // (a close recorded during plain ingestion carries no delivery claim).
+      if (s.marker !== undefined) s.marker.closePendingLen = undefined
       try {
         s.pty.write(payload)
       } catch {
@@ -1204,13 +1468,48 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       await settleFor(s, request.signal)
       // Delta = the output produced while this write settled: every line
       // completed since send start, plus whatever partial tail accrued.
+      // #186: the delta is a FILTERED read — on a marker session the lines
+      // that completed out-of-segment during the settle (the command's echo
+      // is the routine case) are not the command's own output and do not
+      // reach it. The pending tail follows the segment state at settle end:
+      // mirror phase and an open segment keep it (output still forming — the
+      // live-measured shape); an ARMED CLOSED segment keeps only the bytes
+      // produced BEFORE the close (an unterminated output tail, `printf abc`
+      // with no trailing newline — the review round established that the
+      // previous whole-tail drop ate it: a real data-loss direction) and
+      // drops only what arrived after the close (the prompt fragment parked
+      // in pending — the residue class this ticket removes; a real msys2
+      // delta ended with a bare "$ " before the boundary rule,
+      // .scratch/verify186/).
       const newLines = s.lines.slice(startAbs - s.absBase)
-      const pendingTail = s.pending.slice(startPendingLen)
-      const delta = [...newLines.map((l) => l + '\n'), pendingTail].join('')
+      const inView = s.marker === undefined
+        ? newLines
+        : newLines.filter((_line, i) => s.segFlags![startAbs - s.absBase + i])
+      const m = s.marker
+      let pendingTail: string
+      if (m === undefined || !m.segMode || m.segOpen) {
+        // No marker (raw face), still mirroring, or the segment is open:
+        // everything is (or may still be) command output.
+        pendingTail = s.pending.slice(startPendingLen)
+      } else if (m.closePendingLen !== undefined) {
+        // Armed and closed, with a close INSIDE this send window (a previous
+        // window's boundary was consumed at the start of this one). The
+        // close-time boundary bounds the command's own unterminated output
+        // tail: everything in pending before it is delivered, everything
+        // after it (the prompt fragment) is dropped. Real stream order
+        // guarantees the pre-close pending holds only output: an open
+        // always follows a completed echo line, which resets pending.
+        pendingTail = s.pending.slice(0, m.closePendingLen)
+      } else {
+        // Armed and closed with no close this window: the pending content
+        // is echo/prompt residue (the residue class this ticket removes).
+        pendingTail = ''
+      }
+      const delta = [...inView.map((l) => l + '\n'), pendingTail].join('')
       return { delta, status: statusOf(s) }
     },
 
-    tail(owner, id, limit) {
+    tail(owner, id, limit, view) {
       const s = requireSession(owner, id)
       // 复审 #181-2: a non-positive / non-integer `limit` is a caller error —
       // refused LOUDLY, never silently folded (a budget < 1 would drive
@@ -1220,34 +1519,57 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
         throw terr('INVALID_ARGS', `pty tail: limit must be a positive integer (got ${JSON.stringify(limit)})`)
       }
+      // #186: `view` names the coordinate explicitly (the #119 declaration
+      // posture on the read side). Everything except a literal 'raw' —
+      // including the omitted argument — is the filtered default; an unknown
+      // spelling is a loud caller error, never folded to a view.
+      if (view !== undefined && view !== 'filtered' && view !== 'raw') {
+        throw terr('INVALID_ARGS', `pty tail: view must be "filtered" or "raw" (got ${JSON.stringify(view)})`)
+      }
       const budget = limit ?? config.tailLimit
+      // Raw view: the pre-#186 path, byte-for-byte. A marker session pages
+      // the raw view from its own raw cursor so evidence readers never move
+      // the default (filtered) cursor.
+      if (view === 'raw' || s.marker === undefined) {
+        const consumed = view === 'raw' && s.marker !== undefined ? (s.rawCursor ?? 0) : (cursors.get(s) ?? 0)
+        const total = totalLines(s)
+        const backlog = total - consumed
+        if (backlog <= 0) return { text: '', offset: consumed + 1, limit: budget, totalLines: total, truncated: false }
+        const begin = Math.max(consumed, s.absBase)
+        const lost = begin > consumed
+        const count = Math.min(budget, total - begin)
+        const end = begin + count
+        const slice = s.lines.slice(begin - s.absBase, end - s.absBase)
+        if (view === 'raw' && s.marker !== undefined) s.rawCursor = end
+        else cursors.set(s, end)
+        return {
+          text: slice.length === 0 ? '' : slice.join('\n') + '\n',
+          offset: begin + 1,
+          limit: budget,
+          totalLines: total,
+          truncated: lost,
+        }
+      }
+      // Filtered view (the default, #186 Q4): the SAME #181 cursor semantics
+      // in the filtered coordinate — the page is anchored on the cursor and
+      // walks FORWARD, nothing between calls is skipped, `offset` is the
+      // 1-based absolute line number of the page's first line IN THE FILTERED
+      // VIEW (kept even on an empty page), `totalLines` is the exact
+      // filtered-line count, and `truncated` flags REAL loss — in-view lines
+      // the scrollback cap dropped before the cursor reached them
+      // (`fDropped` is that base). Out-of-view lines (echo/banner/prompt and
+      // repaint residue) are invisible to this coordinate: they neither page
+      // nor count.
+      const m = s.marker!
       const consumed = cursors.get(s) ?? 0
-      // Incremental read (#181): the page is anchored on the CURSOR, not on
-      // the live newest line — the contract is "new output since the last
-      // tail", so paging FORWARD from the cursor drains the buffer with
-      // repeated tails and NOTHING between calls is skipped. (The previous
-      // implementation anchored each page on the newest line and jumped the
-      // cursor past the whole backlog when it exceeded the budget: the
-      // undelivered middle became permanently unreachable — the #177 现象一
-      // "86KB → 58.6KB then (no new output)" mechanism, measured hermetically
-      // in .scratch/verify181/ probe-tailskip.) The page interval
-      // [begin, end) is absolute, so output arriving during the read cannot
-      // shift it — the old live-anchor retry has nothing left to defend.
-      // #185: the page facts use the `read`/spill pagination vocabulary —
-      // `offset` = 1-based absolute line number of the page's first line
-      // (kept even on an empty page), `limit` = the budget in effect,
-      // `totalLines` = the exact retained-line count.
-      const total = totalLines(s)
+      const total = m.fDropped + m.fCount
       const backlog = total - consumed
       if (backlog <= 0) return { text: '', offset: consumed + 1, limit: budget, totalLines: total, truncated: false }
-      // REAL loss only: the scrollback cap dropped lines between the cursor
-      // and the retained window (begin > consumed) — flagged, never silent.
-      // A backlog larger than the budget is paging, not loss.
-      const begin = Math.max(consumed, s.absBase)
+      const begin = Math.max(consumed, filteredBase(s))
       const lost = begin > consumed
       const count = Math.min(budget, total - begin)
       const end = begin + count
-      const slice = s.lines.slice(begin - s.absBase, end - s.absBase)
+      const slice = filteredSlice(s, begin, count)
       cursors.set(s, end)
       return {
         text: slice.length === 0 ? '' : slice.join('\n') + '\n',

@@ -51,6 +51,7 @@ import { createAuditLedger } from './audit-ledger.ts'
 import { initKnownIds, materializeCustom } from './materialize.ts'
 import { spawnableExists } from '../detect.ts'
 import { DEFAULT_MAX_SESSIONS as CORE_DEFAULT_MAX_SESSIONS } from '../pty/session-core.ts'
+import { bashMarkerDialect } from '../pty/marker-wrapper.ts'
 import {
   SANDBOX_EXECUTION_SEMANTICS,
   createPermissionGate,
@@ -143,9 +144,10 @@ interface TerminalCtx {
 /** The pty entry's session core facade (provided as the `pty` service).
  * #61: `active` is the registry-derived liveness view (#62's fact source);
  * `open` accepts the opt-in per-session idleTimeoutMs, enforced by the
- * core's own watcher (output-defined idle, #56 ruling). */
+ * core's own watcher (output-defined idle, #56 ruling). #186: `marker`
+ * declares the sentinel dialect when the resolved preset is a top-level bash. */
 interface PtyCore {
-  open(owner: unknown, spec: { command: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; shell?: boolean; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<{ sessionId: string; initialOutput?: string; [key: string]: unknown }>
+  open(owner: unknown, spec: { command: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; shell?: boolean; marker?: 'bash'; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<{ sessionId: string; initialOutput?: string; markerArmed?: boolean; [key: string]: unknown }>
   close(owner: unknown, id: string): Promise<{ closed: boolean }>
   active(owner: unknown): string[]
 }
@@ -258,6 +260,15 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Termi
           transport: { type: 'string', required: true, description: '"local" or "ssh".' },
           command: { type: 'string', required: true, description: 'The launch command opened on the PTY.' },
           initialOutput: { type: 'string', description: 'Output captured during launch.' },
+          markerArmed: {
+            type: 'boolean',
+            description:
+              // #186: the mirror-degradation observability face (review round).
+              'Present exactly on a marker session (a bash preset — msys2-ucrt / git-bash / POSIX bash, #186): whether the arming setup line reached the shell. ' +
+              'true = delivered (the filtered view still mirrors raw until the session\'s first trusted open — the documented fallback). ' +
+              'false = the write failed: the marker never arms and every read stays on the raw face. ' +
+              'The per-session payload never appears on any result.',
+          },
           executable: { type: 'string', description: 'The executable candidate that hit (local presets).' },
           probed: { type: 'array', items: { type: 'string' }, description: 'Every probe point considered (local presets).' },
           audit: { type: 'object', additionalProperties: true, description: '#170 advisory audit warning — present only when a custom preset\'s executable content hash differs from the registration ledger baseline. Launch is NOT blocked.' },
@@ -352,6 +363,11 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Termi
         // on it (official terminal_signal semantics: killing a shell cannot
         // reclaim the children it owns). No heuristic in the core.
         shell: true,
+        // #186 (ADR-0020 Q1): a preset whose top-level interpreter is bash
+        // (msys2-ucrt / git-bash / POSIX bash rows) carries the sentinel
+        // marker — detection HERE on the resolved command (declaration over
+        // inference); pwsh / cmd / wsl presets stay outside the v1 matrix.
+        ...(bashMarkerDialect(command) ? { marker: 'bash' as const } : {}),
         // #102: the mode the spawn was AUTHORIZED under (the one-shot grant
         // when an escalation was approved) is the session's write baseline.
         authorizedMode: authorization.grantedMode,
@@ -362,6 +378,8 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Termi
         transport: launcher.transport,
         command,
         ...(opened.initialOutput === undefined ? {} : { initialOutput: opened.initialOutput }),
+        // #186: the arming observability face travels through (review round).
+        ...(opened.markerArmed === undefined ? {} : { markerArmed: opened.markerArmed }),
         ...(launched === undefined ? {} : { executable: launched.executable, probed: launched.probed }),
         ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
         source: detail.source,

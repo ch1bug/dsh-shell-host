@@ -446,3 +446,109 @@ tool call** — the initial settle plus waiting for exit all count):
 Unit reading carrier: `tests/pty-deadline.spec.ts` (fakes for a
 stdin-waiting case / a continuously-outputting non-exiting case / a long
 task with an explicit extension / a normal fast command, all bounded).
+
+### Sentinel-wrapped output — the filtered view (#186, ADR-0020)
+
+On a session whose opening surface DECLARED a marker dialect, the core keeps
+TWO views of the same sanitized buffer (ADR-0019's raw contract is untouched —
+the filtered view is additive):
+
+- **raw** — everything the sanitizer kept: echo, banners, prompts, repaint
+  residue, command output. `view: "raw"` names it explicitly (evidence
+  faces; `pty_tail`/`ssh_tail` accept the parameter, unknown spellings are
+  refused loudly, and the raw view pages from its own independent cursor).
+- **filtered** — the DEFAULT for every read (`pty_tail` / `ssh_tail` /
+  `pty_send` / `ssh_send` deltas): only the command's OWN output. Echoed
+  input, banner/prompt lines and repaint residue stay out. The page
+  vocabulary is #185's `{ text, offset, limit, totalLines, truncated }`
+  verbatim, scoped to the filtered coordinate (`offset`/`totalLines` count
+  in-view lines; a scrollback drop moves the base, never renumbers — the
+  same absolute-continuity construction as the raw `absBase`).
+
+**Sentinel format (Q3)**: a random per-session payload (8 bytes, hex) inside
+an OSC private-sequence envelope — `ESC ] 133 ; C ; <payload> BEL` opens the
+segment (command output starts), `ESC ] 133 ; D ; <payload> BEL` closes it.
+The close sentinel is trusted only when PAIRED with this session's open —
+enforced structurally: the scanner is constructed with the session's payload
+and recognizes nothing else (a foreign/generic OSC-133 sequence flows through
+as inert bytes and dies in the sanitizer). An untrusted close never closes a
+segment, so untrusted input can only UNDER-filter (output keeps flowing into
+the view), never eat data.
+
+**Dialect scope (Q1, v1)**: bash only — a session whose top-level process is
+bash (`pty_open`/`shell_open` detect via `bashMarkerDialect` on the resolved
+command; `sh` is deliberately not trusted — it may be dash, which has neither
+`PS0` nor `PROMPT_COMMAND`), and an ssh session whose DECLARED remote shell
+is bash (`ssh_start`'s `shell` parameter via `sshBashShellDialect`; an
+omitted shell arms nothing). Wrapper executables (wsl.exe hosting bash,
+pwsh, cmd) stay OUTSIDE the v1 matrix — replication of a proven mechanism,
+decided later.
+
+**Injection point**: no startup files are touched. After the initial settle
+(profiles have run, so the PREPEND wins over any rcfile `PROMPT_COMMAND`)
+the core writes ONE setup line: `PS0` carries the open sentinel (expanded
+before each interactive command runs) and the close-sentinel printf is
+PREPENDED to `PROMPT_COMMAND` (executed before each prompt; a scalar or
+unset hook is preserved via the `${PROMPT_COMMAND:+;…}` join — declared
+boundary: bash 5.1+ also allows `PROMPT_COMMAND` as an ARRAY, and our scalar
+assignment replaces the array wholesale, so hook elements beyond element[0]
+are lost; the loss direction is the user's own prompt hook degrading, never
+command-output loss, and the `+=` alternative breaks the scalar shape). The
+write's outcome is observable: the open result carries `markerArmed: true`
+(delivered) or `false` (a dead-at-birth session — the marker never arms and
+every read stays on the raw face, observable instead of silently swallowed).
+The line's own echo carries only the literal two-character `\e` escapes — no
+real ESC bytes — so it cannot trip the scanner. On a live msys2 session the
+sentinels pass through ConPTY verbatim (measured:
+`.scratch/verify186/probe-raw-stream.log`, byte timeline; the machine case
+`tests/pty-marker-machine.spec.ts` pins the behavioral face).
+
+**Mirror fallback (Q2 coexistence)**: before the FIRST trusted open, the
+filtered view mirrors raw (banner/echo cannot be told apart yet — nothing is
+filtered out, so a session whose setup never lands degrades to the pre-#186
+face, never to lost output). What the first filtered page therefore holds
+(stated so the shape does not surprise a consumer): the setup line's own
+echo and the prompt that follows it, plus the first command's echo (it
+completes before its own `PS0` open) — everything before the first trusted
+open passes. From the first open on, out-of-segment lines stop entering.
+The #177 repaint heuristic keeps guarding the shared buffer — lines it
+strips never reach the buffer, so the filtered view rides the same
+protection; the heuristics' retirement is a separate future ticket (the Q2
+ruling). `pty_send` deltas: complete lines are filtered by segment; the
+still-forming pending tail follows the segment state at settle end — kept
+while the segment is open or the view still mirrors; on an armed-and-closed
+segment, the bytes produced BEFORE the close are kept (an unterminated
+output tail, `printf abc` with no trailing newline — the review round
+established that the earlier whole-tail drop ate it, a real data-loss
+direction) and only the bytes AFTER the close are dropped (the prompt
+fragment parked in pending — the residue class this ticket removes; a real
+msys2 delta ended with a bare `$ ` before the boundary rule, measured in
+`.scratch/verify186/`).
+
+**Declared adversarial limits** (stated, not glossed over): a program INSIDE
+the session that reads `$PS0` and printf-expands it can forge this session's
+sentinels — same-user threat model, outside the ADR-0020 envelope (the
+payload defends against accidental/generic emission, not same-privilege
+forgery that read the variable). If the shell's `PROMPT_COMMAND` hook is
+clobbered later, or the shell is replaced mid-session (`exec zsh`), closes
+stop arriving and segments stay open — output keeps flowing into the view
+(under-filtering, the safe direction). Line-level filtering scopes to
+complete lines; `initialOutput`'s pending tail keeps the raw face. The
+filtered view's semantic boundary (the review round's observability point):
+output that completes OUT-OF-SEGMENT — a background job's late output
+(`sleep 5 &` landing after the close), a slow trailing line, an
+unterminated output tail folded into a later echo — carries no in-view flag
+and stays outside the DEFAULT filtered face (it is always in the raw view;
+`view: "raw"` names it). A filtered tail page therefore means "in-view new
+output", not "no output happened" — when that distinction matters, read the
+raw view.
+
+Refused loudly: an unknown `marker` dialect, and `marker` on a one-shot exec
+(`autoClose: true` — the sentinels ride the interactive line lifecycle).
+Unit carrier: `tests/pty-markers.spec.ts` (28 cases: payload-scoped trust,
+torn sentinels, #185 vocabulary in the filtered coordinate, the #181
+2000-line drain regression in the filtered view, the #177 heuristic
+coexistence, tool-surface wiring; the review round added the close-boundary
+pending-tail delivery cases and the markerArmed observability cases); machine carrier:
+`tests/pty-marker-machine.spec.ts` (real ConPTY passthrough, skips loudly
+without a local bash).

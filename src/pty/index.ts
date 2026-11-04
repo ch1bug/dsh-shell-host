@@ -58,6 +58,7 @@
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createSessionCore, resolveCoreConfig, DEFAULT_TAIL_LIMIT, DEFAULT_MAX_SESSIONS, DEFAULT_DEADLINE_MS, extractSpec, AUTO_CLOSE_SEMANTICS, DEADLINE_SEMANTICS, PTY_COMMAND_SEMANTICS, PTY_SIGNALS, PTY_SIGNAL_SEMANTICS, type SessionCore, type SessionCoreConfig, type OpenSpec, type CoreSpawnSpec, type PtyLike } from './session-core.ts'
+import { bashMarkerDialect, MARKER_OPEN_PARAM, MARKER_CLOSE_PARAM, MARKER_OSC_ID } from './marker-wrapper.ts'
 import { codedError } from '../coded-error.ts'
 import {
   ENVIRONMENT_CONTEXT_NAME,
@@ -280,16 +281,19 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
    * surface can still detect a later policy downgrade.
    */
   const facade = {
-    /** Spawn the command on a ConPTY with env injected into the process. */
-    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean; deadlineMs?: number; shell?: boolean; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any> =>
+    /** Spawn the command on a ConPTY with env injected into the process.
+     * #186: `marker` declares the sentinel dialect (v1: 'bash' only — the
+     * caller detects with `bashMarkerDialect`; declaration over inference). */
+    open: (owner: Owner, spec: { command?: string; cwd?: string; env?: Record<string, string>; idleTimeoutMs?: number; autoClose?: boolean; deadlineMs?: number; shell?: boolean; marker?: 'bash'; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any> =>
       core.open(owner, extractSpec(spec) as OpenSpec, signal),
 
     /** Exclusive send: write, await the settle, return the output read. */
     send: (owner: Owner, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any> =>
       core.send(owner, id, request),
 
-    /** Incremental read from the per-session cursor. */
-    tail: (owner: Owner, id: string, limit?: number): any => core.tail(owner, id, limit),
+    /** Incremental read from the per-session cursor. #186: the read is the
+     * FILTERED view by default (`view: 'raw'` names the raw coordinate). */
+    tail: (owner: Owner, id: string, limit?: number, view?: 'filtered' | 'raw'): any => core.tail(owner, id, limit, view),
 
     /** Awaited cleanup; idempotent per close; foreign ids propagate loudly. */
     close: (owner: Owner, id: string): Promise<any> => core.close(owner, id),
@@ -416,6 +420,15 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
             },
           },
           initialOutput: { type: 'string', description: 'Output captured during spawn/command start.' },
+          markerArmed: {
+            type: 'boolean',
+            description:
+              // #186: the mirror-degradation observability face (review round).
+              'Present exactly on a marker session (a declared bash shell, #186): whether the arming setup line reached the shell. ' +
+              'true = delivered (the filtered view still mirrors raw until the session\'s first trusted open — the documented fallback). ' +
+              'false = the write failed (a dead-at-birth session): the marker never arms and every read stays on the raw face. ' +
+              'The per-session payload never appears on any result.',
+          },
           timeout: {
             type: 'boolean',
             description:
@@ -468,6 +481,12 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         // The shell-target marker rides the core's existing open spec (#119);
         // no second public boolean is introduced on the tool surface.
         ...(declaration.shell ? { shell: true } : {}),
+        // #186 (ADR-0020 Q1): a declared shell whose top-level interpreter is
+        // bash carries the sentinel marker (v1 dialect — bash only, wrapper
+        // executables like wsl.exe stay outside the matrix). Declaration
+        // over inference: the dialect detection runs HERE, on the resolved
+        // command, and the core never guesses from command text.
+        ...(declaration.shell && bashMarkerDialect(declaration.command) ? { marker: 'bash' as const } : {}),
         // Under workspace-write this is the concrete boundary cwd (see the
         // gate); under danger-full-access it is the caller's value, unchanged.
         ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
@@ -507,7 +526,7 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         additionalProperties: true,
         properties: {
           ...BACKGROUND_RESULT_PROPERTIES,
-          delta: { type: 'string', description: 'Output produced since the previous read (foreground calls).' },
+          delta: { type: 'string', description: 'Output produced since the previous read (foreground calls). #186: on a marker session (a declared bash shell) this is the FILTERED read — the command\'s own output; the echoed input line and prompt text stay out (see pty_tail).' },
           status: { type: 'object', additionalProperties: true, description: 'Top-level session status at settlement.' },
         },
       },
@@ -543,10 +562,20 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
   ctx.tools.register(defineTool({
     name: 'pty_tail',
     description:
-      'Incrementally read a PTY session\'s new output since the last tail (per-session cursor; repeated tails do not resend old lines).',
+      'Incrementally read a PTY session\'s new output since the last tail (per-session cursor; repeated tails do not resend old lines). ' +
+      // #186 (ADR-0020 Q4): the filtered view is the default — stated on the face.
+      'On a marker session (a declared bash shell, #186) the read is the FILTERED view by default: the command\'s own output only — echoed input, banners, prompt lines and repaint residue stay out. Pass view: "raw" for the full sanitized stream.',
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from pty_open.' },
       limit: { type: 'number', description: 'Max lines to return this call (the page walks FORWARD from the cursor; repeat the call to keep draining — nothing is skipped). Must be a positive integer; smaller values are refused loudly, never folded. #185: renamed from `lines` — the read/spill pagination word.' },
+      view: {
+        type: 'string',
+        enum: ['filtered', 'raw'],
+        description:
+          // #186: the view face, declared. The vocabulary carries no second
+          // set of words — the page facts keep the #185 shape in either view.
+          'Which view to page. Default "filtered": on a marker session (a declared bash shell, #186) only the command\'s own output — lines between the session\'s sentinel pair (OSC ' + MARKER_OSC_ID + ';' + MARKER_OPEN_PARAM + ' / ;' + MARKER_CLOSE_PARAM + ' with the session-private payload); on a session without a marker the two views are identical, so the default changes nothing. "raw" pages the full sanitized stream (echo, banners, prompts included) from its own independent raw cursor. Unknown spellings are refused loudly.',
+      },
     },
     output: {
       schema: {
@@ -554,9 +583,9 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         additionalProperties: true,
         properties: {
           text: { type: 'string', description: 'New output since the cursor, chronological.' },
-          offset: { type: 'number', description: '1-based absolute line number of the page\'s first line (kept even when the page is empty).' },
+          offset: { type: 'number', description: '1-based absolute line number of the page\'s first line (kept even when the page is empty). On a marker session: in the chosen view\'s coordinate (#186).' },
           limit: { type: 'number', description: 'The page budget in effect for this call.' },
-          totalLines: { type: 'number', description: 'Exact retained-line count the page covers.' },
+          totalLines: { type: 'number', description: 'Exact retained-line count the page covers. On a marker session: the chosen view\'s line count (#186).' },
           truncated: { type: 'boolean', description: 'True only on REAL loss: the scrollback cap dropped lines before the cursor reached them. A backlog larger than the budget is NOT loss — repeat the tail to drain it.' },
         },
       },
@@ -572,9 +601,9 @@ function registerPtySession(ctx: PtyCtx, config: PtyConfig, deps: PtyDeps = {}) 
         ...(value.truncated === undefined ? {} : { truncated: value.truncated }),
       }),
     },
-    async execute(args: { id: string; limit?: number }, exec: { agent?: Owner }) {
+    async execute(args: { id: string; limit?: number; view?: 'filtered' | 'raw' }, exec: { agent?: Owner }) {
       const owner = requireAgent(exec)
-      return facade.tail(owner, args.id, args.limit)
+      return facade.tail(owner, args.id, args.limit, args.view)
     },
     presentCall: (args: { id: string }) => ({ card: 'terminal', title: `tail ${args.id}` }),
   }))

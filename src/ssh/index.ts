@@ -53,6 +53,9 @@ import {
   type SshOptionInput,
 } from './compose.ts'
 import { sessionTransport, type SshTransport } from './transport.ts'
+// #186: the DECLARED-remote-shell-is-bash detection (Q1 dialect scope — ssh
+// sessions whose remote shell is bash carry the sentinel marker).
+import { sshBashShellDialect } from '../pty/marker-wrapper.ts'
 import {
   SANDBOX_EXECUTION_SEMANTICS,
   createPermissionGate,
@@ -120,11 +123,13 @@ interface SshCtx {
  * authorized-mode bookkeeping; this entry only opens/sends/tails/closes. */
 interface SshSessionCore {
   /** #189: the open spec carries `waitForFirstOutput` — see the core's
-   * OpenSpec (the ssh_start call site below sets it). */
-  open(owner: unknown, spec: { command: string; cwd?: string; waitForFirstOutput?: boolean; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any>
+   * OpenSpec (the ssh_start call site below sets it). #186: `marker` declares
+   * the sentinel dialect when the DECLARED remote shell is bash. */
+  open(owner: unknown, spec: { command: string; cwd?: string; waitForFirstOutput?: boolean; marker?: 'bash'; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any>
   send(owner: unknown, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>
-  /** #185: `limit` (was `lines`) — same rename as the core's tail. */
-  tail(owner: unknown, id: string, limit?: number): any
+  /** #185: `limit` (was `lines`) — same rename as the core's tail.
+   * #186: `view` names the coordinate (filtered default, raw explicit). */
+  tail(owner: unknown, id: string, limit?: number, view?: 'filtered' | 'raw'): any
   close(owner: unknown, id: string): Promise<{ closed: boolean }>
   modeOf(owner: unknown, id: string): SandboxMode | undefined
 }
@@ -197,6 +202,15 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
           pid: { type: 'number', description: 'Local ssh process id when the backend exposes one.' },
           status: { type: 'object', additionalProperties: true, description: 'Session status at publication.' },
           initialOutput: { type: 'string', description: 'Banner/auth output captured during connect.' },
+          markerArmed: {
+            type: 'boolean',
+            description:
+              // #186: the mirror-degradation observability face (review round).
+              'Present exactly on a marker session (a DECLARED bash remote shell, #186): whether the arming setup line reached the remote shell. ' +
+              'true = delivered (the filtered view still mirrors raw until the session\'s first trusted open — the documented fallback). ' +
+              'false = the write failed: the marker never arms and every read stays on the raw face. ' +
+              'The per-session payload never appears on any result.',
+          },
           sandboxMode: {
             type: 'string',
             description: 'The sandbox mode this ssh spawn ran under (the session policy, or the approved one-shot escalation target).',
@@ -238,6 +252,12 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
         waitForFirstOutput: true,
         // The grant actually used is the ssh session's write baseline (one call only).
         authorizedMode: authorization.grantedMode,
+        // #186 (ADR-0020 Q1): a DECLARED bash remote shell carries the
+        // sentinel marker — the setup line lands in the interactive remote
+        // bash after the settle, so ssh_tail / ssh_send read the filtered
+        // (command-own-output) view. An omitted `shell` leaves the remote
+        // login shell unknown and arms nothing (declaration over inference).
+        ...(rawArgs.shell !== undefined && sshBashShellDialect(rawArgs.shell) ? { marker: 'bash' as const } : {}),
       }, exec.signal)
       // ADR-0017 decision 5: the accounting unit is a connection, so the shape
       // travels with the session result instead of being re-derived later.
@@ -265,7 +285,7 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
         additionalProperties: true,
         properties: {
           ...BACKGROUND_RESULT_PROPERTIES,
-          delta: { type: 'string', description: 'Output produced since the previous read (foreground calls).' },
+          delta: { type: 'string', description: 'Output produced since the previous read (foreground calls). #186: on a marker session (a DECLARED bash remote shell) this is the FILTERED read — the remote command\'s own output; echo, banner and prompt lines stay out (see ssh_tail).' },
           status: { type: 'object', additionalProperties: true, description: 'Session status at settlement — kind "exited" means the session dropped (no auto-reconnect).' },
         },
       },
@@ -294,10 +314,17 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
   ctx.tools.register(defineTool({
     name: 'ssh_tail',
     description:
-      'Incrementally read the ssh session\'s new output since the last tail (per-session cursor; repeated tails do not resend old lines). Core passthrough.',
+      'Incrementally read the ssh session\'s new output since the last tail (per-session cursor; repeated tails do not resend old lines). Core passthrough. ' +
+      // #186: filtered default, stated on the face (same words as pty_tail).
+      'On a marker session (a DECLARED bash remote shell, #186) the read is the FILTERED view by default: the remote commands\' own output — echo, banner and prompt lines stay out. Pass view: "raw" for the full sanitized stream.',
     parameters: {
       id: { type: 'string', required: true, description: 'Session id from ssh_start.' },
       limit: { type: 'number', description: 'Max lines to return this call (the page walks FORWARD from the cursor; repeat the call to keep draining — nothing is skipped). Must be a positive integer; smaller values are refused loudly, never folded. #185: renamed from `lines` — the read/spill pagination word.' },
+      view: {
+        type: 'string',
+        enum: ['filtered', 'raw'],
+        description: 'Which view to page. Default "filtered": on a marker session (a DECLARED bash remote shell, #186) only the remote commands\' own output; on a session without a marker the two views are identical. "raw" pages the full sanitized stream from its own independent raw cursor. Unknown spellings are refused loudly.',
+      },
     },
     output: {
       schema: {
@@ -305,17 +332,17 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
         additionalProperties: true,
         properties: {
           text: { type: 'string', description: 'New output since the cursor, chronological.' },
-          offset: { type: 'number', description: '1-based absolute line number of the page\'s first line (kept even when the page is empty).' },
+          offset: { type: 'number', description: '1-based absolute line number of the page\'s first line (kept even when the page is empty). On a marker session: in the chosen view\'s coordinate (#186).' },
           limit: { type: 'number', description: 'The page budget in effect for this call.' },
-          totalLines: { type: 'number', description: 'Exact retained-line count the page covers.' },
+          totalLines: { type: 'number', description: 'Exact retained-line count the page covers. On a marker session: the chosen view\'s line count (#186).' },
           truncated: { type: 'boolean', description: 'True only on REAL loss: the scrollback cap dropped lines before the cursor reached them. A backlog larger than the budget is NOT loss — repeat the tail to drain it.' },
         },
       },
       render: (_args: unknown, value: { text?: string }) => [{ type: 'text' as const, text: value.text || '(no new output)' }],
     },
-    async execute(args: { id: string; limit?: number }, exec: { agent?: unknown }) {
+    async execute(args: { id: string; limit?: number; view?: 'filtered' | 'raw' }, exec: { agent?: unknown }) {
       const owner = requireAgent(exec)
-      return core.tail(owner, args.id, args.limit)
+      return core.tail(owner, args.id, args.limit, args.view)
     },
     presentCall: (args: { id: string }) => ({ card: 'terminal', title: `tail ${args.id}` }),
   }))
