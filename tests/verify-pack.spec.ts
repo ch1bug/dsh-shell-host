@@ -200,6 +200,11 @@ describe("chunkFamilyDeclarations", () => {
     const realFiles: string[] = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).files;
     expect(chunkFamilyDeclarations(realFiles)).toEqual([
       "lib/pty-*.js",
+      // 批 R/#186: the session-core refactor made the three entries (pty/ssh/
+      // terminal) share session-core, so the bundler split it into its own
+      // hashed chunk — the `files` face must declare its family too (批末 e2e
+      // ring4/5 red: the chunk was packed out and all five rows failed to import).
+      "lib/session-core-*.js",
       // #102: the shared permission-gate module became its own chunk (the three
       // entries import it), so the `files` face must declare its family too.
       "lib/permission-gate-*.js",
