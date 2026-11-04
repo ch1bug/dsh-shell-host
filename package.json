@@ -65,6 +65,7 @@
     "lib/types/**/*.d.ts",
     "lib/pty/index.js",
     "lib/pty-*.js",
+    "lib/session-core-*.js",
     "lib/ssh/index.js",
     "lib/wsl-plugin/index.js",
     "lib/terminal/index.js",
