@@ -51,7 +51,12 @@ function boot() {
   // #136: the ssh family is its own entry now — mount `./ssh` (it consumes the
   // pty service this boot provides). The assertions below are unchanged: this
   // suite pins the TOOL semantics, not which entry registered them.
-  return bootPlugin({ ssh: true, spawnPty: echoRemoteSpawner });
+  // #189: ssh_start opens with waitForFirstOutput and this echo fake never
+  // writes on its own, so every open would wait out the 5s default
+  // first-output window (16 timeouts at 5s, measured); a short window keeps
+  // the opens fast — the window's default and semantics are pinned in
+  // pty-core.spec.ts, not here.
+  return bootPlugin({ ssh: true, spawnPty: echoRemoteSpawner, config: { settleFirstOutputMs: 40 } });
 }
 
 /** The composed command of the most recent ssh_start. */

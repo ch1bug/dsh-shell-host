@@ -78,8 +78,12 @@ async function refusal<T>(promise: Promise<T>): Promise<Error & { code?: string 
   throw new Error("expected the call to be refused, but it ran");
 }
 
-/** Fast settles — these rings assert wiring/policy, not timing. */
-const FAST = { settleQuietMs: 10, settleTickMs: 5, settleTimeoutMs: 60 };
+/** Fast settles — these rings assert wiring/policy, not timing.
+ * #189: `settleFirstOutputMs` joins FAST because the rings' allowed
+ * `ssh_start` opens wait out the first-output window (the echo fake never
+ * writes on its own); without it the default 5000ms lands right on vitest's
+ * own 5s test timeout (measured). */
+const FAST = { settleQuietMs: 10, settleTickMs: 5, settleTimeoutMs: 60, settleFirstOutputMs: 30 };
 
 /** Boot the pty entry over a fake spawner + the two faked permission services.
  * `onRequest` fires at approval time with the live spawn ledger, so a ring can

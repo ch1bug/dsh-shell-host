@@ -119,7 +119,9 @@ interface SshCtx {
  * like the terminal entry's: the core owns owner scoping, cursors and the
  * authorized-mode bookkeeping; this entry only opens/sends/tails/closes. */
 interface SshSessionCore {
-  open(owner: unknown, spec: { command: string; cwd?: string; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any>
+  /** #189: the open spec carries `waitForFirstOutput` — see the core's
+   * OpenSpec (the ssh_start call site below sets it). */
+  open(owner: unknown, spec: { command: string; cwd?: string; waitForFirstOutput?: boolean; authorizedMode?: SandboxMode }, signal?: AbortSignal): Promise<any>
   send(owner: unknown, id: string, request: { data: string; submit?: boolean; signal?: AbortSignal }): Promise<any>
   /** #185: `limit` (was `lines`) — same rename as the core's tail. */
   tail(owner: unknown, id: string, limit?: number): any
@@ -227,6 +229,13 @@ function registerSshTools(ctx: SshCtx, config: SshConfig): void {
       const opened = await core.open(owner, {
         command,
         ...(authorization.cwd === undefined ? {} : { cwd: authorization.cwd }),
+        // #189: a cold ssh spawn's first bytes are ConPTY's own control
+        // sequences (sanitized away — the settle's buffer never moves) while
+        // the remote banner lands 1.4–2.2s later (LAN, measured in
+        // .scratch/verify189/), past the ~150ms quiet window. The initial
+        // settle therefore waits for the FIRST printable output, so the
+        // banner the tool face documents actually lands in initialOutput.
+        waitForFirstOutput: true,
         // The grant actually used is the ssh session's write baseline (one call only).
         authorizedMode: authorization.grantedMode,
       }, exec.signal)

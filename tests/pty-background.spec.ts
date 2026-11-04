@@ -134,7 +134,15 @@ function boot(opts: { jobs?: ReturnType<typeof fakeJobs>; config?: unknown } = {
   // `enableRunInBackground` reads the same probe config object.
   // #156: the spawner passes DIRECTLY — the `() => echoFakePty()` arrow that
   // worked around the #120-era TS2322 is retired by the signature alignment.
-  const h = bootPlugin({ ssh: true, spawnPty: echoFakePty, config: opts.config });
+  // #189: the ssh_start opens wait out the first-output window and the echo
+  // fake never writes on its own — default the short window in so the
+  // 5000ms default never lands on vitest's own 5s test timeout (measured);
+  // an explicit `config` still wins.
+  const h = bootPlugin({
+    ssh: true,
+    spawnPty: echoFakePty,
+    config: { settleFirstOutputMs: 30, ...(opts.config as Record<string, unknown> | undefined) },
+  });
   if (opts.jobs !== undefined) h.provided.set("jobs", opts.jobs);
   return h;
 }

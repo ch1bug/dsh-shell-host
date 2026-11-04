@@ -196,7 +196,9 @@ describe("活体仓：全部行的注册工具名棘轮（#179 AC2）", () => {
     };
     const booted = bootPlugin({
       // 快 settle（本守卫不执行任何 spawn，只看注册面）。
-      config: { settleQuietMs: 10, settleTickMs: 5, settleTimeoutMs: 60 },
+      // #189: settleFirstOutputMs joins it — an allowed ssh_start (if one
+      // ever ran here) would otherwise wait out the 5000ms default.
+      config: { settleQuietMs: 10, settleTickMs: 5, settleTimeoutMs: 60, settleFirstOutputMs: 30 },
       spawnPty: () => echoFakePty().pty,
       ssh: true,
       remote: { anchorRoot: process.env.TEMP ?? ".", keepaliveMs: 0, reconnectMax: 0 },

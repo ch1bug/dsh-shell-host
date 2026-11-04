@@ -172,6 +172,58 @@ switch is added, and the settle default is not changed — if you want that,
 file a separate issue (it would touch default behavior / the timeout
 ceiling / `shellCommand` interaction and mutation verification).
 
+### The cold-spawn banner race — `waitForFirstOutput` and the pending tail (#189)
+
+That separate issue happened (#189): an interactive **ssh** session on a
+real LAN host reproduced the empty `initialOutput` **stably** — the probe
+in `.scratch/verify189/` measured the actual byte timeline of a cold
+`ssh -tt … bash --login` spawn under the real @lydell/node-pty:
+
+- **+83–94ms**: 16 bytes of pure ConPTY control sequences
+  (`ESC[?9001h ESC[?1004h`) — verified against the real sanitizer to strip
+  to `""`, so the settle's buffer never moves and the settle judges "quiet"
+  after one quiet window with nothing ever published;
+- **+1.4–2.2s**: the remote prompt frame (`ESC[?2004h` bracketed paste, the
+  ConPTY first-render frame, the colored prompt) — round 2 arrived at
+  **2248ms, already past the 2s chatty-process ceiling**;
+- **node-pty does NOT lose the early bytes** (every chunk arrived in every
+  round) — the suspicion that first-spawn output is dropped is refuted; the
+  whole phenomenon is the settle timing.
+
+Two-halves fix, both measured in `.scratch/verify189/`:
+
+1. **`OpenSpec.waitForFirstOutput`** (opt-in, declared by the opening
+   surface): the initial settle may only judge quiet ONCE printable output
+   exists; until then it waits up to the new `settleFirstOutputMs` config
+   key (default `DEFAULT_SETTLE_FIRST_OUTPUT_MS = 5000` — the measured
+   2248ms round needs the headroom). **`ssh_start` sets it** (the remote
+   banner is part of its documented start result); `pty_open` / `shell_open`
+   keep the #154 face above. After the first output the plain quiet window
+   and the settle timeout ceiling apply unchanged, and an early exit still
+   short-circuits (a dead process never waits out the window).
+2. **The `waitForFirstOutput` face's `initialOutput` appends the PENDING
+   TAIL** (the incomplete trailing line) — the same shape the #162 timeout
+   cut face and `pty_send`'s delta report. A remote prompt carries no
+   newline and lives in the pending buffer: complete-lines-only meant a
+   settled-but-lineless banner still published an empty `initialOutput`,
+   while the tail cursor (which never covers pending) hid it from every
+   page until the NEXT WRITE completed the line — #189's "visible only
+   after the first write" half of the phenomenon. Appending is OPT-IN ONLY:
+   an unconditional append double-delivers the pending prefix (the tail
+   hands the completed line over in full) and broke remote's
+   `initialOutput`+`tail` marker-assembly consumer for real —
+   `tests/remote-session-launch.spec.ts`'s split-marker-chunks case went
+   1/17 red before the scoping (`.scratch/verify189/`). Known residue on
+   the opt-in face: the prompt prefix reappears verbatim inside the first
+   echoed line — that is what a terminal echo looks like anyway.
+
+The #154 reading guidance stands for `pty_open` / `shell_open` (no opt-in ⇒
+the same settle face AND the same initialOutput shape as before, zero drift
+pinned by specs); for `ssh_start` the banner now lands in `initialOutput`
+whenever it arrives within the first-output window — a slower-than-5s WAN
+cold connect can still publish empty (the tail remains the fallback,
+unchanged).
+
 ### pty_list / pty_signal (#119)
 
 Completes tool-surface coverage parity with the official `terminal_list` /

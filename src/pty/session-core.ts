@@ -52,6 +52,16 @@ const DEFAULT_SETTLE_QUIET_MS = 150
 const DEFAULT_SETTLE_TICK_MS = 25
 /** Hard ceiling for any settle (a chatty process cannot hang a tool call). */
 const DEFAULT_SETTLE_TIMEOUT_MS = 2000
+/** #189: how long the initial settle keeps waiting for the FIRST printable
+ * output when the open spec opts in (`waitForFirstOutput`). A cold spawn's
+ * early bytes can be pure ConPTY control sequences — the sanitizer strips
+ * them, so the settle's buffer never moves and the old settle judged "quiet"
+ * after one quiet window with nothing ever published; the real banner lands
+ * seconds later (measured 1.4–2.2s on a LAN ssh host — round 2 of
+ * `.scratch/verify189/probe-chunks.log` arrived at 2248ms, already past the
+ * 2s chatty-process ceiling). Once output exists, the normal quiet window
+ * and the settle timeout ceiling apply again. */
+export const DEFAULT_SETTLE_FIRST_OUTPUT_MS = 5000
 /** Idle-watcher tick period: fine-grained enough for second-scale timeouts. */
 const DEFAULT_IDLE_TICK_MS = 250
 /** Retained scrollback lines per session; older lines are dropped (and a
@@ -87,6 +97,10 @@ export interface SessionCoreConfig {
   settleQuietMs: number
   settleTickMs: number
   settleTimeoutMs: number
+  /** #189: first-output window for a `waitForFirstOutput` open's initial
+   * settle — how long it waits when the session has produced NO printable
+   * output yet (see {@link DEFAULT_SETTLE_FIRST_OUTPUT_MS}). */
+  settleFirstOutputMs: number
   idleTickMs: number
   scrollbackLines: number
   /** #159: default hard deadline (ms) for one-shot execs when the call does
@@ -118,6 +132,7 @@ export function resolveCoreConfig(raw: Partial<SessionCoreConfig> | undefined): 
     settleQuietMs: positiveInt(c.settleQuietMs, DEFAULT_SETTLE_QUIET_MS),
     settleTickMs: positiveInt(c.settleTickMs, DEFAULT_SETTLE_TICK_MS),
     settleTimeoutMs: positiveInt(c.settleTimeoutMs, DEFAULT_SETTLE_TIMEOUT_MS),
+    settleFirstOutputMs: positiveInt(c.settleFirstOutputMs, DEFAULT_SETTLE_FIRST_OUTPUT_MS),
     idleTickMs: positiveInt(c.idleTickMs, DEFAULT_IDLE_TICK_MS),
     scrollbackLines: positiveInt(c.scrollbackLines, DEFAULT_SCROLLBACK_LINES),
     // #159: see resolveDeadlineConfig above — 0 = off is meaningful here.
@@ -344,6 +359,20 @@ export interface OpenSpec {
    * authorization without caching a boolean "approved" flag.
    */
   authorizedMode?: SandboxMode
+  /**
+   * #189, declared by the OPENING SURFACE: the initial settle waits for the
+   * FIRST printable output before it judges quiescence (bounded by the
+   * configured `settleFirstOutputMs`, default 5000ms). A cold spawn's early
+   * bytes can be pure ConPTY control sequences — the sanitizer strips them,
+   * the settle's buffer never moves — while the real banner/prompt lands
+   * seconds later (measured 1.4–2.2s on a LAN ssh host), past the ~150ms
+   * quiet window. `ssh_start` sets this (the remote banner is part of its
+   * documented start result); without the opt-in the initial settle keeps
+   * the pre-#189 face (empty initialOutput on a slow banner, output readable
+   * from the tail — #154's documented reading), which is what pty_open /
+   * shell_open keep.
+   */
+  waitForFirstOutput?: boolean
 }
 
 /**
@@ -748,8 +777,20 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
    * An aborted signal resolves immediately (the write itself is not
    * cancelable; only the wait is). `ignoreExit` (#64 autoClose reclaim):
    * skip the exited short-circuit so the quiet window still runs AFTER the
-   * process exit event — buffered output racing the exit gets to land. */
-  const settleFor = (s: Session, signal?: AbortSignal, opts?: { ignoreExit?: boolean }): Promise<void> =>
+   * process exit event — buffered output racing the exit gets to land.
+   *
+   * `waitForFirstOutput` (#189, the open's initial settle only): without
+   * printable output the buffer never moves, so the plain quiet rule reads
+   * "quiet" after one quiet window even though nothing was ever published —
+   * a cold spawn whose early bytes are pure control sequences (sanitized
+   * away) gets an empty initialOutput while its real banner lands seconds
+   * later. With the opt-in, quiet may only be judged ONCE output exists,
+   * and until then the wait is bounded by `settleFirstOutputMs` instead of
+   * the chatty-process ceiling; after the first output the plain quiet and
+   * timeout rules apply unchanged. WITHOUT the opt-in the behavior is
+   * byte-for-byte the pre-#189 one (the #154 face: empty initialOutput on
+   * a slow banner, output readable from the tail). */
+  const settleFor = (s: Session, signal?: AbortSignal, opts?: { ignoreExit?: boolean; waitForFirstOutput?: boolean }): Promise<void> =>
     new Promise((resolve) => {
       if (signal?.aborted) {
         resolve()
@@ -758,6 +799,8 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       const startedAt = Date.now()
       let lastDataAt = startedAt
       let lastChars = -1
+      const waitForFirstOutput = opts?.waitForFirstOutput === true
+      let sawOutput = false
       const finish = () => {
         clearInterval(timer)
         signal?.removeEventListener('abort', onAbort)
@@ -770,8 +813,17 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
         if (chars !== lastChars) {
           lastChars = chars
           lastDataAt = Date.now()
+          // #189: "output" means printable content — the first tick's change
+          // from the -1 sentinel is the EMPTY buffer itself (chars 0), not
+          // output; a sanitized-away control-sequence frame never moves the
+          // buffer past 0 and must not start the quiet clock as "saw output".
+          if (chars > 0) sawOutput = true
         }
-        if ((opts?.ignoreExit !== true && s.exited) || signal?.aborted || Date.now() - lastDataAt >= config.settleQuietMs || Date.now() - startedAt >= config.settleTimeoutMs) {
+        const wentQuiet = waitForFirstOutput
+          ? sawOutput && Date.now() - lastDataAt >= config.settleQuietMs
+          : Date.now() - lastDataAt >= config.settleQuietMs
+        const ceiling = waitForFirstOutput && !sawOutput ? config.settleFirstOutputMs : config.settleTimeoutMs
+        if ((opts?.ignoreExit !== true && s.exited) || signal?.aborted || wentQuiet || Date.now() - startedAt >= ceiling) {
           finish()
         }
       }, config.settleTickMs)
@@ -975,6 +1027,9 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       if (spec.shell !== undefined && typeof spec.shell !== 'boolean') {
         throw new Error(`shell must be a boolean, got: ${JSON.stringify(spec.shell)}`)
       }
+      if (spec.waitForFirstOutput !== undefined && typeof spec.waitForFirstOutput !== 'boolean') {
+        throw new Error(`waitForFirstOutput must be a boolean, got: ${JSON.stringify(spec.waitForFirstOutput)}`)
+      }
       if (spec.idleTimeoutMs !== undefined && (!Number.isInteger(spec.idleTimeoutMs) || spec.idleTimeoutMs <= 0)) {
         throw new Error(`idleTimeoutMs must be a positive integer (ms), got: ${JSON.stringify(spec.idleTimeoutMs)}`)
       }
@@ -1061,7 +1116,10 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       })
       // Initial settle: the banner/prompt produced at birth lands in
       // initialOutput; the tail cursor starts from what exists now.
-      await settleFor(s, signal)
+      // #189: with the spec's opt-in the settle waits for the first printable
+      // output (a cold spawn's first bytes are ConPTY control sequences the
+      // sanitizer strips — quiet must not be judged on an empty buffer).
+      await settleFor(s, signal, spec.waitForFirstOutput === true ? { waitForFirstOutput: true } : undefined)
       cursors.set(s, totalLines(s))
       if (spec.autoClose === true) {
         // #146: a one-shot is an EXEC — wait for the real exit, then drain the
@@ -1099,10 +1157,26 @@ export function createSessionCore(rawConfig?: Partial<SessionCoreConfig>, deps: 
       // start only — the settle window above still DRAINS the race residue
       // (the exit event needs it to surface), but the cut keeps it out of the
       // result the caller sees.
+      // #189: the waitForFirstOutput face appends the PENDING TAIL (the
+      // incomplete trailing line) — the same shape the #162 cut face and
+      // pty_send's delta report. A remote prompt carries no newline and lives
+      // in the pending buffer: complete-lines-only meant a settled-but-lineless
+      // banner still published an empty initialOutput, while the tail cursor
+      // (which never covers pending) hid it from every page until the next
+      // write completed the line ("visible only after the first write", the
+      // second half of #189's phenomenon). Appending is OPT-IN only: an
+      // unconditional append double-delivers the pending prefix (the tail
+      // hands over the completed line in full) and broke remote's
+      // initialOutput+tail marker-assembly consumer for real
+      // (tests/remote-session-launch.spec.ts split-marker chunks, 1/17 red
+      // before this scoping). Known residue on the opt-in face: the prompt
+      // prefix reappears verbatim inside the first echoed line — that is what
+      // a terminal echo looks like anyway, not a loss or a shift.
       const initialOutput =
         s.deadlineOutputCut !== undefined
           ? readNewestBelowCut(s, config.scrollbackLines, s.deadlineOutputCut)
-          : readNewest(s, totalLines(s), config.scrollbackLines).text
+          : readNewest(s, totalLines(s), config.scrollbackLines).text +
+            (spec.waitForFirstOutput === true ? s.pending : '')
       return {
         sessionId: id,
         ...(pty.pid === undefined ? {} : { pid: pty.pid }),

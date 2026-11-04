@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 import { bootPlugin, fakePty, type FakePtyHandle, type CoreSpawnSpec } from "./helpers/fake-pty.ts";
-import { DEFAULT_MAX_SESSIONS, PATH_PROFILE_HINT, PTY_SIGNALS, SPAWN_FAILURE_HINT, createSessionCore, defaultSpawnPty, type SessionCoreConfig } from "../src/pty/session-core.ts";
+import { DEFAULT_MAX_SESSIONS, DEFAULT_SETTLE_FIRST_OUTPUT_MS, PATH_PROFILE_HINT, PTY_SIGNALS, SPAWN_FAILURE_HINT, createSessionCore, defaultSpawnPty, resolveCoreConfig, type SessionCoreConfig } from "../src/pty/session-core.ts";
 import { waitUntil, stillPending } from "./helpers/wait-until.ts";
 
 /**
@@ -105,6 +105,71 @@ describe("self-managed session core (#61 ADR-0010)", () => {
     expect(opened.pid).toBe(h.spawned[0].pty.pid);
     expect(opened.status).toEqual({ kind: "running" });
     expect(opened.initialOutput).toContain("welcome");
+  });
+
+  // #189: a cold spawn's early bytes can be pure ConPTY control sequences —
+  // the sanitizer strips them, so the settle's buffer never moves — while the
+  // real banner lands seconds later (measured 1.4–2.2s on a LAN ssh host,
+  // .scratch/verify189/). With waitForFirstOutput the initial settle waits
+  // for the FIRST printable output instead of judging quiet on an empty
+  // buffer, so the banner lands in initialOutput.
+  it("#189: waitForFirstOutput waits for the first printable output past a sanitized cold-spawn frame", async () => {
+    const h = bootFast({ config: { settleFirstOutputMs: 400 } });
+    const startedAt = Date.now();
+    const pending = h.core.open(agent, { command: "ssh -tt host bash --login", waitForFirstOutput: true });
+    await new Promise((r) => setTimeout(r, 10));
+    // The cold-spawn face measured in .scratch/verify189/probe-chunks.log:
+    // +83ms ESC[?9001h ESC[?1004h (16B, sanitizes to "" — verified against
+    // the real sanitizer), banner at +1.4–2.2s. Scaled into the FAST window:
+    h.spawned[0].emitData("\x1b[?9001h\x1b[?1004h");
+    await new Promise((r) => setTimeout(r, 100));
+    // (Before this fix the settle had already returned an empty initialOutput
+    // at ~25ms — this emit lands after publication, and the assertion below
+    // failed with `expected "" to contain …`.)
+    h.spawned[0].emitData("\x1b[32m\x1b[1mhost\x1b[m:~$ ");
+    const opened = await pending;
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
+    expect(opened.initialOutput).toContain("host:~$");
+  });
+
+  it("#189: waitForFirstOutput with a silent session waits out the first-output window, bounded", async () => {
+    const h = bootFast({ config: { settleFirstOutputMs: 150 } });
+    const startedAt = Date.now();
+    const opened = await h.core.open(agent, { command: "silent", waitForFirstOutput: true });
+    const elapsed = Date.now() - startedAt;
+    expect(elapsed).toBeGreaterThanOrEqual(150);
+    expect(elapsed).toBeLessThan(1000); // bounded by the window, not hung
+    expect(opened.initialOutput).toBe("");
+  });
+
+  it("#189: waitForFirstOutput still honors an early exit (no first-output wait on a dead process)", async () => {
+    const h = bootFast({ config: { settleFirstOutputMs: 5000 } });
+    const startedAt = Date.now();
+    const pending = h.core.open(agent, { command: "dead", waitForFirstOutput: true, autoClose: true });
+    await new Promise((r) => setTimeout(r, 10));
+    h.spawned[0].emitExit({ exitCode: 0 });
+    const opened = await pending;
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    expect(opened.status).toEqual({ kind: "exited", exitCode: 0 });
+  });
+
+  // The #154 face is unchanged without the opt-in: a silent open still
+  // returns after ONE quiet window with an empty initialOutput (output
+  // readable from the tail) — pty_open/shell_open keep that behavior.
+  it("#154 face unchanged: a silent open WITHOUT the opt-in still returns after one quiet window", async () => {
+    const h = bootFast();
+    const startedAt = Date.now();
+    const opened = await h.core.open(agent, { command: "silent" });
+    const elapsed = Date.now() - startedAt;
+    expect(elapsed).toBeLessThan(100); // quiet 20ms + tick, well before the 300ms ceiling
+    expect(opened.initialOutput).toBe("");
+  });
+
+  it("#189: settleFirstOutputMs resolves with the positiveInt fallback", () => {
+    expect(resolveCoreConfig({}).settleFirstOutputMs).toBe(DEFAULT_SETTLE_FIRST_OUTPUT_MS);
+    expect(resolveCoreConfig({ settleFirstOutputMs: 123 }).settleFirstOutputMs).toBe(123);
+    expect(resolveCoreConfig({ settleFirstOutputMs: 0 }).settleFirstOutputMs).toBe(DEFAULT_SETTLE_FIRST_OUTPUT_MS);
+    expect(resolveCoreConfig({ settleFirstOutputMs: -5 }).settleFirstOutputMs).toBe(DEFAULT_SETTLE_FIRST_OUTPUT_MS);
   });
 
   it("tail is cursor-incremental: only new lines, repeated tails empty, truncation flagged", async () => {

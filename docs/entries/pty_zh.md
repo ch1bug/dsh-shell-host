@@ -120,6 +120,43 @@ await pty_send({ id: s.sessionId, data: 'cd /c/work && ls | head -3' })   // 无
 **本票不改语义**：不加「首个输出到达再算 settle」的开关、不改 settle 默认值 ——
 要那样请另立票（会牵动默认行为 / 超时上界 / `shellCommand` 交互与变异验证）。
 
+### 冷 spawn 横幅竞态 —— `waitForFirstOutput` 与 pending 尾（#189）
+
+那张「另立的票」就是 #189：真机 LAN 上交互式 **ssh** 会话把「`initialOutput` 为空」
+**稳定**复现了。`.scratch/verify189/` 的探针测到了真实 @lydell/node-pty 下冷
+`ssh -tt … bash --login` spawn 的逐字节时间线：
+
+- **+83–94ms**：16 字节纯 ConPTY 控制序列（`ESC[?9001h ESC[?1004h`）—— 对着真实
+  sanitizer 验证过，剥离后为 `""`，于是 settle 的缓冲永不移动，settle 在一个静默窗后
+  就判「安静」，什么都没发布过；
+- **+1.4–2.2s**：远端提示符帧（`ESC[?2004h` 括号粘贴、ConPTY 首渲染帧、彩色提示符）
+  —— 第 2 轮在 **2248ms 才到，已经越过 2s 吵闹进程上界**；
+- **node-pty 不丢早期字节**（每轮所有 chunk 都到场）——「首 spawn 输出丢失」的嫌疑被
+  否证；现象全部来自 settle 时序。
+
+两半修复，读数都在 `.scratch/verify189/`：
+
+1. **`OpenSpec.waitForFirstOutput`**（opt-in，由打开面声明）：初始 settle 只有在
+   **存在可打印输出之后**才能判安静；在那之前最多等到新的 `settleFirstOutputMs`
+   配置键（默认 `DEFAULT_SETTLE_FIRST_OUTPUT_MS = 5000` —— 实测 2248ms 的那一轮
+   需要这个裕量）。**`ssh_start` 传它**（远端横幅是其文档化的 start 结果的一部分）；
+   `pty_open` / `shell_open` 维持上面的 #154 面。首输出到达之后，普通静默窗与 settle
+   超时上界照旧；提前退出照旧短路（死进程不等满窗口）。
+2. **`waitForFirstOutput` 面的 `initialOutput` 拼上 PENDING 尾**（未完结的残行）—— 与
+   #162 的超时截断面、`pty_send` 的 delta 同形。远端提示符不带换行、住在 pending 缓冲里：
+   只认完整行意味着「settle 等到了但不成行」的横幅仍然发布空 `initialOutput`，而 tail
+   游标（永不覆盖 pending）把它对每一页都藏起来，直到**下一次写入**把那行补完 ——
+   这正是 #189 现象里「首次写入后才可见」的另一半。**拼尾是 opt-in 的**：无条件拼尾会把
+   pending 前缀重复交付（tail 在那行补完时整行再交一遍），remote 面的
+   `initialOutput`+`tail` marker 拼装消费者被实测打破 ——
+   `tests/remote-session-launch.spec.ts` 的拆分 marker chunk 用例在收窄前 1/17 红
+   （`.scratch/verify189/`）。opt-in 面的已知残余：prompt 前缀会在第一行回显里原样再出现
+   —— 终端回显本来就是这个样子，不是丢失也不是错位。
+
+#154 的取数姿势对 `pty_open` / `shell_open` 原样成立（无 opt-in ⇒ settle 面与
+`initialOutput` 形状都与从前相同，规格钉了零漂移）；对 `ssh_start`，横幅只要在首输出
+窗口内到达就落进 `initialOutput` —— 比 5s 更慢的 WAN 冷连接仍可能发布空（tail 兜底不变）。
+
 ### pty_list / pty_signal（#119）
 
 补齐官方 `terminal_list` / `terminal_signal` 的工具面覆盖。两者都**只作用于调用方
