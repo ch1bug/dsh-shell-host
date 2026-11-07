@@ -141,8 +141,8 @@ describe("custom.d file family mount (#170, ADR-0018 修订)", () => {
     await expect(
       boot.tool("shell_open").execute({ preset: "bad-shell" }, { agent: { name: "u" } }),
     ).rejects.toThrow(/unknown preset/);
-    // ...but visible on terminal_list with the original reasons.
-    const listed = await boot.tool("terminal_list").execute({}, { agent: { name: "u" } });
+    // ...but visible on shellhost_terminal_list with the original reasons.
+    const listed = await boot.tool("shellhost_terminal_list").execute({}, { agent: { name: "u" } });
     const bad = listed.presets.find((p: { id: string }) => p.id === "bad-shell");
     expect(bad).toMatchObject({ disabled: true, source: "custom", file: "bad-shell.json" });
     expect(bad.reasons.join(" ")).toContain("does not exist");
@@ -165,7 +165,7 @@ describe("custom.d file family mount (#170, ADR-0018 修订)", () => {
     await expect(
       boot.tool("shell_open").execute({ preset: "a-good" }, { agent: { name: "u" } }),
     ).resolves.toMatchObject({ source: "custom" });
-    const listed = await boot.tool("terminal_list").execute({}, { agent: { name: "u" } });
+    const listed = await boot.tool("shellhost_terminal_list").execute({}, { agent: { name: "u" } });
     const broken = listed.presets.find((p: { id: string }) => p.id === "b-broken");
     expect(broken.disabled).toBe(true);
     expect(broken.reasons.join(" ")).toContain("JSON");
@@ -248,13 +248,13 @@ describe("the file family re-reads on every mount (#170 replaces the #105 restar
 });
 
 describe("agent-face guard (#105/#170): the tool surface has no write path into the registration", () => {
-  it("the terminal entry registers shell_open + the read-only terminal_list — no registration parameters", () => {
+  it("the terminal entry registers shell_open + the read-only shellhost_terminal_list — no registration parameters", () => {
     const boot = bootTerminal({}, fullDeps, { fakeSpawn: true, files: { [pf("my-shell.json")]: JSON.stringify(bootEntry()) } });
     const terminalTools = boot.registered.filter((t: { name: string }) => t.name === "shell_open");
     expect(terminalTools).toHaveLength(1);
     const paramKeys = Object.keys(terminalTools[0]!.parameters.properties);
     expect(paramKeys).toEqual(["preset", "cwd", "env", "idleTimeoutMs", "sandbox_permissions", "justification"]);
-    const listTools = boot.registered.filter((t: { name: string }) => t.name === "terminal_list");
+    const listTools = boot.registered.filter((t: { name: string }) => t.name === "shellhost_terminal_list");
     expect(listTools).toHaveLength(1);
     expect(Object.keys(listTools[0]!.parameters.properties)).toEqual([]);
     // No tool name on the whole bundle hints at a registration writer.

@@ -21,7 +21,7 @@
  * - VALIDATION is NOT re-run here: the mount-time single-entry disable
  *   (#170) is the identical gate file writes face (spec D4) — an invalid
  *   entry materializes and shows up disabled with its reasons on
- *   terminal_list, exactly like a hand-edited file.
+ *   shellhost_terminal_list, exactly like a hand-edited file.
  * @module dsh-shell-host/terminal/materialize
  */
 

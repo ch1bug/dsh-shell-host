@@ -24,7 +24,7 @@
  * the form's snapshot (D8 UX self-ruled). Deleted presets disappear from the
  * array on save — deletion is unambiguous (story 15). Built-in presets are
  * NOT listed: the browser face has no channel to the launcher table (the
- * agent face's terminal_list is not client-reachable) — a declared spec
+ * agent face's shellhost_terminal_list is not client-reachable) — a declared spec
  * shortfall (#169 票面留档).
  * @module dsh-shell-host/client
  */

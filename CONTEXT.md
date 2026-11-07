@@ -16,7 +16,8 @@ custom shell 预设的权威存储形态：每条预设一个独立文件（`cus
 **修订 ADR-0018** 的「patch 行唯一写入口」决策）
 
 ### 单条禁用（per-entry disable）
-校验不通过的注册条目被跳过并在 `terminal_list` 中呈现 `disabled` + 原因原文，
+校验不通过的注册条目被跳过并在 `shellhost_terminal_list` 中呈现 `disabled` + 原因原文
+（#193 起；原名 `terminal_list`，与官方随包 optional-tool-terminal 撞名而改名），
 其余条目照常挂载；用户改好文件后下次挂载自动放行。取代 #105 的整批
 `registrationError` 门。（#170 grill D6/D7，2026-10-29）
 

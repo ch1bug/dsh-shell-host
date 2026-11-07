@@ -30,9 +30,10 @@ ADR 三点：
    不再做进程级快照。挂载 = 行重挂或进程重启，会话中途表不变的性质由
    「挂载时定型」保留。
 
-审计面本体（append-only JSONL 账本、shell_open 哈希比对告警、`terminal_list`
-的 disabled 投影）的边界与显式不做见 #170 票面 spec：审计面是可观测性设施，
-无任何强制语义，阻断权归 #102 权限门。
+审计面本体（append-only JSONL 账本、shell_open 哈希比对告警、
+`shellhost_terminal_list`（#193 起的原 `terminal_list`；与官方随包
+optional-tool-terminal 同名六件撞名而改名）的 disabled 投影）的边界与显式不做见
+#170 票面 spec：审计面是可观测性设施，无任何强制语义，阻断权归 #102 权限门。
 
 ## 修订（#169，2026-10-30）：配置页写通道 = 传输，权威仍是文件族
 

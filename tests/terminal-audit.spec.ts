@@ -3,7 +3,7 @@
  * shell_open hash-mismatch warning (advisory only — the launch proceeds;
  * a matching hash or a missing ledger record warns NOTHING — the
  * discriminating counter-samples), the once-per-observed-hash `changed`
- * ledger event, and the terminal_list projection of builtin / active /
+ * ledger event, and the shellhost_terminal_list projection of builtin / active /
  * disabled presets. Assertions land on tool RESULTS and LEDGER FILE
  * CONTENT only, never on internal call relationships (spec Testing
  * Decisions).
@@ -89,7 +89,7 @@ describe("shell_open hash check (#170): advisory warning at the tool result", ()
   });
 });
 
-describe("terminal_list (#170): the read-only projection", () => {
+describe("shellhost_terminal_list (#170, renamed from terminal_list by #193): the read-only projection", () => {
   it("projects builtin views, active custom rows, and disabled rows with original reasons", async () => {
     const boot = bootTerminal({}, fullDeps, {
       fakeSpawn: true,
@@ -98,7 +98,7 @@ describe("terminal_list (#170): the read-only projection", () => {
         [pf("broken.json")]: "{ NOT JSON",
       },
     });
-    const listed = await boot.tool("terminal_list").execute({}, { agent: { name: "u" } });
+    const listed = await boot.tool("shellhost_terminal_list").execute({}, { agent: { name: "u" } });
     const byId = new Map<string, { id: string; source: string; transport: string; disabled?: boolean; reasons?: string[]; file?: string }>(
       listed.presets.map((p: { id: string }) => [p.id, p]),
     );

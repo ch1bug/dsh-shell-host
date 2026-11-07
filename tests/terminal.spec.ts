@@ -144,7 +144,7 @@ describe("shell_open (#55)", () => {
     // #105/#170: a custom `pwsh` row is single-entry DISABLED (the old
     // whole-batch throw is retired) — the built-in view keeps serving.
     const overrideBoot = bootTerminal({}, fullDeps, { fakeSpawn: true, files: { [join("<mem>/custom.d", "pwsh.json")]: JSON.stringify({ id: "pwsh", transport: "local", executable: [PWSH], env: {} }) } });
-    const listed = await overrideBoot.tool("terminal_list").execute({}, { agent });
+    const listed = await overrideBoot.tool("shellhost_terminal_list").execute({}, { agent });
     const pwshRows = listed.presets.filter((p: { id: string }) => p.id === "pwsh");
     // The builtin view keeps serving (the first row) AND the rejected custom
     // file shows up disabled with the original reason.
@@ -166,11 +166,15 @@ describe("shell_open (#55)", () => {
     expect(opened.command).toContain("bash --login");
     expect(spawnSpecs[0]!.command).toBe(opened.command);
   });
-  it("registers exactly one tool: shell_open (send/tail/close reuse pty_*, no Middle Man)", async () => {
+  it("registers exactly two tools: shell_open + the read-only list (send/tail/close reuse pty_*, no Middle Man)", async () => {
     const { tool } = boot();
     expect(tool("shell_open").name).toBe("shell_open");
+    // #193: the listing surface answers on the shellhost_terminal_* namespace.
+    expect(tool("shellhost_terminal_list").name).toBe("shellhost_terminal_list");
     expect(() => tool("terminal_send")).toThrow(/not registered/);
     expect(() => tool("terminal_tail")).toThrow(/not registered/);
+    // #193: the old name is retired WITHOUT an alias — nothing answers on it.
+    expect(() => tool("terminal_list")).toThrow(/not registered/);
   });
 });
 

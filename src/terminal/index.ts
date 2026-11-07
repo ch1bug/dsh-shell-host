@@ -398,7 +398,7 @@ function registerShellOpen(ctx: TerminalCtx, config: TerminalConfig, deps: Termi
  * FILE FAMILY (ADR-0018 修订), validated at EVERY mount by
  * `src/terminal/register.ts` (no built-in overrides, explicit absolute
  * paths, charset-locked ids). Since #170 a rejected entry is SINGLE-ENTRY
- * DISABLED — it is skipped and surfaced on `terminal_list` with its reasons
+ * DISABLED — it is skipped and surfaced on `shellhost_terminal_list` with its reasons
  * while the other files mount normally (the #105 whole-batch fail-closed
  * throw and the process-level restart snapshot are both retired by the
  * ADR revision); fixing a file re-enables the preset on the NEXT MOUNT
@@ -480,14 +480,14 @@ export interface TerminalDeps extends LauncherDeps {
 }
 
 /** One preset that FAILED its mount-time validation: skipped (single-entry
- * disable, ADR-0018 修订) but visible on terminal_list with the reasons. */
+ * disable, ADR-0018 修订) but visible on shellhost_terminal_list with the reasons. */
 export interface DisabledPreset {
   id: string
   file: string
   reasons: string[]
 }
 
-/** The last mount's outcome — what terminal_list projects. NO process-level
+/** The last mount's outcome — what shellhost_terminal_list projects. NO process-level
  * snapshot: the file family re-reads on EVERY apply (ADR-0018 修订 point 3 —
  * "fix the file, next mount re-enables" replaces the #105 restart contract). */
 let mountState: { active: readonly CustomLauncherConfig[]; disabled: readonly DisabledPreset[] } = { active: [], disabled: [] }
@@ -620,14 +620,26 @@ function mountCustom(resolved: TerminalConfig, deps: TerminalDeps): { active: Cu
  * one projection. The disabled rows come straight from the last mount's
  * validation outcome; recovery needs no command (fix the file, next mount
  * re-enables), so this face has no write path — the #105 agent-face guard
- * (no registration writer) is unchanged in spirit: terminal_list is a pure
- * read, and the audit ledger stays append-only with no tool over it.
+ * (no registration writer) is unchanged in spirit: shellhost_terminal_list
+ * is a pure read, and the audit ledger stays append-only with no tool over it.
+ *
+ * #193: renamed from `terminal_list` — the shipped `@deepseek-ai/dsh-tool-terminal`
+ * registers the same six `terminal_*` names, so a profile loading both entries
+ * (the desktop bundle composition) failed the later registration wholesale.
+ * The upstream keeps its names, so this repo's surface moves to the
+ * `shellhost_terminal_*` namespace. Breaking rc-side change, declared on the
+ * three migration faces (this JSDoc + the tool schema description +
+ * docs/entries/terminal.md, English and Chinese in pairs); the old name is
+ * NOT aliased, and tests/terminal.spec.ts guards its absence.
  */
 function registerTerminalList(ctx: TerminalCtx, deps: TerminalDeps): void {
   ctx.tools.register(defineTool({
-    name: 'terminal_list',
+    name: 'shellhost_terminal_list',
     description:
-      'List the terminal launcher presets: built-in views, mounted custom presets, and custom presets DISABLED by mount-time validation (with the original reasons). Read-only — a disabled preset is fixed by repairing its custom.d file; the next mount re-enables it.',
+      'List the terminal launcher presets: built-in views, mounted custom presets, and custom presets DISABLED by mount-time validation (with the original reasons). Read-only — a disabled preset is fixed by repairing its custom.d file; the next mount re-enables it. ' +
+      // #193: the rename must be visible on the model-facing surface itself
+      // (scripts/agents that memorized the old name must learn it is gone).
+      '#193: renamed from `terminal_list` — the shipped `@deepseek-ai/dsh-tool-terminal` registers the same name, so loading both entries in one profile killed the later registration wholesale; the old name is NOT aliased.',
     parameters: {},
     output: {
       schema: {
@@ -669,7 +681,7 @@ function registerTerminalList(ctx: TerminalCtx, deps: TerminalDeps): void {
       }
       return { presets: rows }
     },
-    presentCall: () => ({ card: 'terminal', title: 'terminal_list' }),
+    presentCall: () => ({ card: 'terminal', title: 'shellhost_terminal_list' }),
   }))
 }
 
@@ -711,7 +723,7 @@ function registerConfigTransport(ctx: TerminalCtx, rawConfig: unknown, resolved:
       known: materializedIds,
     })
     // The files are the authority: refresh the mount face so the new table
-    // is live for the next shell_open / terminal_list.
+    // is live for the next shell_open / shellhost_terminal_list.
     mountState = mountCustom(resolveConfig(rawConfig), deps)
   })
 }

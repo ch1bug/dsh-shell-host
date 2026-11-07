@@ -56,14 +56,14 @@ preset table is read-only, surfaced live by the unknown-id error.
   字段被定为**配置页写通道**（volatile + 传输语义）——页面保存的数组由宿主
   半幅物化成文件族，patch 里留下的只是已物化的传输残影（一次性迁移见下）。
 - **写入方**：只由**人**写入——经 custom.d 文件直接改，或经**配置页**（#169，
-  human 的 GUI，不是 agent 写口）；工具面没有任何写注册口（`terminal_list`
+  human 的 GUI，不是 agent 写口）；工具面没有任何写注册口（`shellhost_terminal_list`
   是纯只读面，守卫测试锁定）。
 - **注册门（挂载期，单条禁用）**：逐条过校验矩阵——id 非空且字符集锁定、
   文件族内不重复、**禁止覆盖内置 id**；local 可执行候选必须绝对路径 + 含路径
   分隔符（拒裸名——沿 PATH 解析可被改名劫持）+ 无引号与 shell 元字符 + 存在
   且不是目录；空格允许（Windows 合法安装路径，spawn 走 argv 数组）；ssh 行
   必须有 host；cwd 若声明必须绝对；`base` 继承源必须是内置 id 或更早被接受的
-  自定义 id。校验**不通过只禁用该条**（`terminal_list` 呈现 `disabled` + 原因
+  自定义 id。校验**不通过只禁用该条**（`shellhost_terminal_list` 呈现 `disabled` + 原因
   原文），其余条目照常挂载；改好文件后**下次挂载自动放行**（无需任何命令）。
 - **注册审计账本（#170）**：`<customDir>/audit.jsonl`，append-only JSONL——
   registered / disabled / enabled / changed / ignored / removed 事件随
@@ -81,7 +81,17 @@ preset table is read-only, surfaced live by the unknown-id error.
   监听 volatile 更新后把数组物化成 custom.d 文件——文件族仍是唯一权威，
   保存即生效（下次 `shell_open` 无需重启/重挂）。浏览器半幅挂在本包唯一行上，
   bundle 未来拆多行时页面随根行关闭。**内置预设不在页面列表**（浏览器面无
-  launcher 表通道，`terminal_list` 是 agent 面）——页面只管理自定义面。
+  launcher 表通道，`shellhost_terminal_list` 是 agent 面）——页面只管理自定义面。
+
+**迁移注记（#193）**：清单工具改名 `terminal_list` → `shellhost_terminal_list`。
+官方随包的 `@deepseek-ai/dsh-tool-terminal` 注册同名六件
+（`terminal_open/send/read/signal/close/list`），同一 profile 同时载入两个
+条目时（桌面 bundle 组合形态）后注册方整组激活失败（`tool "terminal_list"
+is already registered`）。上游不改名，故本仓工具面移入
+`shellhost_terminal_*` 命名空间。这是一次 **rc 面破坏性变更**，在三个迁移
+落点显式声明（本文档、工具 schema description、代码 JSDoc）；**旧名不留
+别名**——既有会话脚本里调用 `terminal_list` 的，升级后须改用
+`shellhost_terminal_list`。
 
 **一次性迁移（patch 行 → custom.d）**：把 terminal 行 `config.custom` 数组里的
 每条对象取出，逐条写成 `<customDir>/<id>.json`（UTF-8，内容 = 该条对象原样），

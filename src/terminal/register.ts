@@ -10,7 +10,7 @@
  * Postures:
  * - EVERY reason for EVERY rejected entry is reported (never silent repair):
  *   since #170 (ADR-0018 修订) a rejected entry is SINGLE-ENTRY DISABLED —
- *   the caller skips it at mount, surfaces it on terminal_list with these
+ *   the caller skips it at mount, surfaces it on shellhost_terminal_list with these
  *   reasons, and the OTHER entries mount normally (the old whole-batch
  *   fail-closed gate is retired).
  * - NO BUILT-IN OVERRIDE: a custom id may not shadow a built-in preset id —

@@ -76,7 +76,7 @@ the registration gate (`src/terminal/register.ts`):
 - **Writers**: written only by **humans** — by editing the custom.d files
   directly, or via the **config page** (#169, the human's GUI, not an agent
   write port); the tool surface has no registration write port at all
-  (`terminal_list` is a pure read-only surface, locked by guard tests).
+  (`shellhost_terminal_list` is a pure read-only surface, locked by guard tests).
 - **Registration gate (mount time, per-entry disable)**: each entry passes
   through a validation matrix — id non-empty and charset-locked, no duplicates
   within the file family, **overriding a built-in id forbidden**; local
@@ -86,7 +86,7 @@ the registration gate (`src/terminal/register.ts`):
   spaces are allowed (legitimate Windows install paths; spawn uses an argv
   array); ssh rows must have a host; `cwd` if declared must be absolute; the
   `base` inheritance source must be a built-in id or an earlier-accepted custom
-  id. A failed validation **disables only that entry** (`terminal_list` renders
+  id. A failed validation **disables only that entry** (`shellhost_terminal_list` renders
   `disabled` + the original reason text); the remaining entries mount as
   usual; after fixing the file, **the next mount admits it automatically**
   (no command needed).
@@ -115,8 +115,20 @@ the registration gate (`src/terminal/register.ts`):
   restart/remount). The browser half hangs on the package's single row; when
   the bundle later splits into multiple rows the page closes with the root
   row. **Built-in presets are not listed in the page** (the browser surface has
-  no launcher-table channel; `terminal_list` is the agent surface) — the page
+  no launcher-table channel; `shellhost_terminal_list` is the agent surface) — the page
   manages only the custom surface.
+
+**Migration note (#193)**: the listing tool is renamed `terminal_list` →
+`shellhost_terminal_list`. The shipped `@deepseek-ai/dsh-tool-terminal`
+registers the same six `terminal_*` names
+(`terminal_open/send/read/signal/close/list`), so a profile loading both
+entries — the desktop bundle composition — failed the later registration
+wholesale (`tool "terminal_list" is already registered`). The upstream keeps
+its names, so this repo's surface moves to the `shellhost_terminal_*`
+namespace. This is a breaking rc-side change, declared on the three
+migration faces (here, the tool schema description, and the code JSDoc);
+the old name is NOT aliased — existing session scripts calling
+`terminal_list` must switch to `shellhost_terminal_list` after upgrading.
 
 **One-time migration (patch row → custom.d)**: take each object out of the
 terminal row's `config.custom` array and write it out one by one as

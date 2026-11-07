@@ -77,8 +77,8 @@ const BASELINE = [
   "pty_open", "pty_send", "pty_tail", "pty_close", "pty_list", "pty_signal",
   // ssh（#136 自 pty 分出）
   "ssh_start", "ssh_send", "ssh_tail", "ssh_close",
-  // terminal（launcher presets + 会话清单）
-  "shell_open", "terminal_list",
+  // terminal（launcher presets + 会话清单；#193 起清单面挂 shellhost_terminal_* 命名空间）
+  "shell_open", "shellhost_terminal_list",
   // remote（#137 工作区面）
   "remote_open_session", "remote_close_workspace", "remote_open", "remote_list", "remote_status",
   // remote-fs（#137 文件面）

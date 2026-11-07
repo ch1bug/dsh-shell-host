@@ -175,6 +175,11 @@ describe.skipIf(absent.length > 0)("e2e: install → config → boot → session
       expect(names.length, "the instance declares a tool surface").toBeGreaterThan(0);
       expect(names, "pty_open is in the instance's tool surface").toContain("pty_open");
       expect(names, "shell_open (./terminal row) is in the tool surface").toContain("shell_open");
+      // #193: the listing tool answers on the shellhost_terminal_* namespace —
+      // the shipped optional-tool-terminal registers the same name, and a real
+      // boot is the only face that proves the rename took on the running instance.
+      expect(names, "shellhost_terminal_list (#193, renamed from terminal_list) is in the tool surface").toContain("shellhost_terminal_list");
+      expect(names, "#193: the old terminal_list name is gone from the tool surface (no alias)").not.toContain("terminal_list");
       // #136: the ssh row is mounted by the bundle patch and must register its
       // four tools; the split would otherwise be invisible to this tier.
       expect(names, "ssh_start (./ssh row) is in the tool surface").toContain("ssh_start");
