@@ -393,9 +393,9 @@ maintainer 动作，不由开发票触发。
 # 宿主（自建，不复用相邻工作区的树）
 git clone https://github.com/deepseek-ai/deepseek-harness.git ~/dsh-host-src
 cd ~/dsh-host-src
-git fetch --depth 1 origin tag dsh-v0.2.1-rc.2 && git checkout dsh-v0.2.1-rc.2
-pnpm install --ignore-scripts --package-import-method=copy   # 见 §4.1
-git clean -fxd && pnpm install --ignore-scripts --package-import-method=copy
+git fetch --depth 1 origin tag dsh-v0.2.2-rc.1 && git checkout dsh-v0.2.2-rc.1
+pnpm install --package-import-method=copy   # 见 §4.1；#195：--ignore-scripts 会漏 codegen（上游工作区的 codegen 靠 install scripts 生成），实况需完整 install
+git clean -fxd && pnpm install --package-import-method=copy
 pnpm build                                                   # 见 §4.2/§4.3（约 290s）
 
 # 本插件（部署副本）
