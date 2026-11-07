@@ -436,8 +436,23 @@ describe.skipIf(absent.length > 0)("e2e REAL LLM tier: provider acceptance + rea
           const list = await rpcZeroArg(auth.port, auth.cookie, "session/list").catch(() => null);
           const item = (list?.items ?? []).find((i: any) => i?.sessionId === sid);
           lastValues = item?.projections?.values ?? lastValues;
-          lastTurn = lastValues?.turnOutline?.[0] ?? lastTurn;
-          lastStats = lastValues?.sessionStats ?? lastStats;
+          // rc.1 (dsh-v0.2.2-rc.1) excludes whole-log projections from the
+          // Session summary payload (`sessionStats` and `turnOutline` both
+          // declare SessionProjectionSummaryExcluded upstream —
+          // packages/session/session-stats/src/types.ts: "Excluded from
+          // Session summary payloads: no list row renders these figures";
+          // packages/session/session-turn-outline/src/types.ts:49), so
+          // the list hints can never carry them — read the exact projection
+          // face instead, which returns full values (not the summary-limited
+          // hints) for the asked session.
+          const projections = await rpcValue(
+            auth.port,
+            auth.cookie,
+            "session/projections",
+            { sessionId: sid },
+          ).catch(() => null);
+          lastStats = projections?.values?.sessionStats ?? lastStats;
+          lastTurn = projections?.values?.turnOutline?.[0] ?? lastTurn;
           // Done when the provider billed usage AND the turn is no longer running.
           if (item?.running === false && usageOf(lastValues) > 0) break;
           await new Promise((r) => { setTimeout(r, 1500); });
