@@ -31,7 +31,7 @@ DSH bundle:**Windows 宿主平面的 shell 执行器替换层**(原名 dsh-bash-
 
 ## #82 宿主锚与接口事实（**2026-10-17 起锚 `0.2.1-rc.2`**；本节原为 0.2.0-rc.2 实测）
 
-本仓锚 **RC 线**（ADR-0005）：`version` = `0.2.1-rc.2-r1` ↔ 宿主 tag
+本仓锚 **RC 线**（ADR-0005）：`version` = `0.2.2-rc.1-r1` ↔ 宿主 tag
 `dsh-v0.2.1-rc.2`(commit `687f282e`)。前一锚 `0.2.1-rc.1` ↔ `1600d8a1`。
 **浅克隆默认分支会落到 alpha 系**
 (实测 `dsh-v0.2.1-alpha.4`),必须显式 checkout tag。
