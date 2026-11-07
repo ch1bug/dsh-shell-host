@@ -180,10 +180,12 @@ export function runnerRefsIn(
  * 头注引用的全 40 位哈希）；`1600d8a1` = 前一锚 `dsh-v0.2.1-rc.1`；
  * `639ed015` / `639ed01539` = 旧锚 `dsh-v0.2.0-rc.2`（历史引用仍在，见 dev-environment.md §2；
  * 前缀语义下前者已覆盖后者，条目并存只为登记处可读）；
+ * `66491b05` = 上游宿主现锚 `dsh-v0.2.2-rc.1`（#176 重锚后的上游 commit；#192
+ * 守卫 `tests/upstream-tool-face-guard.spec.ts` 钉它为审计基线树，跨仓解析不到）；
  * `ed25519` = SSH 密钥类型名（Ed25519），非提交哈希——7 位全 hex 被 `hashRefsIn`
  * 的正则误捕（#141 实测），豁免其自身（无其他 hex token 以它开头，无前缀外溢）。
  */
-export const HASH_ALLOWLIST = new Set(["687f282e", "1600d8a1", "639ed015", "639ed01539", "ed25519"]);
+export const HASH_ALLOWLIST = new Set(["687f282e", "1600d8a1", "639ed015", "639ed01539", "ed25519", "66491b05"]);
 
 /** 文本块里的提交哈希引用（7–40 位 hex；纯数字的版本号片段 / 权限位不算）。 */
 export function hashRefsIn(blocks: readonly (string | ScanBlock)[]): string[] {
