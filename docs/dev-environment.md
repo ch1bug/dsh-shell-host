@@ -284,7 +284,7 @@ node --run test
 
 ## 2. 宿主锚点（ADR-0005）
 
-跟随 DSH 运行时 **rc 线**：本仓 `0.2.1-rc.2-r1` ↔ 宿主 tag
+跟随 DSH 运行时 **rc 线**：本仓 `0.2.2-rc.1-r1` ↔ 宿主 tag
 `dsh-v0.2.1-rc.2`（commit `687f282e`）。旧锚（`0.2.1-rc.1` ↔ `1600d8a1`、
 `0.2.0-rc.2` ↔ `639ed015`）的历史事实保留下表与 [GLOSSARY.md #82](../GLOSSARY.md)。
 
@@ -383,8 +383,8 @@ dsh plugin --profile <p> add <spec>     # 重试 → 接受（pnpm 另会 warn p
 要保留**旧锚产物**（而不是装锚匹配的版本）只能走 §2.1 的**精确版本豁免**
 （豁免按精确「包版本 × 运行时版本」对生效，锚一变即失效）。
 
-本版发布时打 tag `dsh-v0.2.1-rc.2-r1`（ADR-0005 的 `dsh-v<锚版本>-r<模块修订号>` 形态；
-`package.json` 的 `version` = `0.2.1-rc.2-r1`，即 tag 去 `dsh-v` 前缀）。tag / publish 是
+本版发布时打 tag `dsh-v0.2.2-rc.1-r1`（ADR-0005 的 `dsh-v<锚版本>-r<模块修订号>` 形态；
+`package.json` 的 `version` = `0.2.2-rc.1-r1`，即 tag 去 `dsh-v` 前缀）。tag / publish 是
 maintainer 动作，不由开发票触发。
 
 ## 3. 源码部署步骤（msys2 侧）
@@ -548,7 +548,7 @@ RC2 构建会报 `MISSING_EXPORT "principalOf"`（该符号只存在于 alpha �
 而车道已改为同步后**无条件重建**（§0.1.1），不存在靠猜的场景。
 
 **`lib/` 是累积目录，而 `package.json` 的 `files` 用 glob**（`lib/pty-*.js` 等）⇒ 不清就会把上一版
-遗留的 chunk 一起发出去。**rc.1 期历史读数（当时锚，非当前锚 `0.2.1-rc.2-r1` 的读数）**：2026-10-17
+遗留的 chunk 一起发出去。**rc.1 期历史读数（当时锚，非现行锚 `0.2.2-rc.1-r1` 的读数）**：2026-10-17
 实测未清时 tarball 同时含当次构建的 `lib/pty-C0_H63de.js`（46520 B）与前一天遗留的
 `lib/pty-g32VoH8_.js`（46509 B，内容不同），tarball = 16 文件 / 59771 B；清后 = 15 文件 / 45527 B。
 复核 = `npm pack --dry-run` 的文件面。

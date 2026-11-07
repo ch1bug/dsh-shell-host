@@ -211,7 +211,7 @@ git config core.hooksPath .githooks
   `diff`（#139 的上下文 diff 卡片，沿上游版本）；工具链（typescript/vitest/tsdown）
   来自 npm。
 
-Status：v0.2.1-rc.2-r1，tools-only（ADR-0012/0013）：bundle 挂六行
+Status：v0.2.2-rc.1-r1，tools-only（ADR-0012/0013）：bundle 挂六行
 （`pty` / `ssh` / `terminal` / `remote` / `remote-fs` / `wsl`）；`./wsl` 随包挂载但
 休眠（`disabled: true`，#143 —— 见 [./wsl entry 文档](docs/entries/wsl_zh.md)）。
 远程 one-shot 走 `dsh-ssh` 的 `ssh_exec`（ADR-0016）；独立 `dsh-shell-remote` 插件是
