@@ -278,7 +278,7 @@ source deployment and build gotchas.
   `@lydell/node-pty` + `diff` (#139's context-diff card, pinned to the upstream
   version); tooling (typescript/vitest/tsdown) comes from npm.
 
-Status: v0.2.2-rc.1-r1, tools-only (ADR-0012/0013): the bundle mounts six rows
+Status: v0.2.2-rc.3-r1, tools-only (ADR-0012/0013): the bundle mounts six rows
 (`pty` / `ssh` / `terminal` / `remote` / `remote-fs` / `wsl`); `./wsl` ships
 mounted but dormant (`disabled: true`, #143 — see
 [the `./wsl` entry doc](docs/entries/wsl.md)). Remote one-shot is

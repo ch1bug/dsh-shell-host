@@ -132,11 +132,16 @@ export type FsErrorCode =
 /**
  * The typed filesystem error, mirroring upstream's `FsError extends HarnessError`
  * (a `code` property plus `cause` chaining, so a consumer branches on `code`,
- * never on prose).
+ * never on prose). Upstream rc.3 makes `code` an own override property — mirror
+ * that shape (declared + assigned) rather than relying on the base class.
  */
 export class FsError extends HarnessError {
+  override readonly code: FsErrorCode
+
   constructor(message: string, code: FsErrorCode, options?: ErrorOptions) {
     super(message, code, options)
+    this.name = 'FsError'
+    this.code = code
   }
 }
 

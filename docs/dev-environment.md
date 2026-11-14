@@ -284,7 +284,7 @@ node --run test
 
 ## 2. 宿主锚点（ADR-0005）
 
-跟随 DSH 运行时 **rc 线**：本仓 `0.2.2-rc.1-r1` ↔ 宿主 tag
+跟随 DSH 运行时 **rc 线**：本仓 `0.2.2-rc.3-r1` ↔ 宿主 tag
 `dsh-v0.2.1-rc.2`（commit `687f282e`）。旧锚（`0.2.1-rc.1` ↔ `1600d8a1`、
 `0.2.0-rc.2` ↔ `639ed015`）的历史事实保留下表与 [GLOSSARY.md #82](../GLOSSARY.md)。
 
@@ -383,8 +383,8 @@ dsh plugin --profile <p> add <spec>     # 重试 → 接受（pnpm 另会 warn p
 要保留**旧锚产物**（而不是装锚匹配的版本）只能走 §2.1 的**精确版本豁免**
 （豁免按精确「包版本 × 运行时版本」对生效，锚一变即失效）。
 
-本版发布时打 tag `dsh-v0.2.2-rc.1-r1`（ADR-0005 的 `dsh-v<锚版本>-r<模块修订号>` 形态；
-`package.json` 的 `version` = `0.2.2-rc.1-r1`，即 tag 去 `dsh-v` 前缀）。tag / publish 是
+本版发布时打 tag `dsh-v0.2.2-rc.3-r1`（ADR-0005 的 `dsh-v<锚版本>-r<模块修订号>` 形态；
+`package.json` 的 `version` = `0.2.2-rc.3-r1`，即 tag 去 `dsh-v` 前缀）。tag / publish 是
 maintainer 动作，不由开发票触发。
 
 ## 3. 源码部署步骤（msys2 侧）
@@ -393,7 +393,7 @@ maintainer 动作，不由开发票触发。
 # 宿主（自建，不复用相邻工作区的树）
 git clone https://github.com/deepseek-ai/deepseek-harness.git ~/dsh-host-src
 cd ~/dsh-host-src
-git fetch --depth 1 origin tag dsh-v0.2.2-rc.1 && git checkout dsh-v0.2.2-rc.1
+git fetch --depth 1 origin tag dsh-v0.2.2-rc.3 && git checkout dsh-v0.2.2-rc.3
 pnpm install --package-import-method=copy   # 见 §4.1；#195：--ignore-scripts 会漏 codegen（上游工作区的 codegen 靠 install scripts 生成），实况需完整 install
 git clean -fxd && pnpm install --package-import-method=copy
 pnpm build                                                   # 见 §4.2/§4.3（约 290s）

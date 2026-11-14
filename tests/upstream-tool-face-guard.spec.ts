@@ -96,8 +96,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 // ---------------------------------------------------------------------------
 
 /** 审计基线 tag 与其钉死 commit（preset 侧 #176 重锚同一棵树）。 */
-const UPSTREAM_TAG = "dsh-v0.2.2-rc.1";
-const UPSTREAM_PIN = "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db";
+const UPSTREAM_TAG = "dsh-v0.2.2-rc.3";
+const UPSTREAM_PIN = "38a6a5c965aa99ab525161efb7cc5cf1fe62fced";
 
 /**
  * 上游宿主检出根。Windows 视角的 msys2 家目录是 `C:/msys64/home/<user>`:
